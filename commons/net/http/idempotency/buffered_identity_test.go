@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,59 +53,6 @@ func streamedCtx(t *testing.T, app *fiber.App, body []byte, size int) fiber.Ctx 
 // buffer under it is handed to another request.
 func sharesArray(a, b []byte) bool {
 	return len(a) > 0 && len(b) > 0 && &a[0] == &b[0]
-}
-
-// TestDetachBody is the guard on the copies nothing else in the package pins.
-//
-// Deleting either one leaves every behavioural test green — the bytes are still
-// correct when the test reads them — while a keyed request digests, or hands
-// its handler, whatever the next request writes into the buffer SetBodyStream
-// returned to fasthttp's pool. Reproducing that through the pool is a race and
-// would fail only some of the time, so the copies are pinned where they are
-// decided instead.
-func TestDetachBody(t *testing.T) {
-	t.Parallel()
-
-	raw := bytes.Repeat([]byte("A"), 4<<10)
-	decompressed := bytes.Repeat([]byte("B"), 4<<10)
-
-	t.Run("aliased_inputs_cost_one_copy", func(t *testing.T) {
-		t.Parallel()
-
-		identity, detached := detachBody(raw, raw)
-
-		assert.Equal(t, raw, identity)
-		assert.Equal(t, raw, detached)
-		assert.False(t, sharesArray(identity, raw),
-			"the digest bytes must not point into the buffer ResetBody returns to the pool")
-		assert.False(t, sharesArray(detached, raw),
-			"the re-seated reader must not point into the buffer ResetBody returns to the pool")
-		assert.True(t, sharesArray(identity, detached),
-			"the same bytes in must cost one allocation, not two")
-	})
-
-	t.Run("distinct_inputs_are_both_copied", func(t *testing.T) {
-		t.Parallel()
-
-		identity, detached := detachBody(decompressed, raw)
-
-		assert.Equal(t, decompressed, identity, "the digest keeps covering the decompressed body")
-		assert.Equal(t, raw, detached, "the handler keeps receiving the raw body")
-		assert.False(t, sharesArray(identity, decompressed))
-		assert.False(t, sharesArray(detached, raw))
-	})
-
-	t.Run("nil_and_empty_inputs", func(t *testing.T) {
-		t.Parallel()
-
-		identity, detached := detachBody(nil, nil)
-		assert.Nil(t, identity)
-		assert.Nil(t, detached)
-
-		identity, detached = detachBody([]byte{}, nil)
-		assert.Empty(t, identity)
-		assert.Empty(t, detached)
-	})
 }
 
 // TestBufferedIdentity_ReSeatsTheRawBytes pins which of the two bodies goes
@@ -154,47 +103,135 @@ func (s *sliceCapture) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TestBufferedIdentity_DetachesFromTheRequestBuffer pins the copy at the call
-// site, where TestDetachBody cannot: skipping detachBody inside bufferedIdentity
-// leaves the bytes correct and every other test green.
-//
-// Init2 with reduceMemoryUsage=false is the server's default and makes
-// ResetBody keep the request's buffer instead of pooling it, so the buffer the
-// body lived in before the call is still observable afterwards and the probe
-// is deterministic.
-func TestBufferedIdentity_DetachesFromTheRequestBuffer(t *testing.T) {
-	t.Parallel()
-
-	body := bytes.Repeat([]byte("C"), 4<<10)
-
-	app := fiber.New()
-	c := streamedCtx(t, app, body, len(body))
-	c.RequestCtx().Init2(nil, nil, false)
-
-	// Reading the stream consumes it, so capture the buffer and re-seat a copy:
-	// the kept buffer is the request storage neither result may point into.
-	before := c.Request().Body()
-	require.NotEmpty(t, before)
-	c.Request().SetBodyStream(bytes.NewReader(bytes.Clone(before)), len(before))
-	require.True(t, c.Request().IsBodyStream())
-
-	returned, err := bufferedIdentity(c)
-	require.NoError(t, err)
-
-	assert.Equal(t, body, returned)
-	assert.False(t, sharesArray(returned, before),
-		"the digest bytes must not point into the request's body buffer")
+// reSeatedBacking returns the slice the re-seated *bytes.Reader reads from,
+// which only WriteTo exposes.
+func reSeatedBacking(t *testing.T, c fiber.Ctx) []byte {
+	t.Helper()
 
 	reader, ok := c.Request().BodyStream().(io.WriterTo)
 	require.True(t, ok, "the re-seated stream must expose its backing slice")
 
 	var reSeated sliceCapture
 
-	_, err = reader.WriteTo(&reSeated)
+	_, err := reader.WriteTo(&reSeated)
 	require.NoError(t, err)
-	assert.Equal(t, body, reSeated.got)
-	assert.False(t, sharesArray(reSeated.got, before),
-		"the re-seated reader must not point into the request's body buffer")
+
+	return reSeated.got
+}
+
+// TestBufferedIdentity_StaysOutOfTheRequestBuffer pins where the two results
+// live. Neither may point into the buffer fasthttp keeps or pools for the
+// request, or a keyed request digests, or hands its handler, whatever the next
+// request writes there; and without Content-Encoding the digest and the
+// re-seated stream are one array, not two. Under Content-Encoding the digest is
+// the decompressed body and the stream the raw one, so they must differ.
+//
+// Init2 with reduceMemoryUsage=false is the server's default and makes
+// ResetBody keep the request's buffer instead of pooling it, so the buffer the
+// body lived in before the call is still observable afterwards and the probe
+// is deterministic.
+func TestBufferedIdentity_StaysOutOfTheRequestBuffer(t *testing.T) {
+	t.Parallel()
+
+	plain := bytes.Repeat([]byte("C"), 4<<10)
+
+	var compressed bytes.Buffer
+
+	zw := gzip.NewWriter(&compressed)
+	_, err := zw.Write(plain)
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+
+	testCases := []struct {
+		name     string
+		body     []byte
+		encoding string
+	}{
+		{name: "no_content_encoding", body: plain},
+		{name: "gzip", body: compressed.Bytes(), encoding: "gzip"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			app := fiber.New()
+			c := streamedCtx(t, app, testCase.body, len(testCase.body))
+			c.RequestCtx().Init2(nil, nil, false)
+
+			if testCase.encoding != "" {
+				c.Request().Header.Set(fiber.HeaderContentEncoding, testCase.encoding)
+			}
+
+			// Reading the stream consumes it, so capture the buffer and re-seat
+			// a copy: the kept buffer is the request storage neither result may
+			// point into.
+			before := c.Request().Body()
+			require.NotEmpty(t, before)
+			c.Request().SetBodyStream(bytes.NewReader(bytes.Clone(before)), len(before))
+			require.True(t, c.Request().IsBodyStream())
+
+			identity, err := bufferedIdentity(c)
+			require.NoError(t, err)
+
+			stream := reSeatedBacking(t, c)
+
+			assert.Equal(t, plain, identity)
+			assert.Equal(t, testCase.body, stream)
+			assert.False(t, sharesArray(identity, before),
+				"the digest bytes must not point into the request's body buffer")
+			assert.False(t, sharesArray(stream, before),
+				"the re-seated reader must not point into the request's body buffer")
+			assert.Equal(t, testCase.encoding == "", sharesArray(identity, stream),
+				"one array when the digest covers the raw body, two only when it is decompressed")
+		})
+	}
+}
+
+// TestBufferedIdentity_HoldsTheUploadOnce pins that re-seating costs no copy of
+// the upload beyond the one reading it takes.
+//
+// The pointer probes above cannot see this: a clone that both results then
+// point at looks exactly like no clone. Bytes allocated can. A reference read
+// of the same body with io.ReadAll is the floor; bufferedIdentity may add
+// bookkeeping but not a second body. It is not parallel so no other test's
+// allocations land in the counter, and the minimum of several runs discards a
+// background collector's noise.
+func TestBufferedIdentity_HoldsTheUploadOnce(t *testing.T) {
+	body := bytes.Repeat([]byte("D"), 4<<20)
+	app := fiber.New()
+
+	allocated := func(fn func()) uint64 {
+		best := uint64(math.MaxUint64)
+
+		for range 5 {
+			var before, after runtime.MemStats
+
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			fn()
+			runtime.ReadMemStats(&after)
+
+			best = min(best, after.TotalAlloc-before.TotalAlloc)
+		}
+
+		return best
+	}
+
+	floor := allocated(func() {
+		c := streamedCtx(t, app, body, len(body))
+		_, err := io.ReadAll(c.Request().BodyStream())
+		require.NoError(t, err)
+	})
+
+	got := allocated(func() {
+		c := streamedCtx(t, app, body, len(body))
+		_, err := bufferedIdentity(c)
+		require.NoError(t, err)
+	})
+
+	assert.Less(t, got, floor+uint64(len(body))/2,
+		"a keyed streamed upload must be held once: floor %d bytes, bufferedIdentity %d", floor, got)
 }
 
 // TestBufferedIdentity_NonStreamedRequestIsUntouched pins the guard that scopes

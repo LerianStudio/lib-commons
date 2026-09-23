@@ -1529,14 +1529,14 @@ func bufferedIdentity(c fiber.Ctx) ([]byte, error) {
 	// further down still sees what the client declared.
 	c.Request().SetBodyRaw(read)
 
+	// The digest covers c.Body(), which Fiber decompresses under
+	// Content-Encoding, exactly as before, so no stored fingerprint moves. What
+	// goes back on the stream is read itself, the bytes the socket carried.
+	// Neither is copied: read is a fresh slice io.ReadAll allocated, never
+	// fasthttp's pooled body buffer, and SetBodyStream only drops the reference
+	// to it. Without Content-Encoding the two are the same bytes, so a keyed
+	// streamed upload is held once.
 	identity := c.Body()
-
-	// What goes back on the stream is c.Request().Body(), the bytes the socket
-	// would have given the handler, and NOT c.Body(), which Fiber decompresses
-	// under Content-Encoding. The digest keeps using c.Body() exactly as
-	// before, so no stored fingerprint moves. Both are detached before the
-	// re-seat frees the buffer they live in.
-	identity, raw := detachBody(identity, c.Request().Body())
 
 	// The handler must observe the framing the client sent. SetBodyStream with
 	// a length declares a Content-Length and deletes Transfer-Encoding, so a
@@ -1545,43 +1545,14 @@ func bufferedIdentity(c fiber.Ctx) ([]byte, error) {
 	// the buffering branch on every keyed request and the streaming branch only
 	// on unkeyed ones. A negative size keeps the request chunked; fasthttp then
 	// reads the reader to EOF, which a *bytes.Reader reports at the same byte.
-	size := len(raw)
+	size := len(read)
 	if c.Request().Header.ContentLength() < 0 {
 		size = -1
 	}
 
-	c.Request().SetBodyStream(bytes.NewReader(raw), size)
+	c.Request().SetBodyStream(bytes.NewReader(read), size)
 
 	return identity, nil
-}
-
-// detachBody copies the digest bytes and the raw body out of the buffer
-// fasthttp is about to reclaim, with one allocation when they are the same
-// bytes.
-//
-// Copying is mandatory: [fasthttp.Request.SetBodyStream] calls ResetBody, which
-// returns the request's body buffer to fasthttp's pool where a concurrent
-// request claims and overwrites it, while both the re-seated reader and the
-// digest still read from it — the digest is computed after the re-seat. One
-// copy serves both whenever identity and raw are the same bytes, which is every
-// request without a Content-Encoding header: Fiber returns the request body
-// itself there, and only decompression gives c.Body() storage of its own.
-// Cloning twice on that path doubled the memory a keyed streamed upload holds,
-// for nothing.
-//
-// Neither returned slice shares memory with identity or raw. An empty input
-// comes back empty, nil or not; the digest over it is the same either way.
-func detachBody(identity, raw []byte) (detachedIdentity, detachedRaw []byte) {
-	detachedRaw = bytes.Clone(raw)
-
-	// Same bytes in memory, not merely equal ones: only the copy matters here,
-	// and comparing content would spend a pass over the whole upload to learn
-	// nothing about where it lives.
-	if len(identity) == len(raw) && (len(raw) == 0 || &identity[0] == &raw[0]) {
-		return detachedRaw, detachedRaw
-	}
-
-	return bytes.Clone(identity), detachedRaw
 }
 
 func (m *Middleware) resolveTTL(c fiber.Ctx) (time.Duration, error) {
