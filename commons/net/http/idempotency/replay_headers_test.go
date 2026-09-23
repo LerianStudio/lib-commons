@@ -402,9 +402,12 @@ func TestReplay_HandlerOverridesHeaderFromAbove_ReplaysHandlerValue(t *testing.T
 
 // TestReplay_FullCaptureFromOlderVersion_ReplacesLiveHeaders pins the mixed
 // version case. A record written by the version that captured the WHOLE
-// response holds names this version would never capture; it must still replay
-// with replace semantics, exactly as it did when it was written. Such records
-// self-heal within the retention window.
+// response holds names this version would never capture. This version replays
+// every stored name with REPLACE semantics; the version that wrote the record
+// re-applied them with a bare Add and could hand the client a live header twice
+// (doc.go, "The response capture narrowed"). What this test proves is the new
+// behaviour over an old record: the stored value replaces the live value,
+// exactly once. Such records self-heal within the retention window.
 func TestReplay_FullCaptureFromOlderVersion_ReplacesLiveHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -451,8 +454,8 @@ func TestReplay_FullCaptureFromOlderVersion_ReplacesLiveHeaders(t *testing.T) {
 
 	require.Equal(t, "true", resp.Header.Get(chttp.IdempotencyReplayed))
 	require.Equal(t, int32(0), handlerRuns.Load(), "a completed record must never re-execute the handler")
-	assert.Equal(t, "req-captured", resp.Header.Get(requestIDHeader),
-		"an older full capture replays with replace semantics, unchanged by this version")
+	assert.Equal(t, []string{"req-captured"}, resp.Header.Values(requestIDHeader),
+		"the stored value replaces the live value exactly once; the writer's bare Add would have sent both")
 	assert.Equal(t, "/jobs/7", resp.Header.Get(fiber.HeaderLocation))
 }
 

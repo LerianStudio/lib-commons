@@ -287,16 +287,9 @@ func TestCheck_ProcessingTTL_LongLeaseHoldsTheKeyInFlight(t *testing.T) {
 	release := make(chan struct{})
 	app := blockingApp(middleware.Check(), "tenant-inflight", &calls, entered, release)
 
-	firstStatus := make(chan int, 1)
+	firstResult := postAsync(app, "inflight-key")
 
-	go func() {
-		response := doPost(t, app, "inflight-key")
-		defer response.Body.Close()
-
-		firstStatus <- response.StatusCode
-	}()
-
-	<-entered // the first request now holds the lease
+	awaitEntered(t, entered, firstResult) // the first request now holds the lease
 
 	second := doPost(t, app, "inflight-key")
 	second.Body.Close()
@@ -306,7 +299,7 @@ func TestCheck_ProcessingTTL_LongLeaseHoldsTheKeyInFlight(t *testing.T) {
 
 	close(release)
 
-	assert.Equal(t, http.StatusCreated, <-firstStatus)
+	assert.Equal(t, http.StatusCreated, awaitStatus(t, firstResult))
 	assert.Equal(t, int64(1), calls.Load(), "the mutation must run exactly once")
 }
 
@@ -632,16 +625,9 @@ func TestCheck_ProcessingTTLProvider_AppliesToTheNextAcquisition(t *testing.T) {
 	firstEntered, firstRelease := make(chan struct{}), make(chan struct{})
 	firstApp := blockingApp(middleware.Check(), "tenant-live-lease", &calls, firstEntered, firstRelease)
 
-	firstStatus := make(chan int, 1)
+	firstResult := postAsync(firstApp, "live-lease-a")
 
-	go func() {
-		response := doPost(t, firstApp, "live-lease-a")
-		defer response.Body.Close()
-
-		firstStatus <- response.StatusCode
-	}()
-
-	<-firstEntered // the lease is now written and the handler still running
+	awaitEntered(t, firstEntered, firstResult) // the lease is now written and the handler still running
 
 	const firstKey = "idempotency:tenant-live-lease:live-lease-a"
 
@@ -659,29 +645,22 @@ func TestCheck_ProcessingTTLProvider_AppliesToTheNextAcquisition(t *testing.T) {
 	require.Error(t, err, "the lease expired on the value it was taken with, not the reloaded one")
 
 	close(firstRelease)
-	assert.Equal(t, http.StatusServiceUnavailable, <-firstStatus,
+	assert.Equal(t, http.StatusServiceUnavailable, awaitStatus(t, firstResult),
 		"the lease lapsed mid-flight, so the completion is rejected")
 
 	// The NEXT acquisition is where the reloaded value lands.
 	secondEntered, secondRelease := make(chan struct{}), make(chan struct{})
 	secondApp := blockingApp(middleware.Check(), "tenant-live-lease", &calls, secondEntered, secondRelease)
 
-	secondStatus := make(chan int, 1)
+	secondResult := postAsync(secondApp, "live-lease-b")
 
-	go func() {
-		response := doPost(t, secondApp, "live-lease-b")
-		defer response.Body.Close()
-
-		secondStatus <- response.StatusCode
-	}()
-
-	<-secondEntered
+	awaitEntered(t, secondEntered, secondResult)
 
 	assert.Equal(t, time.Hour, mr.TTL("idempotency:tenant-live-lease:live-lease-b"),
 		"the reloaded value applies to the next lease")
 
 	close(secondRelease)
-	assert.Equal(t, http.StatusCreated, <-secondStatus)
+	assert.Equal(t, http.StatusCreated, awaitStatus(t, secondResult))
 	assert.Equal(t, int64(2), calls.Load(), "two keys, two executions, neither one twice")
 }
 
