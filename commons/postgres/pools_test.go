@@ -278,6 +278,12 @@ func TestNewFromPoolsNeverDials(t *testing.T) {
 			resolver, err := client.Resolver(context.Background())
 			require.ErrorIs(t, err, ErrInjectedPools)
 			assert.Nil(t, resolver)
+
+			// The refusal must not count as a failed dial: a second call right
+			// after the first answers the same sentinel, not a rate-limit error.
+			resolver, err = client.Resolver(context.Background())
+			require.ErrorIs(t, err, ErrInjectedPools)
+			assert.Nil(t, resolver)
 		})
 	}
 }

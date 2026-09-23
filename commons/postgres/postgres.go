@@ -715,6 +715,13 @@ func (c *Client) Resolver(ctx context.Context) (dbresolver.DB, error) {
 		return c.resolver, nil
 	}
 
+	// An injected client (NewFromPools) has nothing it may dial. Refuse here,
+	// before the retry bookkeeping below, so every call after Close answers
+	// ErrInjectedPools and never a rate-limit error.
+	if c.injected {
+		return nil, fmt.Errorf("postgres resolver: %w", ErrInjectedPools)
+	}
+
 	// Rate-limit lazy-connect retries: if previous attempts failed recently,
 	// enforce a minimum delay before the next attempt to prevent reconnect storms.
 	if c.connectAttempts > 0 {
