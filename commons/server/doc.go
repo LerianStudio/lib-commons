@@ -7,7 +7,9 @@
 // *http.Server instances via WithStdlibHTTPServer, pre-bound stdlib listeners
 // via WithStdlibHTTPListener, and gRPC servers via WithGRPCServer. The Fiber
 // and stdlib HTTP variants are mutually exclusive; either HTTP variant can be
-// composed with gRPC. For stdlib servers, a zero ReadHeaderTimeout is upgraded
+// composed with gRPC. A second stdlib *http.Server on its own port goes through
+// WithAdditionalStdlibHTTPServer (or WithAdditionalStdlibHTTPListener), which
+// composes with every other slot and drains first at shutdown. For stdlib servers, a zero ReadHeaderTimeout is upgraded
 // to a safe default before launch so callers do not accidentally expose
 // Slowloris-prone listeners. Shutdown hooks run after HTTP/gRPC drain and
 // before telemetry/logger/license shutdown.
