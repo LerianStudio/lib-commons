@@ -362,8 +362,11 @@ func (sm *ServerManager) WithShutdownChannel(ch <-chan struct{}) *ServerManager 
 	return sm
 }
 
-// WithShutdownTimeout configures the maximum duration to wait for gRPC GracefulStop
-// before forcing a hard stop. Defaults to 30 seconds.
+// WithShutdownTimeout configures the budget of each shutdown stage. Defaults
+// to 30 seconds. It bounds, each separately: the HTTP drain (the main server
+// and the additional stdlib server share one budget and drain concurrently),
+// the gRPC GracefulStop before a hard stop, the admin drain, and each shutdown
+// hook.
 func (sm *ServerManager) WithShutdownTimeout(d time.Duration) *ServerManager {
 	if sm == nil {
 		return nil
