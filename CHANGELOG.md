@@ -1,5 +1,55 @@
 # Lib-commons Changelog
 
+## [7.4.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.4.0)
+
+Features:
+- Purge published events past a retention window in the outbox. (@fredcamaral)
+- Delete aged published events in bounded batches within the outbox. (@fredcamaral)
+- Resolve the idempotency lease per request to enhance net capabilities. (@fredcamaral)
+- Decide the idempotency `5xx` policy per response, improving net handling. (@fredcamaral)
+- Decide the idempotency `4xx` policy per response for better net response management. (@fredcamaral)
+- Export the replay-unavailable refusal code to enhance net functionality. (@fredcamaral)
+
+Fixes:
+- Prune sweep memory once per interval in the outbox to optimize performance. (@fredcamaral)
+- Bound the retention delete by the transaction timeout in the outbox. (@fredcamaral)
+- Pin retention tenant re-checks on real databases for accurate outbox operations. (@fredcamaral)
+- Break `created_at` ties by ID in the PostgreSQL retention batch to ensure consistency. (@fredcamaral)
+- Prune retention sweep memory by age, not by discovery, in the outbox. (@fredcamaral)
+- Keep the effective status from draining a streamed body in net operations. (@fredcamaral)
+- Report a lease that fell back to the configured value in net processes. (@fredcamaral)
+- Keep connections whose streamed body was already buffered to maintain net stability. (@fredcamaral)
+- Retire a connection whose streamed body nobody read to prevent resource leaks. (@fredcamaral)
+- Honour the client-error policy for an over-cap rejection to adhere to net standards. (@fredcamaral)
+- Resolve the request fingerprint before the store deadline to ensure timely net operations. (@fredcamaral)
+- Release the key when an over-cap rejection cannot be stored to free resources. (@fredcamaral)
+- Capture only the handler's response header delta to optimize net response handling. (@fredcamaral)
+- Answer over-cap captures and replays without misreporting to ensure accurate net behavior. (@fredcamaral)
+- Deliver an over-cap idempotent success and complete its key for reliable net operations. (@fredcamaral)
+- Replace captured headers on an idempotency replay to maintain net integrity. (@fredcamaral)
+- Let the app supply the idempotency request fingerprint to enhance net flexibility. (@fredcamaral)
+
+Improvements:
+- Split Mongo retention coverage by database resolver in outbox documentation. (@fredcamaral)
+- State which scopes retention sweeps and per-replica interval in outbox documentation. (@fredcamaral)
+- Make published retention an optional capability in the outbox for greater flexibility. (@fredcamaral)
+- Name the policy function types to improve net code clarity. (@fredcamaral)
+- Hand the server policy seam the effective status for better net policy management. (@fredcamaral)
+- Measure the fingerprint provider budget instead of racing it for accurate net testing. (@fredcamaral)
+- Assert the store budget instead of racing it to ensure net efficiency. (@fredcamaral)
+- Make the policy seam tables discriminate for precise net testing. (@fredcamaral)
+- Correct the lease provider's fallback and timing claims for accurate net documentation. (@fredcamaral)
+- List the per-response idempotency seams in the rules for comprehensive net documentation. (@fredcamaral)
+- State the replay an old full capture receives in net testing. (@fredcamaral)
+- Report request errors to the test goroutine for improved net testing accuracy. (@fredcamaral)
+- Name both replay-capture limits in the rules row for clear net documentation. (@fredcamaral)
+- Limit the no-receipt completion to oversized responses for precise net documentation. (@fredcamaral)
+- Qualify the over-cap invariant by the client-error policy for accurate net documentation. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.3.0...v7.4.0)
+
+---
+
 ## [7.3.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.3.0)
 
 Features:
