@@ -3,13 +3,17 @@
 package idempotency
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	chttp "github.com/LerianStudio/lib-commons/v7/commons/constants"
 	"github.com/alicebob/miniredis/v2"
@@ -527,4 +531,104 @@ func TestStreamedBody_ReadFailure_RefusesBeforeHandler(t *testing.T) {
 	assert.Equal(t, int32(0), called.Load(), "the handler must never run on a body that failed to read")
 	assert.Nil(t, seen.Load(), "the handler must never be handed the read error as the request body")
 	assert.True(t, retired, "the rest of a body that failed to read is still on the wire, so the connection must go")
+}
+
+// postTruncated sends a keyed POST that declares declared bytes of body, writes
+// only sent of them and then closes the client's side of the connection, the
+// way a client that died mid-upload leaves it. keepAliveConn cannot stand in:
+// it has no point between writing and reading where the write half can close.
+// It returns the status, or 0 when the server closed without answering.
+func postTruncated(t *testing.T, addr string, declared, sent int) int {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", addr)
+	require.NoError(t, err)
+
+	defer func() { _ = conn.Close() }()
+
+	require.NoError(t, conn.SetDeadline(time.Now().Add(10*time.Second)))
+
+	head := fmt.Sprintf("POST /test HTTP/1.1\r\nHost: idempotency.test\r\n%s: truncated\r\n"+
+		"Content-Type: %s\r\nContent-Length: %d\r\n\r\n",
+		chttp.IdempotencyKey, fiber.MIMEOctetStream, declared)
+
+	_, err = conn.Write(append([]byte(head), bytes.Repeat([]byte("x"), sent)...))
+	require.NoError(t, err)
+
+	tcp, ok := conn.(*net.TCPConn)
+	require.True(t, ok)
+	require.NoError(t, tcp.CloseWrite())
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		return 0
+	}
+
+	require.NoError(t, resp.Body.Close())
+
+	return resp.StatusCode
+}
+
+// TestStreamedBody_TruncatedDeclaredLength_RefusesBeforeHandler pins the
+// other way a streamed body fails to arrive: the client declared a length and
+// died before sending it.
+//
+// fasthttp reports that two different ways. A declared length inside its 8 KiB
+// pre-read is read in full before the request exists, and a short one is
+// refused there with no handler and no middleware. Past the pre-read the rest
+// comes from the connection-backed stream, which returns the socket's io.EOF
+// unchanged on a declared-length body, so a read to EOF sees a clean, short
+// body. Re-seating that would hand the handler a truncated upload under a
+// Content-Length it measured itself, and its fingerprint would make the retry
+// carrying the whole payload a key reuse.
+func TestStreamedBody_TruncatedDeclaredLength_RefusesBeforeHandler(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name           string
+		declared, sent int
+		wantStatus     int
+	}{
+		// fasthttp's own refusal, before any middleware runs.
+		{name: "inside_the_pre_read", declared: 10, sent: 5, wantStatus: http.StatusBadRequest},
+		{
+			name:       "past_the_pre_read",
+			declared:   3 * fasthttpStreamPreRead,
+			sent:       2 * fasthttpStreamPreRead,
+			wantStatus: http.StatusServiceUnavailable,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				called atomic.Int32
+				seen   atomic.Int64
+			)
+
+			app := fiber.New(fiber.Config{StreamRequestBody: true})
+			app.Use(tenantMiddleware("t1"))
+			app.Use(New(newRedisClient(t, miniredis.RunT(t))).Check())
+			app.Post("/test", func(c fiber.Ctx) error {
+				called.Add(1)
+
+				body, err := io.ReadAll(c.Request().BodyStream())
+				if err != nil {
+					return err
+				}
+
+				seen.Store(int64(len(body)))
+
+				return c.SendStatus(fiber.StatusCreated)
+			})
+
+			status := postTruncated(t, serveStreamProbe(t, app), testCase.declared, testCase.sent)
+
+			assert.Equal(t, testCase.wantStatus, status, "a truncated body must be refused before the handler")
+			assert.Equal(t, int32(0), called.Load(), "the handler must never run on a truncated body")
+			assert.Zero(t, seen.Load(), "the handler must never be handed a truncated body")
+		})
+	}
 }

@@ -1496,7 +1496,8 @@ func (m *Middleware) resolveFingerprint(c fiber.Ctx) (string, error) {
 // The stream is read here and not through c.Body(): fasthttp's Request.Body()
 // swallows a stream read error and leaves its text in the body buffer, which
 // would then be fingerprinted and re-seated as the request body. A stream that
-// fails to read returns [errRequestBodyUnreadable] instead, so the request is
+// fails to read, or ends short of the length the client declared, returns
+// [errRequestBodyUnreadable] instead, so the request is
 // refused before the handler; the half-read stream is left in place, and
 // retireUnreadRequestStream ends the connection it came from.
 func bufferedIdentity(c fiber.Ctx) ([]byte, error) {
@@ -1509,6 +1510,13 @@ func bufferedIdentity(c fiber.Ctx) ([]byte, error) {
 	read, err := io.ReadAll(c.Request().BodyStream())
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errRequestBodyUnreadable, err)
+	}
+
+	// fasthttp's connection-backed stream returns the socket's io.EOF unchanged
+	// on a declared-length body, so a client that died mid-upload reads as a
+	// clean, short body. Only the declared length can tell the two apart.
+	if declared := c.Request().Header.ContentLength(); declared >= 0 && len(read) != declared {
+		return nil, fmt.Errorf("%w: read %d of %d declared bytes", errRequestBodyUnreadable, len(read), declared)
 	}
 
 	// SetBodyRaw closes the drained stream, so c.Body() below reads these bytes
