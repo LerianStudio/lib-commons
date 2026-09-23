@@ -1,5 +1,39 @@
 # Lib-commons Changelog
 
+## [7.6.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.6.0)
+
+Features:
+- Serve the identity without the dependency manifest over HTTP. (@fredcamaral)
+- Add `TryLockWithOptions` in Redis, honoring caller lock options. (@fredcamaral)
+- Build a Postgres client from already-open pools. (@fredcamaral)
+- Add HKDF-derived AEAD sealer with AAD and rotation in crypto. (@fredcamaral)
+
+Fixes:
+- Require a 32-byte operator secret for the sealer in crypto. (@fredcamaral)
+- Own the lock retry loop in Redis to ensure outages remain visible. (@fredcamaral)
+- Classify lock contention in `WithLockOptions` like `TryLock` in Redis. (@fredcamaral)
+- Refuse a streamed body shorter than its declared length in net. (@fredcamaral)
+- Refuse a body stream that fails to read before fingerprinting in net. (@fredcamaral)
+- Stop overstating the bound on the buffered fingerprint in net. (@fredcamaral)
+- Keep the body stream readable under the default fingerprint in net. (@fredcamaral)
+- Keep the connection when the body stream was re-seated in net. (@fredcamaral)
+- Refuse an injected Postgres client before the retry bookkeeping. (@fredcamaral)
+- Refuse to dial a Postgres client built from injected pools. (@fredcamaral)
+- Keep the previous key when rotating to the same secret in crypto. (@fredcamaral)
+
+Improvements:
+- Document the buildinfo manifest as available only through `--version`. (@fredcamaral)
+- Pin trylock log level and span status per outcome in Redis. (@fredcamaral)
+- Correct lock stall cost and classification notes in Redis documentation. (@fredcamaral)
+- Log an unreadable request body apart from a provider error in net. (@fredcamaral)
+- Pin the body copy at the fingerprint call site in net tests. (@fredcamaral)
+- Say timeout duration, not shared deadline, in outbox tests. (@fredcamaral)
+- Wait for the deadline rollback in the retention test for outbox. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.5.0...v7.6.0)
+
+---
+
 ## [7.5.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.5.0)
 
 Features:
