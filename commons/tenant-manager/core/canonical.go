@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/google/uuid"
+	libCommons "github.com/LerianStudio/lib-commons/v7/commons"
 )
 
 // ErrInvalidTenantIDFormat is returned by CanonicalTenantID when the tenant ID
@@ -36,7 +36,7 @@ func CanonicalTenantID(id string) (string, error) {
 		return "", fmt.Errorf("%w: %q", ErrInvalidTenantIDFormat, id)
 	}
 
-	if parsed, err := uuid.Parse(id); err == nil {
+	if parsed, err := libCommons.ParseUUID(id); err == nil {
 		return hex.EncodeToString(parsed[:]), nil
 	}
 

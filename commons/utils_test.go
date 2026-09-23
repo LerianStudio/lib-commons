@@ -192,6 +192,23 @@ func TestIsUUID(t *testing.T) {
 		t.Parallel()
 		assert.False(t, IsUUID("not-a-uuid"))
 	})
+
+	// uuid.Parse accepts any 38-byte string whose middle is a UUID without
+	// checking the wrapper; only braces make it a UUID.
+	const id = "f81d4fae-7dec-11d0-a765-00a0c91e6bf6"
+
+	for input, want := range map[string]bool{
+		"0" + id + "0":                     false,
+		"{" + id + "}":                     true,
+		"{" + id + "0":                     false,
+		"0" + id + "}":                     false,
+		id:                                 true,
+		"f81d4fae7dec11d0a76500a0c91e6bf6": true,
+		"urn:uuid:" + id:                   true,
+		"xurn:uuid:" + id:                  false,
+	} {
+		assert.Equal(t, want, IsUUID(input), input)
+	}
 }
 
 func TestGenerateUUIDv7(t *testing.T) {
