@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -533,9 +534,13 @@ func netListenAddress(address string) string {
 // socket. Comparing the strings is not enough: a configured address is usually
 // written ":8081", while the address of a pre-bound listener always comes back
 // resolved as "127.0.0.1:8081", and a wildcard bind covers every host on that
-// port anyway. So the port must match and either host must be a wildcard or
-// the two hosts must be equal. Two spellings of one host (127.0.0.1 and
-// localhost) are not resolved: the kernel catches that pair at bind time.
+// port anyway. So the ports must be the same number (a service name such as
+// "http" is resolved to its port) and either host must be a wildcard or the two
+// hosts must be the same: IP literals compare as IPs, so "::1" equals
+// "0:0:0:0:0:0:0:1", and other names compare case-insensitively. A host name
+// is never resolved to an IP: "localhost" and "127.0.0.1" compare different,
+// because resolving would make configuration validation depend on DNS and the
+// hosts file at boot; the kernel catches that pair at bind time.
 // Port 0 asks the kernel for an ephemeral port, so it never collides.
 func sameListenAddress(a, b string) bool {
 	hostA, portA, errA := net.SplitHostPort(a)
@@ -545,16 +550,47 @@ func sameListenAddress(a, b string) bool {
 		return a == b
 	}
 
-	if portA == "0" || portB == "0" || portA != portB {
+	numA, numB := listenPort(portA), listenPort(portB)
+	if numA == 0 || numB == 0 || numA != numB {
 		return false
 	}
 
-	return wildcardHost(hostA) || wildcardHost(hostB) || hostA == hostB
+	return wildcardHost(hostA) || wildcardHost(hostB) || sameHost(hostA, hostB)
 }
 
-// wildcardHost reports whether a host part binds every interface.
+// listenPort returns the TCP port number a port part names, a service name
+// included, or -1 when it names none. 0 means an ephemeral port.
+func listenPort(port string) int {
+	// Service names resolve from the services database, not DNS.
+	number, err := net.DefaultResolver.LookupPort(context.Background(), "tcp", port)
+	if err != nil {
+		return -1
+	}
+
+	return number
+}
+
+// wildcardHost reports whether a host part binds every interface: empty, or
+// any spelling of the unspecified IPv4 or IPv6 address.
 func wildcardHost(host string) bool {
-	return host == "" || host == "0.0.0.0" || host == "::"
+	if host == "" {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+
+	return ip != nil && ip.IsUnspecified()
+}
+
+// sameHost compares two host parts as IPs when both are IP literals, and as
+// case-insensitive names otherwise.
+func sameHost(a, b string) bool {
+	ipA, ipB := net.ParseIP(a), net.ParseIP(b)
+	if ipA != nil && ipB != nil {
+		return ipA.Equal(ipB)
+	}
+
+	return strings.EqualFold(a, b)
 }
 
 // configuredServers counts the servers that will be launched, so the startup

@@ -120,6 +120,18 @@ func TestSameListenAddress(t *testing.T) {
 		{"two explicit hosts on one port", "127.0.0.1:9000", "192.168.1.5:9000", false},
 		{"different ports", ":9000", ":9001", false},
 		{"malformed address falls back to string compare", "8081", ":8081", false},
+		{"two spellings of IPv6 loopback", "[::1]:8080", "[0:0:0:0:0:0:0:1]:8080", true},
+		{"full unspecified IPv6 is a wildcard", "[0:0:0:0:0:0:0:0]:8080", "127.0.0.1:8080", true},
+		{"IPv4-mapped unspecified is a wildcard", "[::ffff:0.0.0.0]:8080", "10.0.0.1:8080", true},
+		{"service name equals its port number", ":http", ":80", true},
+		{"service name equals the empty stdlib Addr spelling", "127.0.0.1:http", ":80", true},
+		{"service name on a different port", ":http", ":8080", false},
+		{"host names compare case-insensitively", "API.internal:9000", "api.INTERNAL:9000", true},
+		// A host name is never resolved: validation must not depend on DNS or
+		// the hosts file at boot, so this pair is left to the kernel at bind.
+		{"localhost is not resolved to 127.0.0.1", "localhost:9000", "127.0.0.1:9000", false},
+		{"two ephemeral ports", "127.0.0.1:0", "127.0.0.1:0", false},
+		{"empty port is ephemeral", "127.0.0.1:", "127.0.0.1:", false},
 	}
 
 	for _, tc := range cases {
