@@ -1,6 +1,7 @@
 package idempotency
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -481,9 +482,10 @@ func WithFingerprintScopeProvider(provider FingerprintScopeProvider) Option {
 //
 // Two consumer facts make the raw body unusable on some routes, and both need
 // this option. A route served with Fiber's StreamRequestBody hands the handler
-// a live body stream; reading the body to fingerprint it drains that stream
-// into memory and closes it, so every upload is buffered whole and the
-// handler's streaming branch is unreachable. And a multipart encoder picks a
+// a live body stream; without this option the middleware buffers the whole
+// upload to fingerprint it, bounded only by the route's BodyLimit, and re-seats
+// it as an in-memory stream for the handler — this option is what avoids that
+// buffering. And a multipart encoder picks a
 // fresh random boundary per request, so a byte-identical logical retry never
 // matches its own stored fingerprint and is refused
 // "IDEMPOTENCY_KEY_REUSE" — the published "retry with the same key" contract
@@ -1448,9 +1450,7 @@ func (m *Middleware) resolveFingerprint(c fiber.Ctx) (string, error) {
 			return "", err
 		}
 	} else {
-		// Only reachable without a provider: c.Body() drains and closes a
-		// streamed request body, which is the defect the provider exists for.
-		identity = c.Body()
+		identity = bufferedIdentity(c)
 	}
 
 	if m.fingerprintScopeProvider != nil {
@@ -1458,6 +1458,51 @@ func (m *Middleware) resolveFingerprint(c fiber.Ctx) (string, error) {
 	}
 
 	return requestFingerprint(c.Method(), c.Path(), identity), nil
+}
+
+// bufferedIdentity reads the whole request body for the digest and, when the
+// server handed this request over as a stream, puts those bytes back as an
+// in-memory one so the handler below still finds a readable body.
+//
+// Reading the body is what fasthttp answers by draining the request stream into
+// memory and closing it, and under Fiber's StreamRequestBody the handler is
+// then handed nothing. The consumer that measured it runs huma behind
+// humafiber, whose BodyReader() branches on the SERVER's StreamRequestBody
+// setting rather than on this request's state: it returns the now-nil
+// BodyStream() and never falls back to c.Body(), so huma reads an empty body
+// and answers 400 "request body is required" to every KEYED request carrying a
+// payload while the same request without a key succeeds. Re-seating is what
+// keeps the default fingerprint usable on a streamed route at all; a
+// [WithFingerprintProvider] is still what avoids the buffering.
+//
+// Refusing such a route at construction is not available: [New] and
+// [Middleware.Check] never see the *fiber.App, and StreamRequestBody is only
+// reachable per request through c.App(). A per-request refusal would turn a
+// route that buffers but works into a 500.
+func bufferedIdentity(c fiber.Ctx) []byte {
+	streamed := c.Request().IsBodyStream()
+
+	identity := c.Body()
+	if !streamed {
+		return identity
+	}
+
+	// Both copies are mandatory. SetBodyStream calls ResetBody, which returns
+	// the request's body buffer to fasthttp's pool where a concurrent request
+	// may claim and overwrite it — and until it does, both identity and the raw
+	// bytes below point into that buffer, while the digest is computed after
+	// the re-seat.
+	//
+	// What goes back on the stream is c.Request().Body(), the bytes the socket
+	// would have given the handler, and NOT c.Body(), which Fiber decompresses
+	// under Content-Encoding. The digest keeps using c.Body() exactly as
+	// before, so no stored fingerprint moves.
+	raw := bytes.Clone(c.Request().Body())
+	identity = bytes.Clone(identity)
+
+	c.Request().SetBodyStream(bytes.NewReader(raw), len(raw))
+
+	return identity
 }
 
 func (m *Middleware) resolveTTL(c fiber.Ctx) (time.Duration, error) {

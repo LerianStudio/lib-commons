@@ -29,8 +29,8 @@ import (
 // streamProbe is what the protected handler reports back: whether the request
 // body was still a stream when the handler got it, and how many bytes the
 // handler itself could read. It is the whole differential of the streamed-body
-// test — a middleware that fingerprinted the raw body has already drained and
-// closed that stream, so Stream comes back false.
+// test — a middleware that drained the stream and left it closed hands the
+// handler a nil reader, so Stream comes back false and Bytes zero.
 type streamProbe struct {
 	Stream bool `json:"stream"`
 	Bytes  int  `json:"bytes"`
@@ -46,17 +46,22 @@ func streamProbeApp(mw fiber.Handler, called *atomic.Int32) *fiber.App {
 	app.Post("/test", func(c fiber.Ctx) error {
 		called.Add(1)
 
-		probe := streamProbe{Stream: c.Request().IsBodyStream()}
+		// Read the body the way humafiber does and nothing else: its
+		// BodyReader() branches on the SERVER's StreamRequestBody setting and
+		// returns Request().BodyStream() whatever that is, a nil reader
+		// included. It never falls back to c.Body(), so a probe that does
+		// falls back reports a body the real adapter would not have seen.
+		var probe streamProbe
 
-		if probe.Stream {
-			n, err := io.Copy(io.Discard, c.Request().BodyStream())
+		if r := c.Request().BodyStream(); r != nil {
+			probe.Stream = true
+
+			n, err := io.Copy(io.Discard, r)
 			if err != nil {
 				return err
 			}
 
 			probe.Bytes = int(n)
-		} else {
-			probe.Bytes = len(c.Body())
 		}
 
 		return c.Status(fiber.StatusCreated).JSON(probe)
@@ -98,7 +103,7 @@ func TestFingerprintProvider_StreamedBody_LeavesTheStreamUntouched(t *testing.T)
 
 	body := bytes.Repeat([]byte("x"), bodySize)
 
-	t.Run("without_provider_the_body_is_buffered", func(t *testing.T) {
+	t.Run("without_provider_the_handler_still_reads_the_stream", func(t *testing.T) {
 		t.Parallel()
 
 		conn := newRedisClient(t, miniredis.RunT(t))
@@ -110,9 +115,11 @@ func TestFingerprintProvider_StreamedBody_LeavesTheStreamUntouched(t *testing.T)
 
 		require.Equal(t, http.StatusCreated, resp.StatusCode)
 		probe := decodeStreamProbe(t, resp)
-		assert.False(t, probe.Stream,
-			"fingerprinting the raw body drains and closes the request stream")
-		assert.Equal(t, bodySize, probe.Bytes)
+		assert.True(t, probe.Stream,
+			"fingerprinting the raw body drains the stream and closes it; the handler below "+
+				"must still be handed a readable one")
+		assert.Equal(t, bodySize, probe.Bytes,
+			"the re-seated stream must carry the whole body, not a prefix of it")
 		assert.Equal(t, int32(1), called.Load())
 	})
 
