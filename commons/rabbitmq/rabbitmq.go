@@ -20,15 +20,17 @@ import (
 	commons "github.com/LerianStudio/lib-commons/v7/commons"
 	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/otelscope"
 	"github.com/LerianStudio/lib-commons/v7/commons/security/sanitize"
 	"github.com/LerianStudio/lib-observability/v4/assert"
 	constant "github.com/LerianStudio/lib-observability/v4/constants"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
+
+var tracer = otelscope.Tracer("commons/rabbitmq")
 
 // connectionFailuresMetric defines the counter for rabbitmq connection failures.
 const (
@@ -264,8 +266,6 @@ func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 		return fmt.Errorf("rabbitmq connect: %w", err)
 	}
 
-	tracer := otel.Tracer("rabbitmq")
-
 	ctx, span := tracer.Start(ctx, "rabbitmq.connect")
 	defer span.End()
 
@@ -436,8 +436,6 @@ func (rc *RabbitMQConnection) EnsureChannelContext(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("rabbitmq ensure channel: %w", err)
 	}
-
-	tracer := otel.Tracer("rabbitmq")
 
 	ctx, span := tracer.Start(ctx, "rabbitmq.ensure_channel")
 	defer span.End()
@@ -701,8 +699,6 @@ func (rc *RabbitMQConnection) OpenChannelContext(ctx context.Context) (*amqp.Cha
 		return nil, fmt.Errorf("rabbitmq open channel: %w", err)
 	}
 
-	tracer := otel.Tracer("rabbitmq")
-
 	ctx, span := tracer.Start(ctx, "rabbitmq.open_channel")
 	defer span.End()
 
@@ -767,8 +763,6 @@ func (rc *RabbitMQConnection) HealthCheckContext(ctx context.Context) (bool, err
 	if ctx == nil {
 		ctx = context.Background()
 	}
-
-	tracer := otel.Tracer("rabbitmq")
 
 	ctx, span := tracer.Start(ctx, "rabbitmq.health_check")
 	defer span.End()
@@ -1083,8 +1077,6 @@ func (rc *RabbitMQConnection) CloseContext(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("rabbitmq close: %w", err)
 	}
-
-	tracer := otel.Tracer("rabbitmq")
 
 	ctx, span := tracer.Start(ctx, "rabbitmq.close")
 	defer span.End()

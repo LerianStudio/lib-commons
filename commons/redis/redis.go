@@ -18,18 +18,20 @@ import (
 	iamcredentialspb "cloud.google.com/go/iam/credentials/apiv1/credentialspb"
 	commons "github.com/LerianStudio/lib-commons/v7/commons"
 	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/otelscope"
 	"github.com/LerianStudio/lib-observability/v4/assert"
 	constant "github.com/LerianStudio/lib-observability/v4/constants"
 	"github.com/LerianStudio/lib-observability/v4/redisobs"
 	"github.com/LerianStudio/lib-observability/v4/runtime"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/redis/go-redis/v9"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
+
+var tracer = otelscope.Tracer("commons/redis")
 
 const (
 	gcpScope                = "https://www.googleapis.com/auth/cloud-platform"
@@ -264,8 +266,6 @@ func (c *Client) Connect(ctx context.Context) error {
 		return nilClientAssert(ctx, "Connect")
 	}
 
-	tracer := otel.Tracer("redis")
-
 	ctx, span := tracer.Start(ctx, "redis.connect")
 	defer span.End()
 
@@ -333,8 +333,6 @@ func (c *Client) GetClient(ctx context.Context) (redis.UniversalClient, error) {
 	c.lastReconnectAttempt = time.Now()
 
 	// Only trace when actually reconnecting.
-	tracer := otel.Tracer("redis")
-
 	ctx, span := tracer.Start(ctx, "redis.reconnect")
 	defer span.End()
 
@@ -361,8 +359,6 @@ func (c *Client) Close() error {
 	if c == nil {
 		return nilClientAssert(context.Background(), "Close")
 	}
-
-	tracer := otel.Tracer("redis")
 
 	_, span := tracer.Start(context.Background(), "redis.close")
 	defer span.End()
@@ -731,8 +727,6 @@ func (c *Client) refreshTick(ctx context.Context, auth *GCPIAMAuth) bool {
 	if !time.Now().After(lastRefresh.Add(auth.RefreshEvery)) {
 		return true
 	}
-
-	tracer := otel.Tracer("redis")
 
 	refreshCtx, cancel := context.WithTimeout(ctx, auth.RefreshOperationTimeout)
 	defer cancel()
