@@ -377,6 +377,18 @@
 // because none was ever stored: capture or persistence is exactly what failed,
 // so replaying anything here would report an outcome nobody recorded.
 //
+// # Fencing a key from outside the middleware
+//
+// An application that learns elsewhere that a key's outcome is unknowable — a
+// cutover bridge reading a retiring release's storage, say — and answers the
+// request itself calls [Middleware.FenceOutcomeUnknown] with that request and a
+// TTL. It plants the same terminal record at the same address, with the
+// request's own fingerprint, so the byte-identical resend reaches the
+// outcome-unknown refusal above and a changed payload reaches key reuse. It
+// never replaces a record: a key already holding a receipt, a live request, or
+// a fence for another payload returns [ErrFenceKeyHeld] and keeps answering as
+// it did; re-fencing the same request is a no-op.
+//
 // # What changed for an over-cap response
 //
 // This is the one behaviour in this package a v7 minor changed under a consumer

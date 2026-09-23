@@ -73,6 +73,17 @@ var (
 	errResponseTooLarge      = errors.New("idempotency replay response exceeds configured limit")
 	errEmptyEncodedResponse  = errors.New("idempotency response codec produced no bytes")
 	errInvalidReplayResponse = errors.New("idempotency replay response is invalid")
+	errFenceKeyMissing       = errors.New("idempotency fence: the request carries no idempotency key")
+	errFenceTenantMissing    = errors.New("idempotency fence: the request carries no tenant")
+	errFenceKeyTooLong       = errors.New("idempotency fence: idempotency key exceeds the configured length")
+	errFenceStoreMissing     = errors.New("idempotency fence: store unavailable")
+
+	// ErrFenceKeyHeld is returned by [Middleware.FenceOutcomeUnknown] when the
+	// key already holds a record other than an unrecorded-outcome fence for this
+	// same request: a completed receipt, a request in flight, or a fence for a
+	// different payload. Nothing was written; the existing record still answers
+	// the resend.
+	ErrFenceKeyHeld = errors.New("idempotency fence: key already holds a record")
 )
 
 // requestFingerprint identifies WHICH request an idempotency key was spent on.
@@ -1362,7 +1373,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 		return m.runChain(c)
 	}
 
-	key := fmt.Sprintf("%s%s:%s", m.keyPrefix, tenantID, idempotencyKey)
+	key := m.storeKey(tenantID, idempotencyKey)
 	if nilcheck.Interface(m.store) {
 		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: store unavailable")
 
@@ -1923,6 +1934,106 @@ func (m *Middleware) markOutcomeUnknown(
 	)
 
 	return true
+}
+
+// storeKey composes the tenant-scoped store address for an idempotency key. It
+// is the ONE composition: handle reads there and FenceOutcomeUnknown writes
+// there, so a consumer fence cannot drift beside the record it has to sit on.
+func (m *Middleware) storeKey(tenantID, idempotencyKey string) string {
+	return fmt.Sprintf("%s%s:%s", m.keyPrefix, tenantID, idempotencyKey)
+}
+
+// FenceOutcomeUnknown plants, for the request in c, the same terminal record
+// the middleware writes itself when a request leaves no recorded outcome, held
+// for ttl. A later request under the same key and the same payload is then
+// refused by [Middleware.Check] as outcome-unknown
+// ([RefusalCodeOutcomeUnrecorded]), and one with a different payload as key
+// reuse; neither runs the handler.
+//
+// It exists for a consumer that learns from OUTSIDE the middleware that a key's
+// outcome is unknowable — a cutover bridge reading a retiring release's
+// storage — answers the request itself, and must make that answer bind on the
+// resend. It takes the request rather than a key and a fingerprint because the
+// address and the digest must be the ones Check computes, and it computes them
+// the same way: the configured [KeyProvider] (or the header), the tenant on
+// c.Context(), the configured fingerprint providers and scope. Call it with the
+// request in the same state Check would see it.
+//
+// It writes only through Store.Acquire, so it never replaces a record. Fencing
+// a key that already holds this request's unrecorded-outcome fence is a no-op
+// and returns nil. Any other record returns [ErrFenceKeyHeld]: a completed
+// record is a KNOWN outcome with a receipt, and overwriting it would turn a
+// replayable answer into "unknown"; a processing record belongs to a live
+// owner; a fence for a different payload already refuses this one as reuse.
+func (m *Middleware) FenceOutcomeUnknown(c fiber.Ctx, ttl time.Duration) error {
+	if m == nil || nilcheck.Interface(m.store) {
+		return errFenceStoreMissing
+	}
+
+	if ttl <= 0 {
+		return errInvalidTTL
+	}
+
+	idempotencyKey, err := m.resolveKey(c)
+	if err != nil {
+		return fmt.Errorf("idempotency fence: key provider: %w", err)
+	}
+
+	if idempotencyKey == "" {
+		return errFenceKeyMissing
+	}
+
+	if len(idempotencyKey) > m.maxKeyLength {
+		return errFenceKeyTooLong
+	}
+
+	tenantID := tmcore.GetTenantIDContext(c.Context())
+	if tenantID == "" {
+		return errFenceTenantMissing
+	}
+
+	fingerprint, err := m.resolveFingerprint(c)
+	if err != nil {
+		return fmt.Errorf("idempotency fence: fingerprint provider: %w", err)
+	}
+
+	fence, err := json.Marshal(storeRecord{
+		State:       keyStateComplete,
+		Fingerprint: fingerprint,
+		Owner:       uuid.NewString(),
+		Outcome:     outcomeUnrecorded,
+	})
+	if err != nil {
+		return fmt.Errorf("idempotency fence: marshal record: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), m.redisTimeout)
+	defer cancel()
+
+	key := m.storeKey(tenantID, idempotencyKey)
+
+	stored, acquired, err := m.store.Acquire(ctx, key, fence, ttl)
+	if err != nil {
+		return fmt.Errorf("idempotency fence: store acquire: %w", err)
+	}
+
+	if !acquired {
+		var current storeRecord
+		if json.Unmarshal(stored, &current) != nil ||
+			current.Outcome != outcomeUnrecorded || current.Fingerprint != fingerprint {
+			return ErrFenceKeyHeld
+		}
+
+		return nil
+	}
+
+	m.logger.Log(ctx, obs.LevelWarn, "idempotency: key fenced with an unrecorded outcome by the application",
+		"record_outcome", outcomeUnrecorded,
+		"idempotency_key_digest", keyDigest(key),
+		"tenant_id", tenantID,
+	)
+
+	return nil
 }
 
 // logFenceFailure reports a key left UNFENCED after its operation may already
