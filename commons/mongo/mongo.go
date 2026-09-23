@@ -19,15 +19,17 @@ import (
 	commons "github.com/LerianStudio/lib-commons/v7/commons"
 	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/otelscope"
 	"github.com/LerianStudio/lib-observability/v4/assert"
 	constant "github.com/LerianStudio/lib-observability/v4/constants"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+var tracer = otelscope.Tracer("commons/mongo")
 
 const (
 	defaultServerSelectionTimeout = 5 * time.Second
@@ -227,8 +229,6 @@ func (c *Client) Connect(ctx context.Context) error {
 		return ErrNilContext
 	}
 
-	tracer := otel.Tracer("mongo")
-
 	ctx, span := tracer.Start(ctx, "mongo.connect")
 	defer span.End()
 
@@ -419,8 +419,6 @@ func (c *Client) ResolveClient(ctx context.Context) (*mongo.Client, error) {
 
 	c.lastConnectAttempt = time.Now()
 
-	tracer := otel.Tracer("mongo")
-
 	ctx, span := tracer.Start(ctx, "mongo.resolve")
 	defer span.End()
 
@@ -488,8 +486,6 @@ func (c *Client) Ping(ctx context.Context) error {
 		return ErrNilContext
 	}
 
-	tracer := otel.Tracer("mongo")
-
 	ctx, span := tracer.Start(ctx, "mongo.ping")
 	defer span.End()
 
@@ -524,8 +520,6 @@ func (c *Client) Close(ctx context.Context) error {
 	if ctx == nil {
 		return ErrNilContext
 	}
-
-	tracer := otel.Tracer("mongo")
 
 	ctx, span := tracer.Start(ctx, "mongo.close")
 	defer span.End()
@@ -586,8 +580,6 @@ func (c *Client) EnsureIndexes(ctx context.Context, collection string, indexes .
 		ctx, cancel = context.WithTimeout(ctx, ensureIndexesTimeout)
 		defer cancel()
 	}
-
-	tracer := otel.Tracer("mongo")
 
 	ctx, span := tracer.Start(ctx, "mongo.ensure_indexes")
 	defer span.End()

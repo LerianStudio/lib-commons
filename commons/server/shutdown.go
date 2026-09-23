@@ -22,13 +22,18 @@ import (
 )
 
 // ErrNoServersConfigured indicates no servers were configured for the manager.
-var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServer(), WithStdlibHTTPServer(), WithStdlibHTTPListener(), or WithGRPCServer()")
+var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServer(), WithStdlibHTTPServer(), WithStdlibHTTPListener(), WithGRPCServer(), or WithAdminHTTPServer()")
 
 // ErrConflictingHTTPServers indicates that Fiber HTTP and stdlib HTTP were both
 // configured on the same ServerManager. WithHTTPServer(*fiber.App) is mutually
 // exclusive with WithStdlibHTTPServer(*http.Server) and
 // WithStdlibHTTPListener(*http.Server, net.Listener).
 var ErrConflictingHTTPServers = errors.New("conflicting HTTP servers configured: WithHTTPServer(*fiber.App) is mutually exclusive with WithStdlibHTTPServer(*http.Server) and WithStdlibHTTPListener(*http.Server, net.Listener)")
+
+// ErrAdminAddressConflict indicates the admin HTTP server was configured on
+// the same address as the main HTTP server. Both would bind the same socket,
+// so the admin port must have an address of its own.
+var ErrAdminAddressConflict = errors.New("conflicting HTTP addresses configured: WithAdminHTTPServer() needs an address different from the main HTTP server")
 
 const defaultReadHeaderTimeout = 5 * time.Second
 
@@ -37,6 +42,7 @@ const defaultReadHeaderTimeout = 5 * time.Second
 // not both), gRPC servers, or any compatible combination simultaneously.
 type ServerManager struct {
 	httpServer          *fiber.App
+	adminServer         *fiber.App
 	stdlibHTTPServer    *http.Server
 	stdlibHTTPListener  net.Listener
 	grpcServer          *grpc.Server
@@ -44,6 +50,7 @@ type ServerManager struct {
 	telemetry           obs.TelemetryShutdowner
 	logger              obs.Logger
 	httpAddress         string
+	adminAddress        string
 	grpcAddress         string
 	serversStarted      chan struct{}
 	serversStartedOnce  sync.Once
@@ -52,6 +59,7 @@ type ServerManager struct {
 	lifecycleMu         sync.Mutex
 	shuttingDown        bool
 	fiberListenDone     chan struct{}
+	adminListenDone     chan struct{}
 	shutdownOnce        sync.Once
 	shutdownTimeout     time.Duration
 	startupErrors       chan error
@@ -116,6 +124,33 @@ func (sm *ServerManager) WithHTTPServer(app *fiber.App, address string) *ServerM
 
 	sm.httpServer = app
 	sm.httpAddress = address
+
+	return sm
+}
+
+// WithAdminHTTPServer configures the admin Fiber app, on its own port, with
+// the same lifecycle as the main HTTP server: it is launched by the same
+// supervised goroutine machinery and a failed bind surfaces on the same
+// startup error path.
+//
+// The admin port carries the operational endpoints (/health, /readyz,
+// /version, /metrics) and is never exposed through a Service or Ingress. It
+// composes with any other slot - Fiber HTTP, stdlib HTTP, gRPC, or none at
+// all - but its address must differ from the main HTTP address, otherwise
+// StartWithGracefulShutdownWithError returns ErrAdminAddressConflict before
+// any goroutine is launched.
+//
+// During shutdown the admin app is the LAST server to drain: it keeps
+// answering, with whatever the service's handlers return, while the API and
+// gRPC servers finish their in-flight work, and closes last. A service that
+// wants /readyz to report 503 during the drain does so in its own handler.
+func (sm *ServerManager) WithAdminHTTPServer(app *fiber.App, address string) *ServerManager {
+	if sm == nil {
+		return nil
+	}
+
+	sm.adminServer = app
+	sm.adminAddress = address
 
 	return sm
 }
@@ -265,11 +300,79 @@ func (sm *ServerManager) validateConfiguration() error {
 		return ErrConflictingHTTPServers
 	}
 
-	if sm.httpServer == nil && sm.stdlibHTTPServer == nil && sm.grpcServer == nil {
+	if sm.adminServer != nil {
+		if address := sm.mainHTTPAddress(); address != "" && sameListenAddress(address, sm.adminAddress) {
+			return ErrAdminAddressConflict
+		}
+	}
+
+	if sm.httpServer == nil && sm.stdlibHTTPServer == nil && sm.grpcServer == nil && sm.adminServer == nil {
 		return ErrNoServersConfigured
 	}
 
 	return nil
+}
+
+// mainHTTPAddress returns the address the main HTTP server binds, whichever
+// variant is configured, or "" when the manager serves no main HTTP traffic.
+func (sm *ServerManager) mainHTTPAddress() string {
+	switch {
+	case sm.httpServer != nil:
+		return sm.httpAddress
+	case sm.stdlibHTTPListener != nil:
+		return sm.stdlibHTTPListener.Addr().String()
+	case sm.stdlibHTTPServer != nil:
+		return sm.stdlibHTTPServer.Addr
+	default:
+		return ""
+	}
+}
+
+// sameListenAddress reports whether two listen addresses would bind the same
+// socket. Comparing the strings is not enough: a configured address is usually
+// written ":8081", while the address of a pre-bound listener always comes back
+// resolved as "127.0.0.1:8081", and a wildcard bind covers every host on that
+// port anyway. So the port must match and either host must be a wildcard or
+// the two hosts must be equal. Two spellings of one host (127.0.0.1 and
+// localhost) are not resolved: the kernel catches that pair at bind time.
+func sameListenAddress(a, b string) bool {
+	hostA, portA, errA := net.SplitHostPort(a)
+	hostB, portB, errB := net.SplitHostPort(b)
+
+	if errA != nil || errB != nil {
+		return a == b
+	}
+
+	if portA != portB {
+		return false
+	}
+
+	return wildcardHost(hostA) || wildcardHost(hostB) || hostA == hostB
+}
+
+// wildcardHost reports whether a host part binds every interface.
+func wildcardHost(host string) bool {
+	return host == "" || host == "0.0.0.0" || host == "::"
+}
+
+// configuredServers counts the servers that will be launched, so the startup
+// error channel is wide enough for every one of them to report a failed bind
+// without blocking or losing its error.
+func (sm *ServerManager) configuredServers() int {
+	count := 0
+
+	for _, configured := range []bool{
+		sm.httpServer != nil,
+		sm.stdlibHTTPServer != nil,
+		sm.grpcServer != nil,
+		sm.adminServer != nil,
+	} {
+		if configured {
+			count++
+		}
+	}
+
+	return count
 }
 
 // initServers validates configuration and starts servers without blocking.
@@ -280,6 +383,10 @@ func (sm *ServerManager) initServers() error {
 	if err := sm.validateConfiguration(); err != nil {
 		return err
 	}
+
+	// Sized after validation and before any goroutine exists, so every launch
+	// goroutine below observes this channel.
+	sm.startupErrors = make(chan error, sm.configuredServers())
 
 	sm.startServers()
 
@@ -339,9 +446,10 @@ func (sm *ServerManager) StartWithGracefulShutdown() {
 // Callers using StartWithGracefulShutdown() directly will still get Fatal behavior for backward compatibility,
 // while StartWithGracefulShutdownWithError() validates first and returns an error.
 //
-// Launch order is fiber HTTP → stdlib HTTP → gRPC. The two HTTP branches are
-// mutually exclusive (enforced by validateConfiguration) so at most one of
-// them fires; the gRPC branch is independent and composes with either.
+// Launch order is fiber HTTP → stdlib HTTP → gRPC → admin HTTP. The two main
+// HTTP branches are mutually exclusive (enforced by validateConfiguration) so
+// at most one of them fires; the gRPC and admin branches are independent and
+// compose with either.
 func (sm *ServerManager) startServers() {
 	started := 0
 
@@ -357,6 +465,10 @@ func (sm *ServerManager) startServers() {
 		started++
 	}
 
+	if sm.launchAdminHTTPServer() {
+		started++
+	}
+
 	sm.logger.Log(context.Background(), obs.LevelInfo, "launched server goroutines", "count", started)
 
 	// Signal that server goroutines have been launched (not that sockets are bound).
@@ -365,10 +477,25 @@ func (sm *ServerManager) startServers() {
 	})
 }
 
-// launchFiberHTTPServer spawns the fiber HTTP launch goroutine. Returns true
-// if a goroutine was launched, false if no fiber server is configured.
+// launchFiberHTTPServer spawns the main fiber HTTP launch goroutine. Returns
+// true if a goroutine was launched, false if no fiber server is configured.
 func (sm *ServerManager) launchFiberHTTPServer() bool {
-	if sm.httpServer == nil {
+	return sm.launchFiberApp(sm.httpServer, sm.httpAddress, "HTTP", "start_http_server", &sm.fiberListenDone)
+}
+
+// launchAdminHTTPServer spawns the admin fiber launch goroutine. Returns true
+// if a goroutine was launched, false if no admin server is configured.
+func (sm *ServerManager) launchAdminHTTPServer() bool {
+	return sm.launchFiberApp(sm.adminServer, sm.adminAddress, "admin HTTP", "start_admin_http_server", &sm.adminListenDone)
+}
+
+// launchFiberApp spawns the listen goroutine for a fiber app. label names the
+// server in logs and in the startup error, operation names the supervised
+// goroutine, and listenDone receives the lifecycle channel the shutdown path
+// waits on. Returns false when the app is not configured, or when shutdown
+// already began.
+func (sm *ServerManager) launchFiberApp(app *fiber.App, address, label, operation string, listenDone *chan struct{}) bool {
+	if app == nil {
 		return false
 	}
 
@@ -381,35 +508,35 @@ func (sm *ServerManager) launchFiberHTTPServer() bool {
 
 	if sm.shuttingDown {
 		sm.lifecycleMu.Unlock()
-		sm.logInfo("Skipping HTTP server launch: shutdown already initiated")
+		sm.logInfo("Skipping " + label + " server launch: shutdown already initiated")
 
 		return false
 	}
 
-	sm.fiberListenDone = make(chan struct{})
-	listenDone := sm.fiberListenDone
+	*listenDone = make(chan struct{})
+	done := *listenDone
 	sm.lifecycleMu.Unlock()
 
 	runtime.SafeGoWithContextAndComponent(
 		context.Background(),
 		sm.logger,
 		"server",
-		"start_http_server",
+		operation,
 		runtime.KeepRunning,
 		func(_ context.Context) {
-			defer close(listenDone)
+			defer close(done)
 
-			sm.logger.Log(context.Background(), obs.LevelInfo, "starting HTTP server", "address", sm.httpAddress)
+			sm.logger.Log(context.Background(), obs.LevelInfo, "starting "+label+" server", "address", address)
 
 			// DisableStartupMessage: fiber v3 moved banner suppression from
 			// fiber.Config to ListenConfig, and this Listen call is the only
 			// one the fleet reaches — without it every service prints the
 			// fiber ASCII banner into its JSON-only stdout stream.
-			if err := sm.httpServer.Listen(sm.httpAddress, fiber.ListenConfig{DisableStartupMessage: true}); err != nil {
-				sm.logger.Log(context.Background(), obs.LevelError, "HTTP server error", "error", err)
+			if err := app.Listen(address, fiber.ListenConfig{DisableStartupMessage: true}); err != nil {
+				sm.logger.Log(context.Background(), obs.LevelError, label+" server error", "error", err)
 
 				select {
-				case sm.startupErrors <- fmt.Errorf("HTTP server: %w", err):
+				case sm.startupErrors <- fmt.Errorf("%s server: %w", label, err):
 				default:
 				}
 			}
@@ -624,6 +751,12 @@ func (sm *ServerManager) executeShutdown() {
 			}
 		}
 
+		// The admin server drains LAST: readiness and health probes keep
+		// being answered while the API and gRPC servers finish their
+		// in-flight work, so an orchestrator sees the pod leave rotation
+		// before it stops answering at all.
+		sm.shutdownAdminHTTPServer()
+
 		// Execute shutdown hooks (best-effort) after HTTP and gRPC servers have
 		// drained/stopped, but before telemetry/logger/license shutdown. Each hook
 		// gets its own context with an independent timeout to prevent one slow hook
@@ -688,10 +821,26 @@ func (sm *ServerManager) shutdownHTTPServer() {
 			sm.logger.Log(context.Background(), obs.LevelError, "error during HTTP server shutdown", "error", err)
 		}
 
-		sm.awaitFiberListenExit()
+		sm.awaitFiberListenExit(sm.httpServer, &sm.fiberListenDone)
 	case sm.stdlibHTTPServer != nil:
 		sm.shutdownStdlibHTTPServer()
 	}
+}
+
+// shutdownAdminHTTPServer drains the admin app. Called last in the shutdown
+// sequence so the operational endpoints outlive the traffic-serving ones.
+func (sm *ServerManager) shutdownAdminHTTPServer() {
+	if sm.adminServer == nil {
+		return
+	}
+
+	sm.logInfo("Shutting down admin HTTP server...")
+
+	if err := sm.adminServer.Shutdown(); err != nil {
+		sm.logger.Log(context.Background(), obs.LevelError, "error during admin HTTP server shutdown", "error", err)
+	}
+
+	sm.awaitFiberListenExit(sm.adminServer, &sm.adminListenDone)
 }
 
 // awaitFiberListenExit blocks until the fiber Listen goroutine has returned,
@@ -702,14 +851,14 @@ func (sm *ServerManager) shutdownHTTPServer() {
 // forever. That leaked goroutine outlives shutdown and, under the race
 // detector, trips on process globals such as os.Stdout that fiber's startup
 // path reads and the test harness swaps between tests and examples.
-func (sm *ServerManager) awaitFiberListenExit() {
+func (sm *ServerManager) awaitFiberListenExit(app *fiber.App, listenDone *chan struct{}) {
 	sm.lifecycleMu.Lock()
-	listenDone := sm.fiberListenDone
+	done := *listenDone
 	sm.lifecycleMu.Unlock()
 
 	// Nil means the fiber launch goroutine was never spawned (and, with
 	// shuttingDown now set, never will be), so there is nothing to wait for.
-	if listenDone == nil {
+	if done == nil {
 		return
 	}
 
@@ -726,7 +875,7 @@ func (sm *ServerManager) awaitFiberListenExit() {
 
 	for {
 		select {
-		case <-listenDone:
+		case <-done:
 			return
 		case <-deadline.C:
 			sm.logInfo("Timed out waiting for the HTTP listen goroutine to exit")
@@ -734,7 +883,7 @@ func (sm *ServerManager) awaitFiberListenExit() {
 		case <-retry.C:
 			// Listen may not have reached Serve when the first Shutdown ran;
 			// re-issue it so the bound listener is closed once registered.
-			_ = sm.httpServer.Shutdown()
+			_ = app.Shutdown()
 		}
 	}
 }

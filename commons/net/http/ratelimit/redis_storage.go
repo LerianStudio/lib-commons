@@ -10,18 +10,20 @@ import (
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/otelscope"
 	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	tmvalkey "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/valkey"
 	"github.com/LerianStudio/lib-observability/v4/assert"
 	constant "github.com/LerianStudio/lib-observability/v4/constants"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/redis/go-redis/v9"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
 )
+
+var tracer = otelscope.Tracer("commons/net/http/ratelimit")
 
 const (
 	keyPrefix     = "ratelimit:"
@@ -137,7 +139,6 @@ func (storage *RedisStorage) Get(key string) ([]byte, error) {
 	}
 
 	ctx := context.Background()
-	tracer := otel.Tracer("ratelimit")
 
 	ctx, span := tracer.Start(ctx, "ratelimit.get")
 	defer span.End()
@@ -183,7 +184,6 @@ func (storage *RedisStorage) Set(key string, val []byte, exp time.Duration) erro
 	}
 
 	ctx := context.Background()
-	tracer := otel.Tracer("ratelimit")
 
 	ctx, span := tracer.Start(ctx, "ratelimit.set")
 	defer span.End()
@@ -220,7 +220,6 @@ func (storage *RedisStorage) Delete(key string) error {
 	}
 
 	ctx := context.Background()
-	tracer := otel.Tracer("ratelimit")
 
 	ctx, span := tracer.Start(ctx, "ratelimit.delete")
 	defer span.End()
@@ -261,7 +260,6 @@ func (storage *RedisStorage) Reset() error {
 	}
 
 	ctx := context.Background()
-	tracer := otel.Tracer("ratelimit")
 
 	ctx, span := tracer.Start(ctx, "ratelimit.reset")
 	defer span.End()
@@ -334,8 +332,6 @@ func (storage *RedisStorage) increment(
 	if window <= 0 || window.Milliseconds() <= 0 {
 		return 0, 0, ErrInvalidWindow
 	}
-
-	tracer := otel.Tracer("ratelimit")
 
 	ctx, span := tracer.Start(ctx, "ratelimit.increment")
 	defer span.End()
