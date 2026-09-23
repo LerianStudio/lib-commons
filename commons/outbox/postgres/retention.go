@@ -80,10 +80,12 @@ func (repo *Repository) DeletePublishedBefore(
 		// mode the key is (tenant_id, id), so an id alone does not name one row.
 		query := "DELETE FROM " + table + " WHERE id IN (" + selection + ")" + filter // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
 
-		// withTenantTxOrExisting bounds only BeginTx by the transaction timeout;
-		// the statement itself runs on the caller's context. A DELETE waits for a
-		// transaction that still holds a lock on a selected row, so when the
-		// caller set no deadline the statement takes the same bound.
+		// withTenantTxOrExisting begins the transaction on a context bounded by
+		// the transaction timeout, and database/sql rolls the transaction back
+		// when that context expires, but only once in-flight statements return:
+		// a DELETE waiting for a transaction that still holds a lock on a
+		// selected row is not interrupted by it. The statement therefore takes
+		// the same bound itself when the caller set no deadline.
 		execCtx := ctx
 
 		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
