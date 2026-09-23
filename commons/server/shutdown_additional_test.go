@@ -553,3 +553,73 @@ func TestAdditionalStdlibHTTPServerNilHandlerIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// TestAdditionalStdlibHTTPServerAlone pins that the additional slot is a
+// server in its own right: a manager with nothing else serves and exits
+// cleanly.
+func TestAdditionalStdlibHTTPServerAlone(t *testing.T) {
+	addr := reserveFreeAddr(t)
+	shutdown := make(chan struct{})
+
+	sm := server.NewServerManager(nil, nil, nil).
+		WithAdditionalStdlibHTTPServer(newTestStdlibServer(addr, probeMux("soap"))).
+		WithShutdownChannel(shutdown).
+		WithShutdownTimeout(5 * time.Second)
+
+	done := runManager(t, sm)
+
+	assert.Equal(t, "soap", fetchProbe(t, addr))
+
+	requireCleanExit(t, shutdown, done)
+}
+
+// TestAdditionalStdlibHTTPServerBesideAStdlibListenerMain pins the
+// composition with the pre-bound stdlib main variant.
+func TestAdditionalStdlibHTTPServerBesideAStdlibListenerMain(t *testing.T) {
+	mainListener := newTestStdlibListener(t)
+	mainAddr := mainListener.Addr().String()
+	extraAddr := reserveFreeAddr(t)
+	shutdown := make(chan struct{})
+
+	sm := server.NewServerManager(nil, nil, nil).
+		WithStdlibHTTPListener(newTestStdlibServer(mainAddr, probeMux("api")), mainListener).
+		WithAdditionalStdlibHTTPServer(newTestStdlibServer(extraAddr, probeMux("soap"))).
+		WithShutdownChannel(shutdown).
+		WithShutdownTimeout(5 * time.Second)
+
+	done := runManager(t, sm)
+
+	assert.Equal(t, "api", fetchProbe(t, mainAddr))
+	assert.Equal(t, "soap", fetchProbe(t, extraAddr))
+
+	requireCleanExit(t, shutdown, done)
+}
+
+// TestAdditionalStdlibHTTPServerReadHeaderTimeout pins the Slowloris default
+// on both variants, and that a caller's own value is never overwritten.
+func TestAdditionalStdlibHTTPServerReadHeaderTimeout(t *testing.T) {
+	variants := map[string]func(sm *server.ServerManager, srv *http.Server) *server.ServerManager{
+		"server": func(sm *server.ServerManager, srv *http.Server) *server.ServerManager {
+			return sm.WithAdditionalStdlibHTTPServer(srv)
+		},
+		"listener": func(sm *server.ServerManager, srv *http.Server) *server.ServerManager {
+			return sm.WithAdditionalStdlibHTTPListener(srv, newTestStdlibListener(t))
+		},
+	}
+
+	for name, configure := range variants {
+		t.Run(name+", zero gets the default", func(t *testing.T) {
+			srv := &http.Server{Handler: http.NewServeMux()}
+			configure(server.NewServerManager(nil, nil, nil), srv)
+
+			assert.Equal(t, 5*time.Second, srv.ReadHeaderTimeout)
+		})
+
+		t.Run(name+", preset is preserved", func(t *testing.T) {
+			srv := &http.Server{Handler: http.NewServeMux(), ReadHeaderTimeout: time.Second}
+			configure(server.NewServerManager(nil, nil, nil), srv)
+
+			assert.Equal(t, time.Second, srv.ReadHeaderTimeout)
+		})
+	}
+}
