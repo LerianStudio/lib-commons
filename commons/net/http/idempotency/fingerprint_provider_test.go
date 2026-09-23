@@ -20,6 +20,7 @@ import (
 	"time"
 
 	chttp "github.com/LerianStudio/lib-commons/v7/commons/constants"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
@@ -290,13 +291,16 @@ func TestFingerprintProvider_Error_RefusesBeforeHandler(t *testing.T) {
 
 		var called atomic.Int32
 
-		resp := postBody(t, uploadApp(New(newRedisClient(t, mr), failing).Check(), &called),
+		logger := &recordingLogger{}
+
+		resp := postBody(t, uploadApp(New(newRedisClient(t, mr), failing, WithLogger(logger)).Check(), &called),
 			"k1", fiber.MIMEApplicationJSON, []byte(`{"amount":10}`))
 
 		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 		assert.Equal(t, "IDEMPOTENCY_UNAVAILABLE", decodeErrorBody(t, resp).Title)
 		assert.Equal(t, int32(0), called.Load(), "the handler must not run")
 		assert.Empty(t, mr.Keys(), "a provider error must leave no record behind")
+		logger.find(t, obs.LevelWarn, "fingerprint provider failed")
 	})
 
 	t.Run("routes_through_unavailable_handler", func(t *testing.T) {

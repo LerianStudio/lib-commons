@@ -16,6 +16,7 @@ import (
 	"time"
 
 	chttp "github.com/LerianStudio/lib-commons/v7/commons/constants"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
@@ -503,9 +504,11 @@ func TestStreamedBody_ReadFailure_RefusesBeforeHandler(t *testing.T) {
 		seen   atomic.Value
 	)
 
+	logger := &recordingLogger{}
+
 	app := fiber.New(fiber.Config{StreamRequestBody: true})
 	app.Use(tenantMiddleware("t1"))
-	app.Use(New(newRedisClient(t, miniredis.RunT(t))).Check())
+	app.Use(New(newRedisClient(t, miniredis.RunT(t)), WithLogger(logger)).Check())
 	app.Post("/test", func(c fiber.Ctx) error {
 		called.Add(1)
 
@@ -531,6 +534,12 @@ func TestStreamedBody_ReadFailure_RefusesBeforeHandler(t *testing.T) {
 	assert.Equal(t, int32(0), called.Load(), "the handler must never run on a body that failed to read")
 	assert.Nil(t, seen.Load(), "the handler must never be handed the read error as the request body")
 	assert.True(t, retired, "the rest of a body that failed to read is still on the wire, so the connection must go")
+
+	// No provider is configured, so the operator must not be sent looking for one.
+	line := logger.find(t, obs.LevelWarn, "request body unreadable")
+	assert.ErrorIs(t, line.kv["error"].(error), errRequestBodyUnreadable)
+	assert.False(t, logger.has("fingerprint provider failed"),
+		"a body read failure must not be logged as a provider failure")
 }
 
 // postTruncated sends a keyed POST that declares declared bytes of body, writes

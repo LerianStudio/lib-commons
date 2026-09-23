@@ -1397,7 +1397,12 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 
 	fingerprint, err := m.resolveFingerprint(c)
 	if err != nil {
-		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: fingerprint provider failed", "error", err)
+		msg := "idempotency: fingerprint provider failed"
+		if errors.Is(err, errRequestBodyUnreadable) {
+			msg = "idempotency: request body unreadable, refusing before the handler"
+		}
+
+		m.logger.Log(c.Context(), obs.LevelWarn, msg, "error", err)
 
 		// Nothing has run yet, and the request's identity is unknown: it must
 		// neither proceed unprotected nor be told to reconcile.
