@@ -32,6 +32,11 @@ var (
 // keyset is immutable once published; Rotate swaps in a new one.
 type keyset struct {
 	current cipher.AEAD
+	// currentID is a SHA-256 fingerprint of the derived current key, kept so
+	// Rotate can recognise a rotation to the secret already in use and leave
+	// the previous generation alone. It is derived from the key, never the
+	// secret, and is not itself a secret.
+	currentID [sha256.Size]byte
 	// ponytail: exactly one previous generation, so a second rotation orphans
 	// payloads sealed two secrets ago; hold a slice of previous AEADs if a
 	// deployment ever needs a longer rotation window.
@@ -58,38 +63,40 @@ func NewSealer(purpose string, secret []byte) (*Sealer, error) {
 		return nil, ErrEmptyPurpose
 	}
 
-	aead, err := deriveAEAD(purpose, secret)
+	aead, id, err := deriveAEAD(purpose, secret)
 	if err != nil {
 		return nil, err
 	}
 
 	s := &Sealer{purpose: purpose}
-	s.keys.Store(&keyset{current: aead})
+	s.keys.Store(&keyset{current: aead, currentID: id})
 
 	return s, nil
 }
 
-func deriveAEAD(purpose string, secret []byte) (cipher.AEAD, error) {
+func deriveAEAD(purpose string, secret []byte) (cipher.AEAD, [sha256.Size]byte, error) {
+	var id [sha256.Size]byte
+
 	if len(secret) == 0 {
-		return nil, ErrEmptySecret
+		return nil, id, ErrEmptySecret
 	}
 
 	key, err := hkdf.Key(sha256.New, secret, nil, purpose, sealerKeySize)
 	if err != nil {
-		return nil, fmt.Errorf("crypto: derive sealer key: %w", err)
+		return nil, id, fmt.Errorf("crypto: derive sealer key: %w", err)
 	}
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, fmt.Errorf("crypto: create AES block cipher: %w", err)
+		return nil, id, fmt.Errorf("crypto: create AES block cipher: %w", err)
 	}
 
 	aead, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("crypto: create GCM cipher: %w", err)
+		return nil, id, fmt.Errorf("crypto: create GCM cipher: %w", err)
 	}
 
-	return aead, nil
+	return aead, sha256.Sum256(key), nil
 }
 
 func (s *Sealer) keyset() (*keyset, error) {
@@ -153,21 +160,28 @@ func (s *Sealer) Open(sealed, additionalData []byte) ([]byte, error) {
 }
 
 // Rotate makes next the current secret and demotes the current one to
-// previous. The generation before that is dropped. An empty next returns
-// ErrEmptySecret and leaves the keys unchanged.
+// previous. The generation before that is dropped. A next that derives the
+// key already in use is a no-op, so a configuration refresh that re-sends an
+// unchanged secret does not overwrite the previous generation with a copy of
+// the current one. An empty next returns ErrEmptySecret and leaves the keys
+// unchanged.
 func (s *Sealer) Rotate(next []byte) error {
 	if _, err := s.keyset(); err != nil {
 		return err
 	}
 
-	aead, err := deriveAEAD(s.purpose, next)
+	aead, id, err := deriveAEAD(s.purpose, next)
 	if err != nil {
 		return err
 	}
 
 	for {
 		old := s.keys.Load()
-		if s.keys.CompareAndSwap(old, &keyset{current: aead, previous: old.current}) {
+		if old.currentID == id {
+			return nil
+		}
+
+		if s.keys.CompareAndSwap(old, &keyset{current: aead, currentID: id, previous: old.current}) {
 			return nil
 		}
 	}

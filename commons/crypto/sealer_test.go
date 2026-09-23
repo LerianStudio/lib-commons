@@ -240,6 +240,31 @@ func TestSealer_RotateTwiceDropsOldestGeneration(t *testing.T) {
 	assert.Equal(t, "B", string(opened))
 }
 
+func TestSealer_RotateToTheSameSecretIsANoOp(t *testing.T) {
+	t.Parallel()
+
+	s := newTestSealer(t, secretA)
+
+	underA, err := s.Seal([]byte("A"), testAAD)
+	require.NoError(t, err)
+
+	require.NoError(t, s.Rotate(secretB))
+	require.NoError(t, s.Rotate(secretB), "a refresh that re-sends the current secret")
+
+	opened, err := s.Open(underA, testAAD)
+	require.NoError(t, err, "the previous generation must survive a same-secret rotation")
+	assert.Equal(t, "A", string(opened))
+}
+
+func TestSealer_RotateToTheCurrentSecretKeepsNoPhantomPrevious(t *testing.T) {
+	t.Parallel()
+
+	s := newTestSealer(t, secretB)
+	require.NoError(t, s.Rotate(secretB))
+
+	assert.Nil(t, s.keys.Load().previous, "a same-secret rotation must not mint a previous generation")
+}
+
 func TestSealer_RotateEmptyKeepsKeys(t *testing.T) {
 	t.Parallel()
 
