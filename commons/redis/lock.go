@@ -388,6 +388,10 @@ func (dl *RedisLockManager) WithLockOptions(ctx context.Context, lockKey string,
 // Returns the handle and true if lock was acquired, nil and false if lock is busy.
 // Returns an error for unexpected failures (network errors, context cancellation, etc.)
 //
+// Only a Redis that is unreachable or stopped answering logs at ERROR and marks
+// the "redis.lock.try_lock" span as an error. A busy lock and a caller whose
+// context was already done log at DEBUG and leave the span status unset.
+//
 // TryLock is TryLockWithOptions with DefaultLockOptions() and Tries forced to 1,
 // which means a fixed 10-second expiry. Use TryLockWithOptions when the work
 // under the lock needs a different one.
@@ -432,10 +436,14 @@ func (dl *RedisLockManager) TryLock(ctx context.Context, lockKey string) (LockHa
 // RetryDelay, before reporting the lock busy. Options are validated the same way
 // WithLockOptions validates them.
 //
-// Expiry also bounds how long one attempt waits on Redis: redsync allows each
-// attempt expiry x 0.05 (MEASURED against v4.17), so the 30-minute expiry below
-// can block for a minute and a half against a node that never answers. Bound ctx
-// when the caller cannot afford that.
+// Expiry also bounds how long one attempt waits on a Redis that never answers.
+// MEASURED against redsync v4.17 and go-redis: a stalled attempt costs about
+// 2 x min(Expiry x 0.05, the client's ReadTimeout, ctx's remaining time), since
+// redsync follows each failed attempt with a release under a fresh timeout of the
+// same length. At the default 3s ReadTimeout the 30-minute expiry below blocks
+// about 6s per attempt, not 3 minutes; Tries N costs N times that plus the
+// delays. With ReadTimeout disabled (-1) a 5-minute expiry blocks about 30s per
+// attempt. Bound ctx when the caller cannot afford that.
 //
 // This method is declared on *RedisLockManager and deliberately NOT on the
 // LockManager interface: adding a method there would break every external
@@ -574,8 +582,8 @@ const (
 // is the last attempt's — nil only for lockTaken.
 func acquireLock(ctx context.Context, mutex *redsync.Mutex, opts LockOptions) (lockOutcome, error) {
 	// Read once, before anything is asked of Redis. After the first attempt the
-	// failure itself is the better evidence, and a caller deadline expiring
-	// mid-flight against a healthy Redis is a window of microseconds.
+	// failure itself is the better evidence; see classifyLockFailure for what a
+	// caller deadline expiring mid-flight turns into.
 	callerDoneAtStart := ctx.Err() != nil
 
 	var lastErr error
@@ -612,10 +620,20 @@ func acquireLock(ctx context.Context, mutex *redsync.Mutex, opts LockOptions) (l
 //     caller's deadline expires while it waits out a lock someone else holds.
 //   - Otherwise, the caller's context was already done before Redis was asked
 //     anything: the caller gave up, and nothing was ever learned about Redis.
-//   - Anything else: Redis is unreachable or stopped answering. A caller
-//     deadline that expires while Redis stays silent lands here deliberately —
-//     a healthy Redis answers in well under a millisecond, so silence long
-//     enough to consume a deadline is the fault, not the deadline.
+//   - Anything else: Redis is unreachable or stopped answering.
+//
+// A caller deadline that expires while an attempt is in flight surfaces as a
+// go-redis "i/o timeout" whose chain does not unwrap to context.DeadlineExceeded,
+// so it is classified as a fault: ERROR log and span error. The window is one
+// Redis round trip, so a caller that reaches the lock with less than one RTT of
+// budget left reads as an outage. Bound the budget before calling rather than
+// expecting this function to tell the two apart.
+//
+// The error chain cannot answer "was it the caller's deadline?" either: an
+// unreachable node's error carries context.DeadlineExceeded from redsync's own
+// per-attempt timeout, so errors.Is(err, context.DeadlineExceeded) never means
+// the caller's deadline. That is why the caller's ctx.Err() is read, not the
+// chain.
 //
 // A caller that cancels itself mid-request needs no arm of its own: the loop
 // only ever reaches this with a contended attempt behind it or with Redis
