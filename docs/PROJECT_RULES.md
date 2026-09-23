@@ -25,6 +25,7 @@ This document defines the coding standards, architecture patterns, and developme
 lib-commons/
 ├── commons/                      # All library packages
 │   ├── backoff/                    # Exponential backoff with jitter
+│   ├── buildinfo/                  # Compiled build identity (--version, GET /version, OTel scope)
 │   ├── certificate/                # Thread-safe TLS certificate manager with hot-reload
 │   ├── circuitbreaker/             # Circuit breaker manager and health checker
 │   ├── constants/                  # Shared constants (headers, errors, pagination)
@@ -52,7 +53,7 @@ lib-commons/
 │   ├── safe/                       # Panic-free math/regex/slice operations
 │   ├── secretsmanager/             # M2M/external credential custody (AWS Secrets Manager or Vault KV v2)
 │   ├── security/                   # Sensitive field detection and handling
-│   ├── server/                     # Graceful shutdown and lifecycle (ServerManager)
+│   ├── server/                     # Graceful shutdown, lifecycle (ServerManager) and the admin HTTP app
 │   ├── shell/                      # Makefile includes and shell utilities
 │   ├── tenant-manager/             # Multi-tenant database-per-tenant isolation
 │   │   ├── cache/                  # In-memory tenant cache with LRU eviction
@@ -452,6 +453,7 @@ if redaction.IsSensitiveField(fieldName) {
 
 ### Environment Variables
 
+- Never read a build identity from the environment: version, revision and build time are injected at link time and read through `commons/buildinfo` (see the README section "Build identity"). `VERSION` is legacy and removed in v8
 - Use `LOG_OBFUSCATION_DISABLED` to control HTTP body obfuscation (default: disabled)
 - Sensitive field detection uses `commons/security.IsSensitiveField()` with a hardcoded set
 - Document required environment variables

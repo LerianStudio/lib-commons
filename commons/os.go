@@ -154,7 +154,12 @@ var (
 // InitLocalEnvConfig load a .env file to set up local environment vars.
 // It's called once per application process.
 // Version and environment are always logged in a plain startup banner format.
+//
+// The VERSION line of that banner is legacy and is removed in v8: the runtime
+// version is compiled in and read through commons/buildinfo, never from the
+// environment. Loading the .env file stays.
 func InitLocalEnvConfig() *LocalEnvConfig {
+	// Legacy banner value, superseded by buildinfo.Get().Version. Removed in v8.
 	version := GetenvOrDefault("VERSION", "NO-VERSION")
 	envName := GetenvOrDefault("ENV_NAME", "local")
 
