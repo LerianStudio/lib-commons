@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strconv"
@@ -497,8 +498,9 @@ func WithFingerprintScopeProvider(provider FingerprintScopeProvider) Option {
 // response carries "Connection: close" so the next request on the connection is
 // not parsed from the middle of this one's body. A pooled client dials again and
 // loses no request. A body fasthttp had already buffered in full before the
-// chain started keeps its connection instead; the package documentation states
-// the rule and the bound in full.
+// chain started keeps its connection instead, and so does one this provider
+// read into memory and re-seated as a rewindable reader; the package
+// documentation states the rule and the bound in full.
 //
 // A provider error refuses the request with 503 "IDEMPOTENCY_UNAVAILABLE", or
 // the [WithUnavailableHandler] document: nothing has run, so retrying is the
@@ -1012,19 +1014,33 @@ const fasthttpStreamPreRead = 8 << 10
 // therefore retires the connection too, and correctly: nothing read that upload
 // either.
 //
-// It stays silent on the three cases that leave nothing behind: the handler ran
-// and owns the body, c.Body() already drained the stream, or fasthttp had
-// already lifted the whole declared body out of the connection before the chain
-// started (see [fasthttpStreamPreRead]) — a stream by fasthttp's accounting, but
-// an empty one, and retiring there charges a pooled client a fresh handshake per
-// duplicate while protecting nothing. A chunked body (Content-Length -1) is
-// never that case: none of it is pre-read.
+// It stays silent on the four cases that leave nothing behind: the handler ran
+// and owns the body, c.Body() already drained the stream, the body was re-seated
+// as a rewindable reader, or fasthttp had already lifted the whole declared body
+// out of the connection before the chain started (see [fasthttpStreamPreRead]) —
+// a stream by fasthttp's accounting, but an empty one, and retiring there charges
+// a pooled client a fresh handshake per duplicate while protecting nothing. A
+// chunked body (Content-Length -1) is never that case: none of it is pre-read.
+//
+// The rewindable case is the one a [WithFingerprintProvider] creates. fasthttp's
+// socket-backed stream is an unexported *requestStream and is NOT an io.Seeker,
+// so a stream that can seek cannot be the connection: it is a provider's
+// re-seated buffer, or a spool file, and every byte is already off the wire.
+// Two alternatives were rejected: a signal the provider sets is a second
+// contract every provider must remember to honour, and draining here is exactly
+// the cost the option exists to avoid. The residual gap is a provider that
+// re-seats a TRUNCATED reader and leaves the rest on the socket — that provider
+// is already broken, because the handler below it reads a truncated body.
 func (m *Middleware) retireUnreadRequestStream(c fiber.Ctx) {
 	if ran, _ := c.Locals(chainRanKey{}).(bool); ran {
 		return
 	}
 
 	if !c.Request().IsBodyStream() {
+		return
+	}
+
+	if _, rewindable := c.Request().BodyStream().(io.Seeker); rewindable {
 		return
 	}
 

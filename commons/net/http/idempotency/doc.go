@@ -84,7 +84,11 @@
 // does with an unread body and what a pooled client understands: it dials again,
 // one reconnect per answer the middleware gave itself, and loses no request.
 // Draining instead would mean reading up to the route's body limit — a gigabyte
-// on the upload routes this option exists for — to answer a 409.
+// on the upload routes this option exists for — to answer a 409. A body
+// re-seated as a rewindable reader (an io.Seeker, which the connection-backed
+// stream is not) holds nothing in the connection and keeps it: a provider that
+// read the upload into memory and put it back already took every byte off the
+// wire.
 //
 // "Large" is the whole cost. Fiber's StreamRequestBody is an APP-WIDE setting,
 // so a service that turns it on for one upload route serves every route that

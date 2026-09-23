@@ -731,6 +731,41 @@ func TestFingerprintProvider_StreamedDuplicate_LeavesTheConnectionUsable(t *test
 				"and no request is lost to it")
 	})
 
+	t.Run("a_re_seated_provider_keeps_the_connection", func(t *testing.T) {
+		t.Parallel()
+
+		// The provider that drains the wire and hands the bytes back is the
+		// shape a service reaches for when the fingerprint must cover the
+		// payload: read the stream once, re-seat it so the handler still finds
+		// one. Nothing is left in the connection after it runs — every byte is
+		// in memory — so retiring the connection on the duplicates buys
+		// nothing and costs a handshake per retry.
+		app, called := newApp(t, WithFingerprintProvider(func(c fiber.Ctx) ([]byte, error) {
+			raw, err := io.ReadAll(c.Request().BodyStream())
+			if err != nil {
+				return nil, err
+			}
+
+			c.Request().SetBodyStream(bytes.NewReader(raw), len(raw))
+
+			return raw, nil
+		}))
+
+		client := newKeepAliveConn(t, serveStreamProbe(t, app))
+
+		for i := 1; i <= 3; i++ {
+			status, _, retired := client.post(key, body)
+
+			require.Equal(t, http.StatusCreated, status, "request %d must be answered", i)
+			assert.False(t, retired,
+				"the provider read the whole body into memory and re-seated it as a rewindable "+
+					"reader, so request %d holds nothing in the connection", i)
+		}
+
+		assert.Equal(t, int32(1), called.Load(), "the upload must be handled exactly once")
+		assert.Equal(t, 1, client.dials, "one connection must carry all three requests")
+	})
+
 	t.Run("without_provider_the_connection_is_reused", func(t *testing.T) {
 		t.Parallel()
 
