@@ -13,10 +13,12 @@ import (
 const testPurpose = "idempotency-body"
 
 var (
-	secretA = []byte("operator secret A, any length or format")
-	secretB = []byte("operator secret B")
-	secretC = []byte("c")
-	testAAD = []byte("IDEMBODY1")
+	secretA = []byte("operator secret A, any format, 32+ bytes")
+	secretB = []byte("operator secret B, any format, 32+ bytes")
+	secretC = []byte("operator secret C, any format, 32+ bytes")
+	// shortSecret is one byte under the minimum.
+	shortSecret = []byte("0123456789012345678901234567890")
+	testAAD     = []byte("IDEMBODY1")
 )
 
 func newTestSealer(t *testing.T, secret []byte) *Sealer {
@@ -40,6 +42,7 @@ func TestNewSealer_Validation(t *testing.T) {
 		{name: "empty purpose", purpose: "", secret: secretA, wantErr: ErrEmptyPurpose},
 		{name: "nil secret", purpose: testPurpose, secret: nil, wantErr: ErrEmptySecret},
 		{name: "empty secret", purpose: testPurpose, secret: []byte{}, wantErr: ErrEmptySecret},
+		{name: "31-byte secret", purpose: testPurpose, secret: shortSecret, wantErr: ErrSecretTooShort},
 		{name: "valid", purpose: testPurpose, secret: secretA},
 	}
 
@@ -276,6 +279,7 @@ func TestSealer_RotateEmptyKeepsKeys(t *testing.T) {
 
 	require.ErrorIs(t, s.Rotate(nil), ErrEmptySecret)
 	require.ErrorIs(t, s.Rotate([]byte{}), ErrEmptySecret)
+	require.ErrorIs(t, s.Rotate(shortSecret), ErrSecretTooShort)
 
 	_, err = s.Open(underA, testAAD)
 	require.NoError(t, err, "previous generation survives a refused rotation")

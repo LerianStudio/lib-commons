@@ -7,9 +7,9 @@
 // InitializeCipher must be called before Encrypt or Decrypt.
 //
 // The Sealer type seals raw byte payloads at rest:
-//   - AES-256-GCM under a key derived from an operator secret of any length
-//     by HKDF-SHA256 (salt nil, info = purpose), so one secret can serve
-//     several purposes without key reuse
+//   - AES-256-GCM under a key derived from an operator secret of any format,
+//     at least 32 bytes, by HKDF-SHA256 (salt nil, info = purpose), so one
+//     secret can serve several purposes without key reuse
 //   - caller-supplied additional data bound to every ciphertext
 //   - output is nonce || ciphertext, no encoding
 //   - Rotate installs a new secret while payloads sealed under the previous
