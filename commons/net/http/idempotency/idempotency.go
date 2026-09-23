@@ -1,6 +1,7 @@
 package idempotency
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strconv"
@@ -73,6 +75,7 @@ var (
 	errResponseTooLarge      = errors.New("idempotency replay response exceeds configured limit")
 	errEmptyEncodedResponse  = errors.New("idempotency response codec produced no bytes")
 	errInvalidReplayResponse = errors.New("idempotency replay response is invalid")
+	errRequestBodyUnreadable = errors.New("idempotency request body stream failed to read")
 	errFenceKeyMissing       = errors.New("idempotency fence: the request carries no idempotency key")
 	errFenceTenantMissing    = errors.New("idempotency fence: the request carries no tenant")
 	errFenceKeyTooLong       = errors.New("idempotency fence: idempotency key exceeds the configured length")
@@ -505,10 +508,15 @@ func WithFingerprintScopeProvider(provider FingerprintScopeProvider) Option {
 //
 // Two consumer facts make the raw body unusable on some routes, and both need
 // this option. A route served with Fiber's StreamRequestBody hands the handler
-// a live body stream; reading the body to fingerprint it drains that stream
-// into memory and closes it, so every upload is buffered whole and the
-// handler's streaming branch is unreachable. And a multipart encoder picks a
-// fresh random boundary per request, so a byte-identical logical retry never
+// a live body stream; without this option the middleware buffers the whole
+// upload to fingerprint it and re-seats it as an in-memory stream for the
+// handler, and nothing bounds that buffer — the route's BodyLimit does not,
+// because under streaming fasthttp hands an oversize body over as a stream
+// rather than refusing it. This option is the only bound available there. A
+// body stream that fails to read is refused as unavailable before the handler
+// runs. And a
+// multipart encoder picks a fresh random boundary per request, so a
+// byte-identical logical retry never
 // matches its own stored fingerprint and is refused
 // "IDEMPOTENCY_KEY_REUSE" — the published "retry with the same key" contract
 // cannot be honoured on any multipart route.
@@ -522,8 +530,9 @@ func WithFingerprintScopeProvider(provider FingerprintScopeProvider) Option {
 // response carries "Connection: close" so the next request on the connection is
 // not parsed from the middle of this one's body. A pooled client dials again and
 // loses no request. A body fasthttp had already buffered in full before the
-// chain started keeps its connection instead; the package documentation states
-// the rule and the bound in full.
+// chain started keeps its connection instead, and so does one this provider
+// read into memory and re-seated as a rewindable reader; the package
+// documentation states the rule and the bound in full.
 //
 // A provider error refuses the request with 503 "IDEMPOTENCY_UNAVAILABLE", or
 // the [WithUnavailableHandler] document: nothing has run, so retrying is the
@@ -1055,8 +1064,9 @@ const fasthttpStreamPreRead = 8 << 10
 // under the same key gets its replay and loses the pooled connection under it.
 //
 // Closing is what net/http does with an unread body and what a client's pool
-// understands. Draining instead would mean reading up to the route's body limit,
-// a gigabyte on the upload routes this option exists for, to answer a 409.
+// understands. Draining instead would mean reading whatever the client is still
+// sending, a gigabyte on the upload routes this option exists for, to answer a
+// 409.
 //
 // The rule is the three checks below. It fires whenever this middleware answered
 // WITHOUT running the handler and the connection still holds part of the body. A
@@ -1068,19 +1078,35 @@ const fasthttpStreamPreRead = 8 << 10
 // therefore retires the connection too, and correctly: nothing read that upload
 // either.
 //
-// It stays silent on the three cases that leave nothing behind: the handler ran
-// and owns the body, c.Body() already drained the stream, or fasthttp had
-// already lifted the whole declared body out of the connection before the chain
-// started (see [fasthttpStreamPreRead]) — a stream by fasthttp's accounting, but
-// an empty one, and retiring there charges a pooled client a fresh handshake per
-// duplicate while protecting nothing. A chunked body (Content-Length -1) is
-// never that case: none of it is pre-read.
+// It stays silent on the four cases that leave nothing behind: the handler ran
+// and owns the body, c.Body() already drained the stream, the body was re-seated
+// as a rewindable reader, or fasthttp had already lifted the whole declared body
+// out of the connection before the chain started (see [fasthttpStreamPreRead]) —
+// a stream by fasthttp's accounting, but an empty one, and retiring there charges
+// a pooled client a fresh handshake per duplicate while protecting nothing. A
+// chunked body (Content-Length -1) is never that case: none of it is pre-read.
+//
+// The rewindable case is what a re-seat leaves: the default fingerprint creates
+// one on every streamed keyed request (see [bufferedIdentity]), and a
+// [WithFingerprintProvider] that reads the upload into memory creates the same
+// thing. fasthttp's socket-backed stream is an unexported *requestStream and is
+// NOT an io.Seeker, so a stream that can seek cannot be the connection: it is a
+// re-seated buffer, or a spool file, and every byte is already off the wire.
+// Two alternatives were rejected: a signal the provider sets is a second
+// contract every provider must remember to honour, and draining here is exactly
+// the cost the option exists to avoid. The residual gap is a provider that
+// re-seats a TRUNCATED reader and leaves the rest on the socket — that provider
+// is already broken, because the handler below it reads a truncated body.
 func (m *Middleware) retireUnreadRequestStream(c fiber.Ctx) {
 	if ran, _ := c.Locals(chainRanKey{}).(bool); ran {
 		return
 	}
 
 	if !c.Request().IsBodyStream() {
+		return
+	}
+
+	if _, rewindable := c.Request().BodyStream().(io.Seeker); rewindable {
 		return
 	}
 
@@ -1440,7 +1466,12 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 
 	fingerprint, err := m.resolveFingerprint(c)
 	if err != nil {
-		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: fingerprint provider failed", "error", err)
+		msg := "idempotency: fingerprint provider failed"
+		if errors.Is(err, errRequestBodyUnreadable) {
+			msg = "idempotency: request body unreadable, refusing before the handler"
+		}
+
+		m.logger.Log(c.Context(), obs.LevelWarn, msg, "error", err)
 
 		// Nothing has run yet, and the request's identity is unknown: it must
 		// neither proceed unprotected nor be told to reconcile.
@@ -1531,9 +1562,12 @@ func (m *Middleware) resolveFingerprint(c fiber.Ctx) (string, error) {
 			return "", err
 		}
 	} else {
-		// Only reachable without a provider: c.Body() drains and closes a
-		// streamed request body, which is the defect the provider exists for.
-		identity = c.Body()
+		var err error
+
+		identity, err = bufferedIdentity(c)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	if m.fingerprintScopeProvider != nil {
@@ -1541,6 +1575,83 @@ func (m *Middleware) resolveFingerprint(c fiber.Ctx) (string, error) {
 	}
 
 	return requestFingerprint(c.Method(), c.Path(), identity), nil
+}
+
+// bufferedIdentity reads the whole request body for the digest and, when the
+// server handed this request over as a stream, puts those bytes back as an
+// in-memory one so the handler below still finds a readable body.
+//
+// Reading the body is what fasthttp answers by draining the request stream into
+// memory and closing it, and under Fiber's StreamRequestBody the handler is
+// then handed nothing. The consumer that measured it runs huma behind
+// humafiber, whose BodyReader() branches on the SERVER's StreamRequestBody
+// setting rather than on this request's state: it returns the now-nil
+// BodyStream() and never falls back to c.Body(), so huma reads an empty body
+// and answers 400 "request body is required" to every KEYED request carrying a
+// payload while the same request without a key succeeds. Re-seating is what
+// keeps the default fingerprint usable on a streamed route at all; a
+// [WithFingerprintProvider] is still what avoids the buffering.
+//
+// Refusing such a route at construction is not available: [New] and
+// [Middleware.Check] never see the *fiber.App, and StreamRequestBody is only
+// reachable per request through c.App(). A per-request refusal would turn a
+// route that buffers but works into a 500.
+//
+// The stream is read here and not through c.Body(): fasthttp's Request.Body()
+// swallows a stream read error and leaves its text in the body buffer, which
+// would then be fingerprinted and re-seated as the request body. A stream that
+// fails to read, or ends short of the length the client declared, returns
+// [errRequestBodyUnreadable] instead, so the request is
+// refused before the handler; the half-read stream is left in place, and
+// retireUnreadRequestStream ends the connection it came from.
+func bufferedIdentity(c fiber.Ctx) ([]byte, error) {
+	if !c.Request().IsBodyStream() {
+		// Re-seating here would hand a handler that was never given a stream
+		// one anyway, which is the same defect in the other direction.
+		return c.Body(), nil
+	}
+
+	read, err := io.ReadAll(c.Request().BodyStream())
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errRequestBodyUnreadable, err)
+	}
+
+	// fasthttp's connection-backed stream returns the socket's io.EOF unchanged
+	// on a declared-length body, so a client that died mid-upload reads as a
+	// clean, short body. Only the declared length can tell the two apart.
+	if declared := c.Request().Header.ContentLength(); declared >= 0 && len(read) != declared {
+		return nil, fmt.Errorf("%w: read %d of %d declared bytes", errRequestBodyUnreadable, len(read), declared)
+	}
+
+	// SetBodyRaw closes the drained stream, so c.Body() below reads these bytes
+	// and never the stream again. The header is untouched: the framing check
+	// further down still sees what the client declared.
+	c.Request().SetBodyRaw(read)
+
+	// The digest covers c.Body(), which Fiber decompresses under
+	// Content-Encoding, exactly as before, so no stored fingerprint moves. What
+	// goes back on the stream is read itself, the bytes the socket carried.
+	// Neither is copied: read is a fresh slice io.ReadAll allocated, never
+	// fasthttp's pooled body buffer, and SetBodyStream only drops the reference
+	// to it. Without Content-Encoding the two are the same bytes, so a keyed
+	// streamed upload is held once.
+	identity := c.Body()
+
+	// The handler must observe the framing the client sent. SetBodyStream with
+	// a length declares a Content-Length and deletes Transfer-Encoding, so a
+	// chunked upload would reach a handler that branches on "no declared
+	// length, stream this straight to object storage" as a sized one, and take
+	// the buffering branch on every keyed request and the streaming branch only
+	// on unkeyed ones. A negative size keeps the request chunked; fasthttp then
+	// reads the reader to EOF, which a *bytes.Reader reports at the same byte.
+	size := len(read)
+	if c.Request().Header.ContentLength() < 0 {
+		size = -1
+	}
+
+	c.Request().SetBodyStream(bytes.NewReader(read), size)
+
+	return identity, nil
 }
 
 func (m *Middleware) resolveTTL(c fiber.Ctx) (time.Duration, error) {

@@ -72,9 +72,15 @@
 // application supplies, and is required on two shapes of route the raw body
 // cannot serve. Under Fiber's StreamRequestBody the handler receives a live body
 // stream, and reading the body to fingerprint it drains that stream into memory
-// and closes it, so every upload is buffered whole and the handler's streaming
-// branch is unreachable; with a provider the middleware never calls c.Body() and
-// the stream reaches the handler intact. And a multipart encoder picks a fresh
+// and closes it: without a provider the middleware buffers the whole upload and
+// re-seats it as an in-memory stream for the handler, and NOTHING bounds that
+// buffer. The route's BodyLimit does not: under streaming fasthttp hands an
+// oversize body over as a stream rather than refusing it, and the stream
+// enforces no total of its own, so the ceiling is whatever the client chooses to
+// send. A body stream that fails to read is refused as unavailable before the
+// handler runs. A provider is the only bound available on such a route — with one the
+// middleware never calls c.Body() and the stream reaches the handler intact and
+// unbuffered. And a multipart encoder picks a fresh
 // random boundary per request, so a byte-identical logical retry never matches
 // its own stored fingerprint and is refused "IDEMPOTENCY_KEY_REUSE"; a provider
 // over the declared part names, filenames and sizes is stable across that
@@ -91,8 +97,13 @@
 // from the middle of this one's body, then resets it. Closing is what net/http
 // does with an unread body and what a pooled client understands: it dials again,
 // one reconnect per answer the middleware gave itself, and loses no request.
-// Draining instead would mean reading up to the route's body limit — a gigabyte
-// on the upload routes this option exists for — to answer a 409.
+// Draining instead would mean reading whatever the client is still sending — a
+// gigabyte on the upload routes this option exists for — to answer a 409. A body
+// re-seated as a rewindable reader (an io.Seeker, which the connection-backed
+// stream is not) holds nothing in the connection and keeps it: whatever read the
+// upload into memory and put it back — the default fingerprint on every streamed
+// keyed request, or a provider that buffers — already took every byte off the
+// wire.
 //
 // "Large" is the whole cost. Fiber's StreamRequestBody is an APP-WIDE setting,
 // so a service that turns it on for one upload route serves every route that
@@ -101,7 +112,8 @@
 // the chain starts. A declared body within that bound leaves nothing behind and
 // keeps its connection, so an ordinary small mutation retried under the same key
 // is replayed on the connection it arrived on. Only a body past that bound, or a
-// chunked one (no Content-Length, nothing pre-read), is retired.
+// chunked one (no Content-Length, nothing pre-read), is retired, and then only
+// when nothing put it back.
 //
 // The default prefix is "idempotency:" and can be overridden via [WithKeyPrefix].
 // This namespacing convention is consistent with other lib-commons packages that
