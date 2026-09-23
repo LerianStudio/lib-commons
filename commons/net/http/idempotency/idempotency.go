@@ -483,10 +483,12 @@ func WithFingerprintScopeProvider(provider FingerprintScopeProvider) Option {
 // Two consumer facts make the raw body unusable on some routes, and both need
 // this option. A route served with Fiber's StreamRequestBody hands the handler
 // a live body stream; without this option the middleware buffers the whole
-// upload to fingerprint it, bounded only by the route's BodyLimit, and re-seats
-// it as an in-memory stream for the handler — this option is what avoids that
-// buffering. And a multipart encoder picks a
-// fresh random boundary per request, so a byte-identical logical retry never
+// upload to fingerprint it and re-seats it as an in-memory stream for the
+// handler, and nothing bounds that buffer — the route's BodyLimit does not,
+// because under streaming fasthttp hands an oversize body over as a stream
+// rather than refusing it. This option is the only bound available there. And a
+// multipart encoder picks a fresh random boundary per request, so a
+// byte-identical logical retry never
 // matches its own stored fingerprint and is refused
 // "IDEMPOTENCY_KEY_REUSE" — the published "retry with the same key" contract
 // cannot be honoured on any multipart route.
@@ -1003,8 +1005,9 @@ const fasthttpStreamPreRead = 8 << 10
 // under the same key gets its replay and loses the pooled connection under it.
 //
 // Closing is what net/http does with an unread body and what a client's pool
-// understands. Draining instead would mean reading up to the route's body limit,
-// a gigabyte on the upload routes this option exists for, to answer a 409.
+// understands. Draining instead would mean reading whatever the client is still
+// sending, a gigabyte on the upload routes this option exists for, to answer a
+// 409.
 //
 // The rule is the three checks below. It fires whenever this middleware answered
 // WITHOUT running the handler and the connection still holds part of the body. A
@@ -1024,9 +1027,11 @@ const fasthttpStreamPreRead = 8 << 10
 // a pooled client a fresh handshake per duplicate while protecting nothing. A
 // chunked body (Content-Length -1) is never that case: none of it is pre-read.
 //
-// The rewindable case is the one a [WithFingerprintProvider] creates. fasthttp's
-// socket-backed stream is an unexported *requestStream and is NOT an io.Seeker,
-// so a stream that can seek cannot be the connection: it is a provider's
+// The rewindable case is what a re-seat leaves: the default fingerprint creates
+// one on every streamed keyed request (see [bufferedIdentity]), and a
+// [WithFingerprintProvider] that reads the upload into memory creates the same
+// thing. fasthttp's socket-backed stream is an unexported *requestStream and is
+// NOT an io.Seeker, so a stream that can seek cannot be the connection: it is a
 // re-seated buffer, or a spool file, and every byte is already off the wire.
 // Two alternatives were rejected: a signal the provider sets is a second
 // contract every provider must remember to honour, and draining here is exactly
@@ -1484,25 +1489,62 @@ func bufferedIdentity(c fiber.Ctx) []byte {
 
 	identity := c.Body()
 	if !streamed {
+		// Re-seating here would hand a handler that was never given a stream
+		// one anyway, which is the same defect in the other direction.
 		return identity
 	}
 
-	// Both copies are mandatory. SetBodyStream calls ResetBody, which returns
-	// the request's body buffer to fasthttp's pool where a concurrent request
-	// may claim and overwrite it — and until it does, both identity and the raw
-	// bytes below point into that buffer, while the digest is computed after
-	// the re-seat.
-	//
 	// What goes back on the stream is c.Request().Body(), the bytes the socket
 	// would have given the handler, and NOT c.Body(), which Fiber decompresses
 	// under Content-Encoding. The digest keeps using c.Body() exactly as
-	// before, so no stored fingerprint moves.
-	raw := bytes.Clone(c.Request().Body())
-	identity = bytes.Clone(identity)
+	// before, so no stored fingerprint moves. Both are detached before the
+	// re-seat frees the buffer they live in.
+	identity, raw := detachBody(identity, c.Request().Body())
 
-	c.Request().SetBodyStream(bytes.NewReader(raw), len(raw))
+	// The handler must observe the framing the client sent. SetBodyStream with
+	// a length declares a Content-Length and deletes Transfer-Encoding, so a
+	// chunked upload would reach a handler that branches on "no declared
+	// length, stream this straight to object storage" as a sized one, and take
+	// the buffering branch on every keyed request and the streaming branch only
+	// on unkeyed ones. A negative size keeps the request chunked; fasthttp then
+	// reads the reader to EOF, which a *bytes.Reader reports at the same byte.
+	size := len(raw)
+	if c.Request().Header.ContentLength() < 0 {
+		size = -1
+	}
+
+	c.Request().SetBodyStream(bytes.NewReader(raw), size)
 
 	return identity
+}
+
+// detachBody copies the digest bytes and the raw body out of the buffer
+// fasthttp is about to reclaim, with one allocation when they are the same
+// bytes.
+//
+// Copying is mandatory: [fasthttp.Request.SetBodyStream] calls ResetBody, which
+// returns the request's body buffer to fasthttp's pool where a concurrent
+// request claims and overwrites it, while both the re-seated reader and the
+// digest still read from it — the digest is computed after the re-seat. One
+// copy serves both whenever identity and raw are the same bytes, which is every
+// request without a Content-Encoding header: Fiber returns the request body
+// itself there, and only decompression gives c.Body() storage of its own.
+// Cloning twice on that path doubled the memory a keyed streamed upload holds,
+// for nothing.
+//
+// Neither returned slice shares memory with identity or raw, and a nil or empty
+// input returns nil.
+func detachBody(identity, raw []byte) (detachedIdentity, detachedRaw []byte) {
+	detachedRaw = bytes.Clone(raw)
+
+	// Same bytes in memory, not merely equal ones: only the copy matters here,
+	// and comparing content would spend a pass over the whole upload to learn
+	// nothing about where it lives.
+	if len(identity) == len(raw) && (len(raw) == 0 || &identity[0] == &raw[0]) {
+		return detachedRaw, detachedRaw
+	}
+
+	return bytes.Clone(identity), detachedRaw
 }
 
 func (m *Middleware) resolveTTL(c fiber.Ctx) (time.Duration, error) {
