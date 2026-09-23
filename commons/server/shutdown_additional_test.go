@@ -3,6 +3,7 @@
 package server_test
 
 import (
+	"bufio"
 	"io"
 	"net"
 	"net/http"
@@ -734,4 +735,87 @@ func TestFiberAdminDrainIsBoundedByItsBudget(t *testing.T) {
 
 	assert.GreaterOrEqual(t, elapsed, budget-100*time.Millisecond, "the hung request is waited on for the budget")
 	assert.Less(t, elapsed, budget+800*time.Millisecond, "the admin drain must end with its budget")
+}
+
+// TestFiberAbandonedConnectionKeepsServingPastTheDeadline pins a documented
+// limit, not a wish: past the drain deadline fasthttp abandons an active
+// Fiber connection instead of closing it, so the released request is answered
+// without "Connection: close" and the same keep-alive connection serves a
+// further request after the manager has returned. If a fasthttp change starts
+// closing it, this test fails and the documentation must follow.
+func TestFiberAbandonedConnectionKeepsServingPastTheDeadline(t *testing.T) {
+	const budget = time.Second
+
+	mainAddr := reserveFreeAddr(t)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+
+	app := hangingFiberApp(entered, release)
+	app.Get("/probe", func(c fiber.Ctx) error { return c.SendString("late") })
+
+	shutdown := make(chan struct{})
+
+	sm := server.NewServerManager(nil, nil, nil).
+		WithHTTPServer(app, mainAddr).
+		WithShutdownChannel(shutdown).
+		WithShutdownTimeout(budget)
+
+	done := runManager(t, sm)
+
+	waitForHTTPListening(t, mainAddr, 5*time.Second)
+
+	conn, err := net.Dial("tcp", mainAddr)
+	require.NoError(t, err)
+
+	defer func() { _ = conn.Close() }()
+
+	require.NoError(t, conn.SetDeadline(time.Now().Add(10*time.Second)))
+
+	reader := bufio.NewReader(conn)
+	send := func(path string) {
+		t.Helper()
+
+		_, err := conn.Write([]byte("GET " + path + " HTTP/1.1\r\nHost: " + mainAddr + "\r\n\r\n"))
+		require.NoError(t, err)
+	}
+	read := func() (*http.Response, string) {
+		t.Helper()
+
+		resp, err := http.ReadResponse(reader, nil)
+		require.NoError(t, err)
+
+		defer func() { _ = resp.Body.Close() }()
+
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+
+		return resp, string(body)
+	}
+
+	send("/hang")
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request did not reach its handler within 5s")
+	}
+
+	start := time.Now()
+	close(shutdown)
+
+	elapsed := awaitManager(t, done, start)
+	assert.Less(t, elapsed, budget+800*time.Millisecond)
+
+	close(release)
+
+	resp, body := read()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "released", body)
+	assert.False(t, resp.Close, "the abandoned connection is not told to close")
+
+	send("/probe")
+
+	resp, body = read()
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "the abandoned connection still serves after the manager returned")
+	assert.Equal(t, "late", body)
 }

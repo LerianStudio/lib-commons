@@ -137,6 +137,10 @@ func NewServerManager(
 // At shutdown its drain is bounded by shutdownTimeout, shared with the
 // additional stdlib server when one is configured: past the deadline the
 // manager stops waiting for in-flight requests and proceeds.
+// Past the deadline an active Fiber connection is abandoned, not closed:
+// fasthttp neither closes nor refuses it, so it can serve further keep-alive
+// requests until the process exits. Shutdown hooks must tolerate a late
+// request against resources they have already closed.
 //
 // Mutually exclusive with WithStdlibHTTPServer: configuring both causes
 // StartWithGracefulShutdownWithError to return ErrConflictingHTTPServers
@@ -169,6 +173,11 @@ func (sm *ServerManager) WithHTTPServer(app *fiber.App, address string) *ServerM
 // gRPC servers finish their in-flight work, and closes last, its drain bounded
 // by its own shutdownTimeout. A service that wants /readyz to report 503
 // during the drain does so in its own handler.
+//
+// Past the deadline an active Fiber connection is abandoned, not closed:
+// fasthttp neither closes nor refuses it, so it can serve further keep-alive
+// requests until the process exits. Shutdown hooks must tolerate a late
+// request against resources they have already closed.
 func (sm *ServerManager) WithAdminHTTPServer(app *fiber.App, address string) *ServerManager {
 	if sm == nil {
 		return nil

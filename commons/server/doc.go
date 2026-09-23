@@ -14,6 +14,9 @@
 // app follow with their own budgets. For stdlib servers, a zero
 // ReadHeaderTimeout is upgraded to a safe default before launch so callers do
 // not accidentally expose Slowloris-prone listeners. Every HTTP drain, Fiber
-// and stdlib alike, is bounded by shutdownTimeout. Shutdown hooks run after
+// and stdlib alike, is bounded by shutdownTimeout; past the deadline an active
+// Fiber connection is abandoned, not closed, and can serve further keep-alive
+// requests until the process exits, so shutdown hooks must tolerate a late
+// request against closed resources. Shutdown hooks run after
 // HTTP/gRPC drain and before telemetry/logger/license shutdown.
 package server
