@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -22,7 +24,7 @@ import (
 )
 
 // ErrNoServersConfigured indicates no servers were configured for the manager.
-var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServer(), WithStdlibHTTPServer(), WithStdlibHTTPListener(), WithGRPCServer(), or WithAdminHTTPServer()")
+var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServer(), WithStdlibHTTPServer(), WithStdlibHTTPListener(), WithAdditionalStdlibHTTPServer(), WithAdditionalStdlibHTTPListener(), WithGRPCServer(), or WithAdminHTTPServer()")
 
 // ErrConflictingHTTPServers indicates that Fiber HTTP and stdlib HTTP were both
 // configured on the same ServerManager. WithHTTPServer(*fiber.App) is mutually
@@ -35,16 +37,36 @@ var ErrConflictingHTTPServers = errors.New("conflicting HTTP servers configured:
 // so the admin port must have an address of its own.
 var ErrAdminAddressConflict = errors.New("conflicting HTTP addresses configured: WithAdminHTTPServer() needs an address different from the main HTTP server")
 
+// ErrAdditionalHTTPAddressConflict indicates the additional stdlib HTTP server
+// was configured on the same address as another server of the manager (main
+// HTTP, admin HTTP or gRPC). Both would bind the same socket, so the additional
+// server must have an address of its own.
+var ErrAdditionalHTTPAddressConflict = errors.New("conflicting HTTP addresses configured: WithAdditionalStdlibHTTPServer() needs an address different from every other server")
+
+// ErrAdditionalHTTPServerAlreadyConfigured indicates the additional stdlib
+// HTTP slot was given a server while it already held one. The slot holds a
+// single server by design; a second stdlib surface goes on the main slot.
+var ErrAdditionalHTTPServerAlreadyConfigured = errors.New("additional HTTP server already configured: WithAdditionalStdlibHTTPServer() and WithAdditionalStdlibHTTPListener() accept one server; put another stdlib server on the main slot")
+
+// ErrAdditionalHTTPHandlerMissing indicates the additional stdlib HTTP server
+// has a nil Handler. net/http would serve http.DefaultServeMux, exposing
+// whatever any imported package registered there on a channel-facing port.
+var ErrAdditionalHTTPHandlerMissing = errors.New("additional HTTP server has no handler: set Handler on the server given to WithAdditionalStdlibHTTPServer() or WithAdditionalStdlibHTTPListener()")
+
 const defaultReadHeaderTimeout = 5 * time.Second
 
 // ServerManager handles the graceful shutdown of multiple server types.
-// It can manage HTTP servers (either *fiber.App or stdlib *http.Server, but
-// not both), gRPC servers, or any compatible combination simultaneously.
+// It can manage a main HTTP server (either *fiber.App or stdlib *http.Server,
+// but not both), an additional stdlib *http.Server, gRPC servers, the admin
+// app, or any compatible combination simultaneously.
 type ServerManager struct {
 	httpServer          *fiber.App
 	adminServer         *fiber.App
 	stdlibHTTPServer    *http.Server
 	stdlibHTTPListener  net.Listener
+	additionalHTTP      *http.Server
+	additionalListener  net.Listener
+	additionalReplaced  bool
 	grpcServer          *grpc.Server
 	licenseClient       *license.ManagerShutdown
 	telemetry           obs.TelemetryShutdowner
@@ -114,6 +136,14 @@ func NewServerManager(
 
 // WithHTTPServer configures a Fiber HTTP server for the ServerManager.
 //
+// At shutdown its drain is bounded by shutdownTimeout, shared with the
+// additional stdlib server when one is configured: past the deadline the
+// manager stops waiting for in-flight requests and proceeds.
+// Past the deadline an active Fiber connection is abandoned, not closed:
+// fasthttp neither closes nor refuses it, so it can serve further keep-alive
+// requests until the process exits. Shutdown hooks must tolerate a late
+// request against resources they have already closed.
+//
 // Mutually exclusive with WithStdlibHTTPServer: configuring both causes
 // StartWithGracefulShutdownWithError to return ErrConflictingHTTPServers
 // before any goroutine is launched.
@@ -142,8 +172,14 @@ func (sm *ServerManager) WithHTTPServer(app *fiber.App, address string) *ServerM
 //
 // During shutdown the admin app is the LAST server to drain: it keeps
 // answering, with whatever the service's handlers return, while the API and
-// gRPC servers finish their in-flight work, and closes last. A service that
-// wants /readyz to report 503 during the drain does so in its own handler.
+// gRPC servers finish their in-flight work, and closes last, its drain bounded
+// by its own shutdownTimeout. A service that wants /readyz to report 503
+// during the drain does so in its own handler.
+//
+// Past the deadline an active Fiber connection is abandoned, not closed:
+// fasthttp neither closes nor refuses it, so it can serve further keep-alive
+// requests until the process exits. Shutdown hooks must tolerate a late
+// request against resources they have already closed.
 func (sm *ServerManager) WithAdminHTTPServer(app *fiber.App, address string) *ServerManager {
 	if sm == nil {
 		return nil
@@ -222,6 +258,88 @@ func (sm *ServerManager) WithStdlibHTTPListener(srv *http.Server, listener net.L
 	return sm
 }
 
+// WithAdditionalStdlibHTTPServer configures a second stdlib *http.Server, on
+// its own port, beside whatever else the manager runs: a Fiber or stdlib main
+// HTTP server, gRPC, and the admin app. It is the slot for a process that
+// serves two channel-facing surfaces, one of them on plain net/http (a SOAP
+// listener beside a Fiber API, for instance).
+//
+// It behaves like WithStdlibHTTPServer in every respect but three:
+//   - It is not subject to ErrConflictingHTTPServers: it composes with either
+//     main HTTP variant.
+//   - A nil Handler is refused with ErrAdditionalHTTPHandlerMissing instead of
+//     falling back to http.DefaultServeMux, which would expose whatever any
+//     imported package registered there. (The main stdlib slot keeps the
+//     net/http fallback.)
+//   - At shutdown it drains CONCURRENTLY with the main HTTP server, with no
+//     ordering guarantee between the two, so a stuck request on one never
+//     delays the other's drain. Both drains, whichever main variant is
+//     configured, share ONE shutdownTimeout context created before either
+//     starts, so the pair takes at most one shutdownTimeout; the additional
+//     server keeps the Shutdown-then-Close fallback. gRPC and the admin app
+//     drain afterwards, each with its own budget.
+//
+// A zero ReadHeaderTimeout is upgraded to the same safe default, a failed
+// bind surfaces on the shared startup error path prefixed "additional HTTP
+// server", and its address must differ from every other configured server,
+// otherwise StartWithGracefulShutdownWithError returns
+// ErrAdditionalHTTPAddressConflict before any goroutine is launched.
+//
+// The slot holds ONE server. Giving it a non-nil server while it already
+// holds one (through either additional option) makes
+// StartWithGracefulShutdownWithError return
+// ErrAdditionalHTTPServerAlreadyConfigured; a second stdlib surface goes on the
+// main slot. A nil srv clears the slot, as it does for WithStdlibHTTPServer,
+// and a later non-nil server then fills an empty slot.
+func (sm *ServerManager) WithAdditionalStdlibHTTPServer(srv *http.Server) *ServerManager {
+	if sm == nil {
+		return nil
+	}
+
+	if srv == nil {
+		sm.additionalHTTP = nil
+		sm.additionalListener = nil
+		sm.additionalReplaced = false
+
+		return sm
+	}
+
+	if srv.ReadHeaderTimeout == 0 {
+		srv.ReadHeaderTimeout = defaultReadHeaderTimeout
+	}
+
+	sm.additionalReplaced = sm.additionalReplaced || sm.additionalHTTP != nil
+	sm.additionalHTTP = srv
+	sm.additionalListener = nil
+
+	return sm
+}
+
+// WithAdditionalStdlibHTTPListener is WithAdditionalStdlibHTTPServer with a
+// caller-owned, pre-bound listener, as WithStdlibHTTPListener is to
+// WithStdlibHTTPServer. A nil server or listener leaves the manager unchanged;
+// a non-nil pair on an occupied slot is refused at start with
+// ErrAdditionalHTTPServerAlreadyConfigured.
+func (sm *ServerManager) WithAdditionalStdlibHTTPListener(srv *http.Server, listener net.Listener) *ServerManager {
+	if sm == nil {
+		return nil
+	}
+
+	if srv == nil || listener == nil {
+		return sm
+	}
+
+	if srv.ReadHeaderTimeout == 0 {
+		srv.ReadHeaderTimeout = defaultReadHeaderTimeout
+	}
+
+	sm.additionalReplaced = sm.additionalReplaced || sm.additionalHTTP != nil
+	sm.additionalHTTP = srv
+	sm.additionalListener = listener
+
+	return sm
+}
+
 // WithGRPCServer configures the gRPC server for the ServerManager.
 func (sm *ServerManager) WithGRPCServer(server *grpc.Server, address string) *ServerManager {
 	if sm == nil {
@@ -246,8 +364,11 @@ func (sm *ServerManager) WithShutdownChannel(ch <-chan struct{}) *ServerManager 
 	return sm
 }
 
-// WithShutdownTimeout configures the maximum duration to wait for gRPC GracefulStop
-// before forcing a hard stop. Defaults to 30 seconds.
+// WithShutdownTimeout configures the budget of each shutdown stage. Defaults
+// to 30 seconds. It bounds, each separately: the HTTP drain (the main server
+// and the additional stdlib server share one budget and drain concurrently),
+// the gRPC GracefulStop before a hard stop, the admin drain, and each shutdown
+// hook.
 func (sm *ServerManager) WithShutdownTimeout(d time.Duration) *ServerManager {
 	if sm == nil {
 		return nil
@@ -300,41 +421,128 @@ func (sm *ServerManager) validateConfiguration() error {
 		return ErrConflictingHTTPServers
 	}
 
-	if sm.adminServer != nil {
-		if address := sm.mainHTTPAddress(); address != "" && sameListenAddress(address, sm.adminAddress) {
+	if admin := sm.adminAddressIfConfigured(); admin != "" {
+		if address := sm.mainHTTPAddress(); address != "" && sameListenAddress(address, admin) {
 			return ErrAdminAddressConflict
 		}
 	}
 
-	if sm.httpServer == nil && sm.stdlibHTTPServer == nil && sm.grpcServer == nil && sm.adminServer == nil {
+	if err := sm.validateAdditionalHTTP(); err != nil {
+		return err
+	}
+
+	if sm.httpServer == nil && sm.stdlibHTTPServer == nil && sm.additionalHTTP == nil && sm.grpcServer == nil && sm.adminServer == nil {
 		return ErrNoServersConfigured
 	}
 
 	return nil
 }
 
+// validateAdditionalHTTP checks the additional stdlib slot: filled once, with
+// a handler of its own, on an address of its own.
+func (sm *ServerManager) validateAdditionalHTTP() error {
+	if sm.additionalReplaced {
+		return ErrAdditionalHTTPServerAlreadyConfigured
+	}
+
+	if sm.additionalHTTP == nil {
+		return nil
+	}
+
+	if sm.additionalHTTP.Handler == nil {
+		return ErrAdditionalHTTPHandlerMissing
+	}
+
+	address := stdlibBindAddress(sm.additionalHTTP, sm.additionalListener)
+
+	for _, other := range []string{sm.mainHTTPAddress(), sm.adminAddressIfConfigured(), sm.grpcAddressIfConfigured()} {
+		if other != "" && sameListenAddress(address, other) {
+			return ErrAdditionalHTTPAddressConflict
+		}
+	}
+
+	return nil
+}
+
+// The address helpers below return the address a configured slot really
+// binds, or "" when the slot is empty, so an empty configured address is
+// spelled out: net/http binds ":http" (port 80) for an empty Addr, while
+// Fiber and gRPC hand "" to net.Listen, which picks an ephemeral port (":0").
+
 // mainHTTPAddress returns the address the main HTTP server binds, whichever
 // variant is configured, or "" when the manager serves no main HTTP traffic.
 func (sm *ServerManager) mainHTTPAddress() string {
 	switch {
 	case sm.httpServer != nil:
-		return sm.httpAddress
-	case sm.stdlibHTTPListener != nil:
-		return sm.stdlibHTTPListener.Addr().String()
+		return netListenAddress(sm.httpAddress)
 	case sm.stdlibHTTPServer != nil:
-		return sm.stdlibHTTPServer.Addr
+		return stdlibBindAddress(sm.stdlibHTTPServer, sm.stdlibHTTPListener)
 	default:
 		return ""
 	}
+}
+
+// adminAddressIfConfigured returns the admin address, or "" without an admin app.
+func (sm *ServerManager) adminAddressIfConfigured() string {
+	if sm.adminServer == nil {
+		return ""
+	}
+
+	return netListenAddress(sm.adminAddress)
+}
+
+// grpcAddressIfConfigured returns the gRPC address, or "" without a gRPC server.
+func (sm *ServerManager) grpcAddressIfConfigured() string {
+	if sm.grpcServer == nil {
+		return ""
+	}
+
+	return netListenAddress(sm.grpcAddress)
+}
+
+// stdlibAddress returns the address a stdlib server was given: the pre-bound
+// listener's when one was supplied, the server's Addr otherwise.
+func stdlibAddress(srv *http.Server, listener net.Listener) string {
+	if listener != nil {
+		return listener.Addr().String()
+	}
+
+	return srv.Addr
+}
+
+// stdlibBindAddress is stdlibAddress with an empty Addr spelled ":80", the
+// port http.Server.ListenAndServe binds for it (":http"), written numerically
+// so it compares equal to ":80".
+func stdlibBindAddress(srv *http.Server, listener net.Listener) string {
+	if address := stdlibAddress(srv, listener); address != "" {
+		return address
+	}
+
+	return ":80"
+}
+
+// netListenAddress returns the address net.Listen binds for address: an
+// ephemeral port when address is empty.
+func netListenAddress(address string) string {
+	if address == "" {
+		return ":0"
+	}
+
+	return address
 }
 
 // sameListenAddress reports whether two listen addresses would bind the same
 // socket. Comparing the strings is not enough: a configured address is usually
 // written ":8081", while the address of a pre-bound listener always comes back
 // resolved as "127.0.0.1:8081", and a wildcard bind covers every host on that
-// port anyway. So the port must match and either host must be a wildcard or
-// the two hosts must be equal. Two spellings of one host (127.0.0.1 and
-// localhost) are not resolved: the kernel catches that pair at bind time.
+// port anyway. So the ports must be the same number (a service name such as
+// "http" is resolved to its port) and either host must be a wildcard or the two
+// hosts must be the same: IP literals compare as IPs, zone included, so "::1"
+// equals "0:0:0:0:0:0:0:1", and other names compare case-insensitively. A host name
+// is never resolved to an IP: "localhost" and "127.0.0.1" compare different,
+// because resolving would make configuration validation depend on DNS and the
+// hosts file at boot; the kernel catches that pair at bind time.
+// Port 0 asks the kernel for an ephemeral port, so it never collides.
 func sameListenAddress(a, b string) bool {
 	hostA, portA, errA := net.SplitHostPort(a)
 	hostB, portB, errB := net.SplitHostPort(b)
@@ -343,16 +551,50 @@ func sameListenAddress(a, b string) bool {
 		return a == b
 	}
 
-	if portA != portB {
+	numA, numB := listenPort(portA), listenPort(portB)
+	if numA == 0 || numB == 0 || numA != numB {
 		return false
 	}
 
-	return wildcardHost(hostA) || wildcardHost(hostB) || hostA == hostB
+	return wildcardHost(hostA) || wildcardHost(hostB) || sameHost(hostA, hostB)
 }
 
-// wildcardHost reports whether a host part binds every interface.
+// listenPort returns the TCP port number a port part names, a service name
+// included, or -1 when it names none. 0 means an ephemeral port.
+func listenPort(port string) int {
+	// Service names resolve from the services database, not DNS.
+	number, err := net.DefaultResolver.LookupPort(context.Background(), "tcp", port)
+	if err != nil {
+		return -1
+	}
+
+	return number
+}
+
+// wildcardHost reports whether a host part binds every interface: empty, or
+// any spelling of the unspecified IPv4 or IPv6 address.
 func wildcardHost(host string) bool {
-	return host == "" || host == "0.0.0.0" || host == "::"
+	if host == "" {
+		return true
+	}
+
+	addr, err := netip.ParseAddr(host)
+
+	return err == nil && addr.Unmap().IsUnspecified()
+}
+
+// sameHost compares two host parts as IPs when both are IP literals, zone
+// included (so scoped IPv6 spellings of one address match) and IPv4-mapped
+// IPv6 equal to its IPv4 form, and as case-insensitive names otherwise.
+func sameHost(a, b string) bool {
+	addrA, errA := netip.ParseAddr(a)
+	addrB, errB := netip.ParseAddr(b)
+
+	if errA == nil && errB == nil {
+		return addrA.Unmap() == addrB.Unmap()
+	}
+
+	return strings.EqualFold(a, b)
 }
 
 // configuredServers counts the servers that will be launched, so the startup
@@ -364,6 +606,7 @@ func (sm *ServerManager) configuredServers() int {
 	for _, configured := range []bool{
 		sm.httpServer != nil,
 		sm.stdlibHTTPServer != nil,
+		sm.additionalHTTP != nil,
 		sm.grpcServer != nil,
 		sm.adminServer != nil,
 	} {
@@ -446,10 +689,10 @@ func (sm *ServerManager) StartWithGracefulShutdown() {
 // Callers using StartWithGracefulShutdown() directly will still get Fatal behavior for backward compatibility,
 // while StartWithGracefulShutdownWithError() validates first and returns an error.
 //
-// Launch order is fiber HTTP → stdlib HTTP → gRPC → admin HTTP. The two main
-// HTTP branches are mutually exclusive (enforced by validateConfiguration) so
-// at most one of them fires; the gRPC and admin branches are independent and
-// compose with either.
+// Launch order is fiber HTTP → stdlib HTTP → additional stdlib HTTP → gRPC →
+// admin HTTP. The two main HTTP branches are mutually exclusive (enforced by
+// validateConfiguration) so at most one of them fires; the additional, gRPC
+// and admin branches are independent and compose with either.
 func (sm *ServerManager) startServers() {
 	started := 0
 
@@ -458,6 +701,10 @@ func (sm *ServerManager) startServers() {
 	}
 
 	if sm.launchStdlibHTTPServer() {
+		started++
+	}
+
+	if sm.launchAdditionalHTTPServer() {
 		started++
 	}
 
@@ -553,7 +800,21 @@ func (sm *ServerManager) launchFiberApp(app *fiber.App, address, label, operatio
 // (validateConfiguration rejects the combination), so at most one of the two
 // HTTP branches fires per process lifetime.
 func (sm *ServerManager) launchStdlibHTTPServer() bool {
-	if sm.stdlibHTTPServer == nil {
+	return sm.launchStdlibServer(sm.stdlibHTTPServer, sm.stdlibHTTPListener, "stdlib HTTP", "HTTP server", "start_stdlib_http_server")
+}
+
+// launchAdditionalHTTPServer spawns the additional stdlib HTTP launch
+// goroutine. Returns true if a goroutine was launched, false if no additional
+// server is configured.
+func (sm *ServerManager) launchAdditionalHTTPServer() bool {
+	return sm.launchStdlibServer(sm.additionalHTTP, sm.additionalListener, "additional stdlib HTTP", "additional HTTP server", "start_additional_stdlib_http_server")
+}
+
+// launchStdlibServer spawns the serve goroutine for a stdlib server. label
+// names the server in logs, errPrefix prefixes its startup error, and
+// operation names the supervised goroutine.
+func (sm *ServerManager) launchStdlibServer(srv *http.Server, listener net.Listener, label, errPrefix, operation string) bool {
+	if srv == nil {
 		return false
 	}
 
@@ -561,32 +822,27 @@ func (sm *ServerManager) launchStdlibHTTPServer() bool {
 		context.Background(),
 		sm.logger,
 		"server",
-		"start_stdlib_http_server",
+		operation,
 		runtime.KeepRunning,
 		func(_ context.Context) {
-			address := sm.stdlibHTTPServer.Addr
-			if sm.stdlibHTTPListener != nil {
-				address = sm.stdlibHTTPListener.Addr().String()
-			}
-
-			sm.logger.Log(context.Background(), obs.LevelInfo, "starting stdlib HTTP server", "address", address)
+			sm.logger.Log(context.Background(), obs.LevelInfo, "starting "+label+" server", "address", stdlibAddress(srv, listener))
 
 			// ListenAndServe returns http.ErrServerClosed on a clean
 			// Shutdown — that is the success signal, not an error.
 			// Parity with fiber.App.Listen returning nil after
 			// fiber.App.Shutdown.
 			var err error
-			if sm.stdlibHTTPListener != nil {
-				err = sm.stdlibHTTPServer.Serve(sm.stdlibHTTPListener)
+			if listener != nil {
+				err = srv.Serve(listener)
 			} else {
-				err = sm.stdlibHTTPServer.ListenAndServe()
+				err = srv.ListenAndServe()
 			}
 
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				sm.logger.Log(context.Background(), obs.LevelError, "stdlib HTTP server error", "error", err)
+				sm.logger.Log(context.Background(), obs.LevelError, label+" server error", "error", err)
 
 				select {
-				case sm.startupErrors <- fmt.Errorf("HTTP server: %w", err):
+				case sm.startupErrors <- fmt.Errorf("%s: %w", errPrefix, err):
 				default:
 				}
 			}
@@ -720,7 +976,16 @@ func (sm *ServerManager) executeShutdown() {
 			sm.logInfo("Shutdown initiated before servers were fully started.")
 		}
 
-		sm.shutdownHTTPServer()
+		// The additional and main HTTP servers drain concurrently under ONE
+		// shutdownTimeout budget, created once before either starts: a stuck
+		// request on one surface neither delays the other's drain nor doubles
+		// the total. gRPC and admin follow, each with its own budget.
+		drainCtx, cancelDrain := context.WithTimeout(context.Background(), sm.shutdownTimeout)
+		additionalDrained := sm.drainAdditionalHTTPServer(drainCtx)
+
+		sm.shutdownHTTPServer(drainCtx)
+		<-additionalDrained
+		cancelDrain()
 
 		// Shutdown the gRPC server BEFORE telemetry to allow in-flight RPCs
 		// to complete and emit their final spans/metrics before the telemetry
@@ -809,7 +1074,35 @@ func (sm *ServerManager) executeShutdown() {
 	})
 }
 
-func (sm *ServerManager) shutdownHTTPServer() {
+// drainAdditionalHTTPServer drains the additional stdlib server in its own
+// goroutine under ctx. The returned channel closes when the drain is over,
+// immediately when no additional server is configured.
+func (sm *ServerManager) drainAdditionalHTTPServer(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
+
+	if sm.additionalHTTP == nil {
+		close(done)
+
+		return done
+	}
+
+	runtime.SafeGoWithContextAndComponent(
+		context.Background(),
+		sm.logger,
+		"server",
+		"additional_stdlib_http_shutdown",
+		runtime.KeepRunning,
+		func(_ context.Context) {
+			defer close(done)
+
+			sm.shutdownStdlibServer(ctx, sm.additionalHTTP, "additional HTTP")
+		},
+	)
+
+	return done
+}
+
+func (sm *ServerManager) shutdownHTTPServer(ctx context.Context) {
 	// Shutdown the HTTP server if available. The fiber and stdlib paths
 	// are mutually exclusive (enforced by validateConfiguration), so at
 	// most one of these branches fires per shutdown.
@@ -817,13 +1110,9 @@ func (sm *ServerManager) shutdownHTTPServer() {
 	case sm.httpServer != nil:
 		sm.logInfo("Shutting down HTTP server...")
 
-		if err := sm.httpServer.Shutdown(); err != nil {
-			sm.logger.Log(context.Background(), obs.LevelError, "error during HTTP server shutdown", "error", err)
-		}
-
-		sm.awaitFiberListenExit(sm.httpServer, &sm.fiberListenDone)
+		sm.shutdownFiberApp(ctx, sm.httpServer, "HTTP", &sm.fiberListenDone)
 	case sm.stdlibHTTPServer != nil:
-		sm.shutdownStdlibHTTPServer()
+		sm.shutdownStdlibServer(ctx, sm.stdlibHTTPServer, "HTTP")
 	}
 }
 
@@ -836,11 +1125,24 @@ func (sm *ServerManager) shutdownAdminHTTPServer() {
 
 	sm.logInfo("Shutting down admin HTTP server...")
 
-	if err := sm.adminServer.Shutdown(); err != nil {
-		sm.logger.Log(context.Background(), obs.LevelError, "error during admin HTTP server shutdown", "error", err)
+	ctx, cancel := context.WithTimeout(context.Background(), sm.shutdownTimeout)
+	defer cancel()
+
+	sm.shutdownFiberApp(ctx, sm.adminServer, "admin HTTP", &sm.adminListenDone)
+}
+
+// shutdownFiberApp drains a fiber app under ctx, then waits for its Listen
+// goroutine. ctx bounds the drain: fiber's plain Shutdown waits for every
+// in-flight request with no deadline, so one hung request would hold the
+// whole shutdown. Past the deadline the drain stops waiting and shutdown
+// proceeds; fasthttp does not interrupt a handler still running, which
+// finishes on its own.
+func (sm *ServerManager) shutdownFiberApp(ctx context.Context, app *fiber.App, label string, listenDone *chan struct{}) {
+	if err := app.ShutdownWithContext(ctx); err != nil {
+		sm.logger.Log(context.Background(), obs.LevelError, "error during "+label+" server shutdown", "error", err)
 	}
 
-	sm.awaitFiberListenExit(sm.adminServer, &sm.adminListenDone)
+	sm.awaitFiberListenExit(ctx, app, listenDone)
 }
 
 // awaitFiberListenExit blocks until the fiber Listen goroutine has returned,
@@ -851,7 +1153,7 @@ func (sm *ServerManager) shutdownAdminHTTPServer() {
 // forever. That leaked goroutine outlives shutdown and, under the race
 // detector, trips on process globals such as os.Stdout that fiber's startup
 // path reads and the test harness swaps between tests and examples.
-func (sm *ServerManager) awaitFiberListenExit(app *fiber.App, listenDone *chan struct{}) {
+func (sm *ServerManager) awaitFiberListenExit(ctx context.Context, app *fiber.App, listenDone *chan struct{}) {
 	sm.lifecycleMu.Lock()
 	done := *listenDone
 	sm.lifecycleMu.Unlock()
@@ -877,35 +1179,34 @@ func (sm *ServerManager) awaitFiberListenExit(app *fiber.App, listenDone *chan s
 		select {
 		case <-done:
 			return
+		case <-ctx.Done():
+			// The drain budget is spent: waiting on would add a second one.
+			return
 		case <-deadline.C:
 			sm.logInfo("Timed out waiting for the HTTP listen goroutine to exit")
 			return
 		case <-retry.C:
 			// Listen may not have reached Serve when the first Shutdown ran;
 			// re-issue it so the bound listener is closed once registered.
-			_ = app.Shutdown()
+			_ = app.ShutdownWithContext(ctx)
 		}
 	}
 }
 
-func (sm *ServerManager) shutdownStdlibHTTPServer() {
-	sm.logInfo("Shutting down HTTP server...")
+// shutdownStdlibServer drains a stdlib server under ctx; label names it in
+// logs. ctx is the drain budget, derived from context.Background() bounded by
+// shutdownTimeout, so an earlier signal/ctx cancellation does not abort the
+// in-flight request drain. If the drain fails or times out, fall back to
+// Close() so active connections are forcefully released instead of leaking
+// past the shutdown budget.
+func (sm *ServerManager) shutdownStdlibServer(ctx context.Context, srv *http.Server, label string) {
+	sm.logInfo("Shutting down " + label + " server...")
 
-	// Bound the drain by shutdownTimeout. Unlike fiber.App.Shutdown,
-	// stdlib http.Server.Shutdown accepts an explicit ctx — we use a
-	// fresh background-derived ctx so an earlier signal/ctx
-	// cancellation does not abort the in-flight request drain. If the
-	// drain fails or times out, fall back to Close() so active
-	// connections are forcefully released instead of leaking past the
-	// shutdown budget.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), sm.shutdownTimeout)
-	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		sm.logger.Log(context.Background(), obs.LevelError, "error during "+label+" server shutdown", "error", err)
 
-	if err := sm.stdlibHTTPServer.Shutdown(shutdownCtx); err != nil {
-		sm.logger.Log(context.Background(), obs.LevelError, "error during HTTP server shutdown", "error", err)
-
-		if closeErr := sm.stdlibHTTPServer.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
-			sm.logger.Log(context.Background(), obs.LevelError, "error during HTTP server hard close", "error", closeErr)
+		if closeErr := srv.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+			sm.logger.Log(context.Background(), obs.LevelError, "error during "+label+" server hard close", "error", closeErr)
 		}
 	}
 }
