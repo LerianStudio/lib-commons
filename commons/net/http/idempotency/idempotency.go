@@ -2154,8 +2154,8 @@ func (m *Middleware) storeKey(tenantID, idempotencyKey string) string {
 // storage — answers the request itself, and must make that answer bind on the
 // resend. It takes the request rather than a key and a fingerprint because the
 // address and the digest must be the ones Check computes, and it computes them
-// the same way: the configured [KeyProvider] (or the header), the tenant on
-// c.Context(), the configured fingerprint providers and scope. Call it with the
+// the same way: the configured [KeyProvider] (or the header), the configured
+// [TenantProvider] (or the tenant-manager context on c.Context()), the configured fingerprint providers and scope. Call it with the
 // request in the same state Check would see it.
 //
 // It writes only through Store.Acquire, so it never replaces a record. Fencing

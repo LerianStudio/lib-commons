@@ -7,10 +7,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
@@ -261,5 +263,120 @@ func TestNew_ProcessingHeartbeat_RedisStoreExtends(t *testing.T) {
 	mr := miniredis.RunT(t)
 	middleware := New(newRedisClient(t, mr), WithProcessingHeartbeat(time.Second))
 	require.NoError(t, middleware.Err())
+	assert.NotNil(t, middleware.extender, "New must bind the Redis store's LeaseExtender")
 	assert.NoError(t, (*Middleware)(nil).Err())
+}
+
+// A lease resolved per request can be shorter than the configured interval,
+// which construction cannot see. The tick must follow the lease actually
+// stored, or the lease lapses before the first beat and the duplicate runs.
+func TestCheck_ProcessingHeartbeat_TicksWithinAProviderLease(t *testing.T) {
+	t.Parallel()
+
+	const (
+		lease    = 150 * time.Millisecond
+		interval = time.Second
+	)
+
+	store := &extendingStore{expiringStore: newExpiringStore()}
+	logger := &recordingLogger{}
+	middleware := NewWithStore(store,
+		WithLogger(logger),
+		WithKeyTTL(time.Hour),
+		WithProcessingTTLProvider(func(fiber.Ctx) (time.Duration, error) { return lease, nil }),
+		WithProcessingHeartbeat(interval))
+	require.NoError(t, middleware.Err(), "a provider lease is invisible to construction")
+
+	var calls atomic.Int64
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	app := heartbeatApp(middleware.Check(), &calls, entered, release)
+
+	first := postAsync(app, "provider-lease-key")
+	awaitEntered(t, entered, first)
+
+	time.Sleep(4 * lease)
+
+	second := doPost(t, app, "provider-lease-key")
+	second.Body.Close()
+	assert.Equal(t, http.StatusConflict, second.StatusCode, "the lease must be renewed within its own span")
+
+	close(release)
+	assert.Equal(t, http.StatusCreated, awaitStatus(t, first))
+	assert.Equal(t, int64(1), calls.Load(), "the mutation must run exactly once")
+
+	line := logger.find(t, obs.LevelWarn, "heartbeat interval shortened")
+	assert.Equal(t, interval, line.kv["configured_interval"])
+	assert.Equal(t, lease, line.kv["effective_lease"])
+	assert.Equal(t, lease/3, line.kv["tick"])
+	assert.Equal(t, 1, logger.count("heartbeat interval shortened"), "one warning per request, not per beat")
+}
+
+func TestHeartbeatTick(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		interval, lease time.Duration
+		want            time.Duration
+	}{
+		{name: "interval already inside the lease", interval: 10 * time.Second, lease: time.Minute, want: 10 * time.Second},
+		{name: "lease shorter than the interval", interval: 15 * time.Second, lease: 10 * time.Second, want: 10 * time.Second / 3},
+		{name: "pathological lease floors the tick", interval: time.Second, lease: 30 * time.Millisecond, want: heartbeatMinTick},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, heartbeatTick(tt.interval, tt.lease))
+		})
+	}
+}
+
+// beat runs off the request goroutine, so the tenant it logs must be the one
+// the request resolved, including through a tenant provider.
+func TestCheck_ProcessingHeartbeat_LogsTheResolvedTenant(t *testing.T) {
+	t.Parallel()
+
+	store := &extendingStore{expiringStore: newExpiringStore(), failFirst: 1}
+	logger := &recordingLogger{}
+	middleware := NewWithStore(store,
+		WithLogger(logger),
+		WithKeyTTL(time.Hour),
+		WithProcessingTTL(250*time.Millisecond),
+		WithTenantProvider(func(fiber.Ctx) (string, error) { return "tenant-from-provider", nil }),
+		WithProcessingHeartbeat(25*time.Millisecond))
+	require.NoError(t, middleware.Err())
+
+	app := fiber.New()
+	app.Use(middleware.Check())
+	app.Post("/test", func(c fiber.Ctx) error {
+		time.Sleep(100 * time.Millisecond)
+
+		return c.SendStatus(fiber.StatusCreated)
+	})
+
+	resp := doPost(t, app, "provider-tenant-key")
+	resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	line := logger.find(t, obs.LevelWarn, "processing heartbeat failed")
+	assert.Equal(t, "tenant-from-provider", line.kv["tenant_id"])
+}
+
+// count reports how many lines, at any level, contain substring.
+func (l *recordingLogger) count(substring string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	n := 0
+
+	for _, line := range l.lines {
+		if strings.Contains(line.msg, substring) {
+			n++
+		}
+	}
+
+	return n
 }

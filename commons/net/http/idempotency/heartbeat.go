@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
-	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-observability/v4/runtime"
 	"github.com/gofiber/fiber/v3"
 	"github.com/redis/go-redis/v9"
@@ -68,8 +67,10 @@ func (s *redisStore) Extend(ctx context.Context, key string, expected []byte, tt
 // upload, say — keeps its key instead of letting a duplicate acquire it and run
 // the mutation a second time. Each beat resets the lease to the value the
 // request acquired it with ([WithProcessingTTL] or
-// [WithProcessingTTLProvider]); the interval must therefore be well below that
-// lease, and a few beats per lease is the sane sizing.
+// [WithProcessingTTLProvider], or the retention when neither is set). A
+// request whose lease is shorter than three intervals beats every third of its
+// lease instead, never faster than every 50ms, and logs one warning saying so;
+// size the interval to a few beats per lease to keep that warning quiet.
 //
 // The heartbeat starts when the handler starts and stops, synchronously, when
 // it returns: no beat runs during or after the completion or release. A beat
@@ -134,6 +135,23 @@ func (m *Middleware) runChainWithHeartbeat(c fiber.Ctx, key string, processing [
 		return m.runChain(c)
 	}
 
+	// Read on the request goroutine: the heartbeat goroutine never touches c.
+	tenantID := recordTenant(c)
+
+	// Construction checks the interval only against a fixed [WithProcessingTTL];
+	// a provider or retention lease is known only here, so the tick follows it.
+	tick := heartbeatTick(m.heartbeatInterval, lease)
+	if tick != m.heartbeatInterval {
+		m.logger.Log(c.Context(), obs.LevelWarn,
+			"idempotency: processing heartbeat interval shortened to fit the lease",
+			"configured_interval", m.heartbeatInterval,
+			"effective_lease", lease,
+			"tick", tick,
+			"idempotency_key_digest", keyDigest(key),
+			"tenant_id", tenantID,
+		)
+	}
+
 	// Detached like the bookkeeping writes: the hold belongs to the handler,
 	// not to the client connection, and is ended by stop alone.
 	ctx, cancel := context.WithCancel(context.WithoutCancel(c.Context()))
@@ -142,7 +160,7 @@ func (m *Middleware) runChainWithHeartbeat(c fiber.Ctx, key string, processing [
 	runtime.SafeGo(m.logger, "idempotency.processing_heartbeat", runtime.KeepRunning, func() {
 		defer close(done)
 
-		ticker := time.NewTicker(m.heartbeatInterval)
+		ticker := time.NewTicker(tick)
 		defer ticker.Stop()
 
 		for {
@@ -150,7 +168,7 @@ func (m *Middleware) runChainWithHeartbeat(c fiber.Ctx, key string, processing [
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if !m.beat(ctx, key, processing, lease) {
+				if !m.beat(ctx, tenantID, key, processing, lease) {
 					return
 				}
 			}
@@ -166,7 +184,7 @@ func (m *Middleware) runChainWithHeartbeat(c fiber.Ctx, key string, processing [
 }
 
 // beat renews the lease once and reports whether the heartbeat should go on.
-func (m *Middleware) beat(ctx context.Context, key string, processing []byte, lease time.Duration) bool {
+func (m *Middleware) beat(ctx context.Context, tenantID, key string, processing []byte, lease time.Duration) bool {
 	beatCtx, cancel := context.WithTimeout(ctx, m.redisTimeout)
 	defer cancel()
 
@@ -175,7 +193,7 @@ func (m *Middleware) beat(ctx context.Context, key string, processing []byte, le
 		if ctx.Err() == nil {
 			m.logger.Log(ctx, obs.LevelWarn, "idempotency: processing heartbeat failed; retrying at the next interval",
 				"idempotency_key_digest", keyDigest(key),
-				"tenant_id", tmcore.GetTenantIDContext(ctx),
+				"tenant_id", tenantID,
 				"error", err,
 			)
 		}
@@ -186,11 +204,25 @@ func (m *Middleware) beat(ctx context.Context, key string, processing []byte, le
 	if !applied {
 		m.logger.Log(ctx, obs.LevelWarn, "idempotency: processing heartbeat found the lease no longer held; stopping",
 			"idempotency_key_digest", keyDigest(key),
-			"tenant_id", tmcore.GetTenantIDContext(ctx),
+			"tenant_id", tenantID,
 		)
 
 		return false
 	}
 
 	return true
+}
+
+// heartbeatMinTick bounds how often one request may beat. It is a tenth of the
+// default [WithRedisTimeout], so a beat never queues behind its predecessor on
+// a healthy store, and it caps a pathological lease at 20 store calls a second
+// per request. A lease that short cannot outlive one slow round trip anyway.
+const heartbeatMinTick = 50 * time.Millisecond
+
+// heartbeatTick is how often a request beats: the configured interval, or a
+// third of the lease actually stored when that is shorter — so two beats may
+// fail and the third still lands before the lease lapses — floored at
+// heartbeatMinTick.
+func heartbeatTick(interval, lease time.Duration) time.Duration {
+	return max(min(interval, lease/3), heartbeatMinTick)
 }
