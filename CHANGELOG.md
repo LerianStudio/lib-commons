@@ -1,5 +1,25 @@
 # Lib-commons Changelog
 
+## [7.5.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.5.0)
+
+Features:
+
+- Version instrumentation scopes for OpenTelemetry, enhancing the ability to track and manage different versions of instrumentation. (@fredcamaral)
+- Serve the build identity on GET `/version`, providing a clear and accessible way to retrieve build information. (@fredcamaral)
+- Add a compiled identity package for build information, facilitating the integration and management of build identities. (@fredcamaral)
+- Print the build identity when using the `--version` flag, offering immediate visibility into the build details. (@fredcamaral)
+- Add an admin HTTP server slot, paving the way for administrative functionalities and management capabilities. (@fredcamaral)
+- Serve `/version` from a ready-made admin app, simplifying the deployment and management of version information. (@fredcamaral)
+
+Improvements:
+
+- List the instrumentation scope renames for `v7.5.0` in the OpenTelemetry documentation, ensuring clarity and transparency in the changes made. (@fredcamaral)
+- Document the adoption of build identity in the build information, providing detailed insights into the new build identity feature. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.4.0...v7.5.0)
+
+---
+
 ## [7.4.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.4.0)
 
 Features:
