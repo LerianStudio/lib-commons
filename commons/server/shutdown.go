@@ -1127,6 +1127,9 @@ func (sm *ServerManager) awaitFiberListenExit(ctx context.Context, app *fiber.Ap
 		select {
 		case <-done:
 			return
+		case <-ctx.Done():
+			// The drain budget is spent: waiting on would add a second one.
+			return
 		case <-deadline.C:
 			sm.logInfo("Timed out waiting for the HTTP listen goroutine to exit")
 			return
