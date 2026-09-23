@@ -254,15 +254,18 @@ func (dl *RedisLockManager) WithLock(ctx context.Context, lockKey string, fn fun
 // the caller knows fn did not run — but only an infrastructure fault is
 // REPORTED as one. Three outcomes are distinguished:
 //
-//   - The caller's own context ended (ctx.Err() != nil). Logged at debug, no
-//     error recorded on the span, error returned.
-//   - The lock is held by another process, or the configured Tries were
-//     exhausted trying to take it. Logged at debug, no error recorded on the
-//     span, and the returned error joins ErrLockContended with redsync's own
-//     error, so both errors.Is(err, ErrLockContended) and a redsync-typed
+//   - The lock is held by another process — including when the configured
+//     Tries were exhausted trying to take it, and when the caller's own
+//     deadline expired while it waited. Logged at debug, no error recorded on
+//     the span, and the returned error joins ErrLockContended with redsync's
+//     own error, so both errors.Is(err, ErrLockContended) and a redsync-typed
 //     check hold.
-//   - Anything else — a Redis that is unreachable or stopped answering.
-//     Logged at error and recorded on the span, error returned.
+//   - The caller's own context ended before Redis answered. Logged at debug, no
+//     error recorded on the span, error returned; it unwraps to the caller's
+//     own context error.
+//   - Anything else — a Redis that is unreachable or stopped answering, whether
+//     or not the caller carried a deadline. Logged at error and recorded on the
+//     span, error returned.
 //
 // This is what lets a periodic sweep run under Tries: 1 on several replicas:
 // the replicas that skip a cycle because a sibling holds the key produce debug
@@ -313,33 +316,34 @@ func (dl *RedisLockManager) WithLockOptions(ctx context.Context, lockKey string,
 	ctx, span := tracer.Start(ctx, "redis.lock.with_lock")
 	defer span.End()
 
-	// Create mutex with configured options
+	// Tries and RetryDelay are deliberately not handed to redsync: acquireLock
+	// owns the retry loop so the reason an acquisition failed survives it.
 	mutex := dl.redsync.NewMutex(
 		lockKey,
 		redsync.WithExpiry(opts.Expiry),
-		redsync.WithTries(opts.Tries),
-		redsync.WithRetryDelay(opts.RetryDelay),
 		redsync.WithDriftFactor(opts.DriftFactor),
 	)
 
 	logger.Log(ctx, obs.LevelDebug, "attempting to acquire lock", "lock_key", safeLockKey)
 
-	// Try to acquire the lock. A failure is classified before it is reported:
-	// contention and caller cancellation are designed outcomes and must not
-	// masquerade as faults in logs and traces. The error is returned in every
-	// case, because it is how the caller knows fn did not run.
-	if err := mutex.LockContext(ctx); err != nil {
-		switch {
-		case ctx.Err() != nil:
-			logger.Log(ctx, obs.LevelDebug, "lock acquisition abandoned: caller context ended",
-				"lock_key", safeLockKey, "error", err)
-
-		case isLockContention(err):
+	// A failure is classified before it is reported: contention and caller
+	// cancellation are designed outcomes and must not masquerade as faults in
+	// logs and traces. The error is returned in every case, because it is how
+	// the caller knows fn did not run.
+	if outcome, err := acquireLock(ctx, mutex, opts); outcome != lockTaken {
+		switch outcome {
+		case lockContended:
 			logger.Log(ctx, obs.LevelDebug, "lock held by another process",
 				"lock_key", safeLockKey, "tries", opts.Tries)
 
 			return fmt.Errorf("failed to acquire lock %s: %w: %w", safeLockKey, ErrLockContended, err)
 
+		case lockCallerDone:
+			logger.Log(ctx, obs.LevelDebug, "lock acquisition abandoned: caller context ended",
+				"lock_key", safeLockKey, "error", err)
+
+		// lockFaulted, and any outcome added later: an unclassified failure is
+		// reported as a fault, which is the loud reading rather than the quiet one.
 		default:
 			logger.Log(ctx, obs.LevelError, "failed to acquire lock", "lock_key", safeLockKey, "error", err)
 			opentelemetry.HandleSpanError(span, "Failed to acquire lock", err)
@@ -417,13 +421,21 @@ func (dl *RedisLockManager) TryLock(ctx context.Context, lockKey string) (LockHa
 // control instead of fixed.
 //
 // The contract is TryLock's: the handle and true when the lock was taken,
-// (nil, false, nil) when another process holds it, and an error only for an
-// unexpected failure. Unlike WithLockOptions, contention is not an error here —
-// a caller that wants the error shape uses that entry point instead.
+// (nil, false, nil) when another process holds it, and an error otherwise.
+// Unlike WithLockOptions, contention is not an error here — a caller that wants
+// the error shape uses that entry point instead. A caller whose own context
+// ended and a Redis that stopped answering are BOTH errors, never a busy lock,
+// however many Tries were configured: a worker told "busy" skips its cycle and
+// reports success, which would hide an outage for as long as it lasts.
 //
 // Tries is honoured as supplied, so Tries: 3 makes three attempts, separated by
 // RetryDelay, before reporting the lock busy. Options are validated the same way
 // WithLockOptions validates them.
+//
+// Expiry also bounds how long one attempt waits on Redis: redsync allows each
+// attempt expiry x 0.05 (MEASURED against v4.17), so the 30-minute expiry below
+// can block for a minute and a half against a node that never answers. Bound ctx
+// when the caller cannot afford that.
 //
 // This method is declared on *RedisLockManager and deliberately NOT on the
 // LockManager interface: adding a method there would break every external
@@ -474,31 +486,41 @@ func (dl *RedisLockManager) tryLock(ctx context.Context, lockKey string, opts Lo
 	ctx, span := tracer.Start(ctx, "redis.lock.try_lock")
 	defer span.End()
 
+	// Tries and RetryDelay are deliberately not handed to redsync: acquireLock
+	// owns the retry loop so the reason an acquisition failed survives it.
 	mutex := dl.redsync.NewMutex(
 		lockKey,
 		redsync.WithExpiry(opts.Expiry),
-		redsync.WithTries(opts.Tries),
-		redsync.WithRetryDelay(opts.RetryDelay),
 		redsync.WithDriftFactor(opts.DriftFactor),
 	)
 
-	if err := mutex.LockContext(ctx); err != nil {
-		if isLockContention(err) {
-			logger.Log(ctx, obs.LevelDebug, "lock already held by another process", "lock_key", safeLockKey)
-			return nil, false, nil
-		}
+	outcome, err := acquireLock(ctx, mutex, opts)
 
-		// Any other error (e.g., network, context cancellation, RedisError)
-		// is an actual infrastructure fault and must be propagated.
-		logger.Log(ctx, obs.LevelDebug, "could not acquire lock", "lock_key", safeLockKey, "error", err)
+	switch outcome {
+	case lockTaken:
+		logger.Log(ctx, obs.LevelDebug, "lock acquired", "lock_key", safeLockKey)
+
+		return &lockHandle{mutex: mutex, logger: logger}, true, nil
+
+	case lockContended:
+		logger.Log(ctx, obs.LevelDebug, "lock already held by another process", "lock_key", safeLockKey)
+
+		return nil, false, nil
+
+	case lockCallerDone:
+		logger.Log(ctx, obs.LevelDebug, "lock acquisition abandoned: caller context ended",
+			"lock_key", safeLockKey, "error", err)
+
+		return nil, false, fmt.Errorf("failed to attempt lock acquisition for %s: %w", safeLockKey, err)
+
+	// lockFaulted, and any outcome added later: Redis is unreachable or stopped
+	// answering, the one outcome here that is a genuine fault.
+	default:
+		logger.Log(ctx, obs.LevelError, "failed to attempt lock acquisition", "lock_key", safeLockKey, "error", err)
 		opentelemetry.HandleSpanError(span, "Failed to attempt lock acquisition", err)
 
 		return nil, false, fmt.Errorf("failed to attempt lock acquisition for %s: %w", safeLockKey, err)
 	}
-
-	logger.Log(ctx, obs.LevelDebug, "lock acquired", "lock_key", safeLockKey)
-
-	return &lockHandle{mutex: mutex, logger: logger}, true, nil
 }
 
 // Unlock releases a previously acquired lock.
@@ -517,6 +539,100 @@ func (dl *RedisLockManager) Unlock(ctx context.Context, handle LockHandle) error
 	return handle.Unlock(ctx)
 }
 
+// lockOutcome says how an acquisition ended. It exists so WithLockOptions and
+// TryLock read one classification instead of each inventing its own.
+type lockOutcome int
+
+const (
+	// lockTaken means the lock was acquired.
+	lockTaken lockOutcome = iota
+	// lockContended means another process holds the key.
+	lockContended
+	// lockCallerDone means the caller's own context ended before Redis answered.
+	lockCallerDone
+	// lockFaulted means Redis is unreachable or stopped answering.
+	lockFaulted
+)
+
+// acquireLock runs the retry loop itself, one single-attempt redsync call per
+// try, rather than handing Tries and RetryDelay to redsync.
+//
+// redsync has a retry loop of its own, but it discards the reason: when the
+// caller's context ends while it waits out a retry delay it returns a bare
+// ErrFailed (mutex.go lockContext), throwing away the last attempt's real
+// error. MEASURED against redsync v4.17 with a server that completes the
+// handshake and then stops answering: with Tries above one and any caller
+// deadline shorter than Tries x RetryDelay, a total outage arrives as that bare
+// ErrFailed, indistinguishable from a contended lock — so the outage reads as a
+// skipped cycle. Owning the loop keeps every attempt's error, so the outcome is
+// decided on what Redis actually did.
+//
+// Retries continue across a fault, as redsync's do: one failed round trip may be
+// a blip, and the next attempt is the cheapest way to find out.
+//
+// At least one attempt always runs, whatever Tries says, and the returned error
+// is the last attempt's — nil only for lockTaken.
+func acquireLock(ctx context.Context, mutex *redsync.Mutex, opts LockOptions) (lockOutcome, error) {
+	// Read once, before anything is asked of Redis. After the first attempt the
+	// failure itself is the better evidence, and a caller deadline expiring
+	// mid-flight against a healthy Redis is a window of microseconds.
+	callerDoneAtStart := ctx.Err() != nil
+
+	var lastErr error
+
+	for try := 0; ; try++ {
+		if try > 0 {
+			timer := time.NewTimer(opts.RetryDelay)
+
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+
+				return classifyLockFailure(lastErr, callerDoneAtStart), lastErr
+			case <-timer.C:
+			}
+		}
+
+		lastErr = mutex.TryLockContext(ctx)
+		if lastErr == nil {
+			return lockTaken, nil
+		}
+
+		if try+1 >= opts.Tries {
+			return classifyLockFailure(lastErr, callerDoneAtStart), lastErr
+		}
+	}
+}
+
+// classifyLockFailure decides what a failed acquisition means, in the order the
+// evidence is trustworthy:
+//
+//   - Redis answered that the key is taken: contention, whatever the caller's
+//     context is doing. This is what keeps ErrLockContended on the error when a
+//     caller's deadline expires while it waits out a lock someone else holds.
+//   - Otherwise, the caller's context was already done before Redis was asked
+//     anything: the caller gave up, and nothing was ever learned about Redis.
+//   - Anything else: Redis is unreachable or stopped answering. A caller
+//     deadline that expires while Redis stays silent lands here deliberately —
+//     a healthy Redis answers in well under a millisecond, so silence long
+//     enough to consume a deadline is the fault, not the deadline.
+//
+// A caller that cancels itself mid-request needs no arm of its own: the loop
+// only ever reaches this with a contended attempt behind it or with Redis
+// silent, and MEASURED against go-redis, a cancellation that lands after the
+// command is on the wire is not observed until the read returns on its own
+// timeout — which is a Redis that stopped answering, reported as one.
+func classifyLockFailure(err error, callerDoneAtStart bool) lockOutcome {
+	switch {
+	case isLockContention(err):
+		return lockContended
+	case callerDoneAtStart:
+		return lockCallerDone
+	default:
+		return lockFaulted
+	}
+}
+
 // isLockContention reports whether err means the lock is simply held elsewhere,
 // as opposed to an infrastructure fault. It is the single classifier both
 // WithLockOptions and TryLock read, so the two entry points cannot disagree
@@ -524,10 +640,11 @@ func (dl *RedisLockManager) Unlock(ctx context.Context, handle LockHandle) error
 //
 // The classification uses redsync's typed sentinels rather than string
 // matching. MEASURED against redsync v4.17: a single node that already holds
-// the key yields *ErrTaken, and exhausted retries yield ErrFailed. A caller
-// context that ends while the mutex waits out a retry delay ALSO yields a bare
-// ErrFailed, indistinguishable from exhausted retries — which is why callers
-// that care about the difference test their own ctx.Err() first.
+// the key yields *ErrTaken, and an attempt that took the key but spent its whole
+// validity window doing so yields ErrFailed. redsync returns a bare ErrFailed
+// from its OWN retry loop too, when a context cuts that loop short — which is
+// why acquireLock runs the loop here instead, one single attempt at a time, and
+// never feeds this function an error from a loop it did not control.
 //
 // A nil error is not contention.
 func isLockContention(err error) bool {

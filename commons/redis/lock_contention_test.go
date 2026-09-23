@@ -173,6 +173,8 @@ func TestWithLockOptions_CancellationDuringRetryIsNotAFailure(t *testing.T) {
 	})
 
 	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrLockContended,
+		"the lock was genuinely held elsewhere, so the caller must still be able to swallow the cycle with the documented errors.Is check")
 
 	assert.False(t, logger.hasLevel(obs.LevelError),
 		"a caller whose deadline expired while waiting for the lock was reported as a lock failure; got %+v", logger.loggedEntries())
@@ -182,14 +184,14 @@ func TestWithLockOptions_CancellationDuringRetryIsNotAFailure(t *testing.T) {
 		"an expired caller deadline was recorded as an error on the span")
 }
 
-// TestWithLockOptions_InfrastructureFaultStillErrors is the narrowing half: the
-// reclassification must not swallow a Redis that stopped answering. The stalled
-// server from context_deadline_test.go is used rather than a closed miniredis,
-// because a freed port can be re-bound by another process mid-test.
-func TestWithLockOptions_InfrastructureFaultStillErrors(t *testing.T) {
-	t.Setenv(commons.EnvAllowInsecureTLS, "true")
+// setupStalledLock builds a lock manager against a server that completes the
+// Redis handshake and then never answers again — what an unreachable node looks
+// like from the client's side. A closed miniredis is not used because a freed
+// port can be re-bound by another process mid-test.
+func setupStalledLock(t *testing.T) *RedisLockManager {
+	t.Helper()
 
-	recorder := recordSpans(t)
+	t.Setenv(commons.EnvAllowInsecureTLS, "true")
 
 	client, err := New(context.Background(), Config{
 		Topology: Topology{Standalone: &StandaloneTopology{Address: startStalledRedis(t)}},
@@ -208,10 +210,21 @@ func TestWithLockOptions_InfrastructureFaultStillErrors(t *testing.T) {
 	lock, err := NewRedisLockManager(client)
 	require.NoError(t, err)
 
+	return lock
+}
+
+// TestWithLockOptions_InfrastructureFaultStillErrors is the narrowing half: the
+// reclassification must not swallow a Redis that stopped answering. The stalled
+// server from context_deadline_test.go is used rather than a closed miniredis,
+// because a freed port can be re-bound by another process mid-test.
+func TestWithLockOptions_InfrastructureFaultStillErrors(t *testing.T) {
+	recorder := recordSpans(t)
+	lock := setupStalledLock(t)
+
 	logger := &recordingLogger{}
 	ctx := libobs.ContextWithLogger(context.Background(), logger)
 
-	err = lock.WithLockOptions(ctx, "test:stalled", LockOptions{
+	err := lock.WithLockOptions(ctx, "test:stalled", LockOptions{
 		Expiry:      time.Second,
 		Tries:       1,
 		RetryDelay:  time.Millisecond,
@@ -257,4 +270,43 @@ func TestIsLockContention(t *testing.T) {
 			assert.Equal(t, tt.want, isLockContention(tt.err))
 		})
 	}
+}
+
+// TestWithLockOptions_StalledRedisUnderCallerDeadlineStillErrors is the half of
+// the narrowing guard that matters in production. A worker tick or an HTTP
+// handler bounds lock acquisition with its own deadline, and when that deadline
+// is shorter than Tries x RetryDelay the acquisition ends with the caller's
+// context already done. The outage must still be reported as one: in production
+// debug is off, so a downgraded Redis outage is no log output at all and a clean
+// trace.
+func TestWithLockOptions_StalledRedisUnderCallerDeadlineStillErrors(t *testing.T) {
+	recorder := recordSpans(t)
+	lock := setupStalledLock(t)
+
+	logger := &recordingLogger{}
+
+	ctx, cancel := context.WithTimeout(libobs.ContextWithLogger(context.Background(), logger), 300*time.Millisecond)
+	defer cancel()
+
+	err := lock.WithLockOptions(ctx, "test:stalled:deadline", LockOptions{
+		Expiry:      time.Second,
+		Tries:       3,
+		RetryDelay:  200 * time.Millisecond,
+		DriftFactor: 0.01,
+	}, func(context.Context) error {
+		t.Fatal("the function must not run when Redis never answers")
+
+		return nil
+	})
+
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrLockContended,
+		"a Redis that stopped answering was reported as ordinary contention")
+
+	assert.True(t, logger.hasLevel(obs.LevelError),
+		"a Redis that stopped answering was downgraded to debug because the caller carried a deadline; got %+v", logger.loggedEntries())
+
+	span := lockSpanStatus(t, recorder, "redis.lock.with_lock")
+	assert.Equal(t, codes.Error, span.Status().Code,
+		"a Redis that stopped answering left the span clean because the caller carried a deadline")
 }

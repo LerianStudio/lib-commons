@@ -197,3 +197,134 @@ func TestTryLock_MatchesTryLockWithOptionsDefaults(t *testing.T) {
 	assert.Equal(t, DefaultLockOptions().Expiry, mr.TTL(viaTryLock),
 		"TryLock stopped using the default 10s expiry")
 }
+
+// TestTryLockWithOptions_CallerCancellationIsAnError pins the half of TryLock's
+// contract that only bites once Tries is above one: a caller that has given up
+// is not a busy lock. Reported as "busy", a worker following this method's own
+// godoc example returns nil and reports a skipped cycle as success.
+func TestTryLockWithOptions_CallerCancellationIsAnError(t *testing.T) {
+	_, lock := setupTestLock(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	handle, acquired, err := lock.TryLockWithOptions(ctx, "test:try-opts:cancelled", LockOptions{
+		Expiry:      time.Second,
+		Tries:       3,
+		RetryDelay:  10 * time.Millisecond,
+		DriftFactor: 0.01,
+	})
+
+	require.Error(t, err, "a cancelled caller was reported as a busy lock")
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.False(t, acquired)
+	assert.Nil(t, handle)
+}
+
+// TestTryLockWithOptions_StalledRedisIsAnError is the same guard for the other
+// failure: a Redis that stopped answering must not read as a busy lock either,
+// or a sweep skips every cycle for the whole outage and reports success each
+// time.
+func TestTryLockWithOptions_StalledRedisIsAnError(t *testing.T) {
+	lock := setupStalledLock(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	handle, acquired, err := lock.TryLockWithOptions(ctx, "test:try-opts:stalled", LockOptions{
+		Expiry:      5 * time.Second,
+		Tries:       5,
+		RetryDelay:  100 * time.Millisecond,
+		DriftFactor: 0.01,
+	})
+
+	require.Error(t, err, "a Redis that stopped answering was reported as a busy lock")
+	assert.False(t, acquired)
+	assert.Nil(t, handle)
+}
+
+// TestTryLock_MakesASingleAttempt pins the guarantee TryLock's own godoc makes —
+// "without retrying" — against the commands miniredis actually served, so the
+// single attempt survives the value moving out of the mutex construction. A
+// retrying TryLock blocks for Tries x RetryDelay (a second at the defaults) on
+// every contended call.
+func TestTryLock_MakesASingleAttempt(t *testing.T) {
+	mr, lock := setupTestLockWithServer(t)
+	ctx := context.Background()
+
+	const key = "test:try-opts:single-attempt"
+
+	held, acquired, err := lock.TryLock(ctx, key)
+	require.NoError(t, err)
+	require.True(t, acquired)
+
+	defer func() { _ = held.Unlock(ctx) }()
+
+	opts := DefaultLockOptions()
+	opts.Tries = 1
+
+	// Warm the connection pool first: the handshake commands go-redis serves on
+	// a fresh connection would otherwise be counted as an extra attempt.
+	_, _, err = lock.TryLockWithOptions(ctx, key, opts)
+	require.NoError(t, err)
+
+	before := mr.Server().TotalCommands()
+	_, acquired, err = lock.TryLockWithOptions(ctx, key, opts)
+	singleAttempt := mr.Server().TotalCommands() - before
+
+	require.NoError(t, err)
+	require.False(t, acquired)
+
+	before = mr.Server().TotalCommands()
+	start := time.Now()
+	_, acquired, err = lock.TryLock(ctx, key)
+	elapsed := time.Since(start)
+	viaTryLock := mr.Server().TotalCommands() - before
+
+	require.NoError(t, err)
+	require.False(t, acquired)
+
+	// Two independent mechanisms, because either alone can be satisfied by
+	// accident: the commands a second attempt would have to serve, and the
+	// retry delay a second attempt would have to wait out.
+	assert.Equal(t, singleAttempt, viaTryLock,
+		"TryLock stopped making exactly one attempt: its godoc promises no retrying")
+	assert.Less(t, elapsed, DefaultLockOptions().RetryDelay,
+		"TryLock waited out a retry delay: a non-blocking probe became a call that blocks for Tries x RetryDelay")
+}
+
+// TestTryLockWithOptions_HonoursDriftFactor pins the last option that reaches
+// redsync. Dropping it silently reverts to redsync's own default, which is the
+// same 0.01 every other test uses — so only a caller asking for a different one
+// can tell.
+func TestTryLockWithOptions_HonoursDriftFactor(t *testing.T) {
+	_, lock := setupTestLock(t)
+	ctx := context.Background()
+
+	const (
+		key    = "test:try-opts:drift"
+		expiry = 10 * time.Second
+	)
+
+	handle, acquired, err := lock.TryLockWithOptions(ctx, key, LockOptions{
+		Expiry:      expiry,
+		Tries:       1,
+		RetryDelay:  time.Millisecond,
+		DriftFactor: 0.5,
+	})
+	require.NoError(t, err)
+	require.True(t, acquired)
+
+	defer func() { _ = handle.Unlock(ctx) }()
+
+	inner, ok := handle.(*lockHandle)
+	require.True(t, ok)
+
+	// redsync discards expiry x DriftFactor from the validity window it vouches
+	// for. At its default 0.01 that window is ~9.9s, so half an expiry of slack
+	// is only reachable if the supplied factor was the one used.
+	validity := time.Until(inner.mutex.Until())
+
+	assert.Less(t, validity, expiry*3/4, "DriftFactor was not passed through to redsync")
+	assert.Greater(t, validity, expiry/4, "the drift allowance swallowed the whole validity window")
+}
