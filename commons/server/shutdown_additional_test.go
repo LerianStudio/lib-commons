@@ -524,3 +524,32 @@ func TestEmptyStdlibAddressIsCheckedAsPort80(t *testing.T) {
 		})
 	}
 }
+
+// TestAdditionalStdlibHTTPServerNilHandlerIsRefused pins that the additional
+// slot never falls back to http.DefaultServeMux, through either option.
+func TestAdditionalStdlibHTTPServerNilHandlerIsRefused(t *testing.T) {
+	cases := map[string]func(sm *server.ServerManager) *server.ServerManager{
+		"server": func(sm *server.ServerManager) *server.ServerManager {
+			return sm.WithAdditionalStdlibHTTPServer(newTestStdlibServer(reserveFreeAddr(t), nil))
+		},
+		"listener": func(sm *server.ServerManager) *server.ServerManager {
+			listener := newTestStdlibListener(t)
+
+			return sm.WithAdditionalStdlibHTTPListener(newTestStdlibServer(listener.Addr().String(), nil), listener)
+		},
+	}
+
+	for name, configure := range cases {
+		t.Run(name, func(t *testing.T) {
+			sm := configure(server.NewServerManager(nil, nil, nil))
+
+			require.ErrorIs(t, sm.StartWithGracefulShutdownWithError(), server.ErrAdditionalHTTPHandlerMissing)
+
+			select {
+			case <-sm.ServersStarted():
+				t.Fatal("no server goroutine may be launched without an additional handler")
+			default:
+			}
+		})
+	}
+}

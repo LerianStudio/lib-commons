@@ -46,6 +46,11 @@ var ErrAdditionalHTTPAddressConflict = errors.New("conflicting HTTP addresses co
 // single server by design; a second stdlib surface goes on the main slot.
 var ErrAdditionalHTTPServerAlreadyConfigured = errors.New("additional HTTP server already configured: WithAdditionalStdlibHTTPServer() and WithAdditionalStdlibHTTPListener() accept one server; put another stdlib server on the main slot")
 
+// ErrAdditionalHTTPHandlerMissing indicates the additional stdlib HTTP server
+// has a nil Handler. net/http would serve http.DefaultServeMux, exposing
+// whatever any imported package registered there on a channel-facing port.
+var ErrAdditionalHTTPHandlerMissing = errors.New("additional HTTP server has no handler: set Handler on the server given to WithAdditionalStdlibHTTPServer() or WithAdditionalStdlibHTTPListener()")
+
 const defaultReadHeaderTimeout = 5 * time.Second
 
 // ServerManager handles the graceful shutdown of multiple server types.
@@ -243,9 +248,13 @@ func (sm *ServerManager) WithStdlibHTTPListener(srv *http.Server, listener net.L
 // serves two channel-facing surfaces, one of them on plain net/http (a SOAP
 // listener beside a Fiber API, for instance).
 //
-// It behaves like WithStdlibHTTPServer in every respect but two:
+// It behaves like WithStdlibHTTPServer in every respect but three:
 //   - It is not subject to ErrConflictingHTTPServers: it composes with either
 //     main HTTP variant.
+//   - A nil Handler is refused with ErrAdditionalHTTPHandlerMissing instead of
+//     falling back to http.DefaultServeMux, which would expose whatever any
+//     imported package registered there. (The main stdlib slot keeps the
+//     net/http fallback.)
 //   - At shutdown it drains CONCURRENTLY with the main HTTP server, with no
 //     ordering guarantee between the two. Both drains start under one
 //     shared shutdownTimeout budget, so together they take at most one
@@ -410,8 +419,8 @@ func (sm *ServerManager) validateConfiguration() error {
 	return nil
 }
 
-// validateAdditionalHTTP checks the additional stdlib slot: filled once, on
-// an address of its own.
+// validateAdditionalHTTP checks the additional stdlib slot: filled once, with
+// a handler of its own, on an address of its own.
 func (sm *ServerManager) validateAdditionalHTTP() error {
 	if sm.additionalReplaced {
 		return ErrAdditionalHTTPServerAlreadyConfigured
@@ -419,6 +428,10 @@ func (sm *ServerManager) validateAdditionalHTTP() error {
 
 	if sm.additionalHTTP == nil {
 		return nil
+	}
+
+	if sm.additionalHTTP.Handler == nil {
+		return ErrAdditionalHTTPHandlerMissing
 	}
 
 	address := stdlibBindAddress(sm.additionalHTTP, sm.additionalListener)
