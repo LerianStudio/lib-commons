@@ -194,9 +194,9 @@ func TestDeletePublishedBefore_BoundsTheStatementByTheTransactionTimeout(t *test
 	require.Zero(t, deleted)
 	require.Less(t, elapsed, time.Second, "the statement must stop at the transaction timeout, not at the lock holder's pace")
 
-	// The transaction context carries the same deadline as the statement, and
-	// database/sql rolls a transaction back on its own goroutine when that
-	// context expires. Whichever side wins the race, the driver sees exactly one
+	// The transaction context is bounded by the same timeout duration as the
+	// statement (started a few microseconds earlier), and database/sql rolls a
+	// transaction back on its own goroutine when that context expires. Whichever side wins the race, the driver sees exactly one
 	// Rollback; when the deadline side wins it may land after the return above.
 	require.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil },
 		time.Second, 5*time.Millisecond, "the transaction must be rolled back exactly once")
