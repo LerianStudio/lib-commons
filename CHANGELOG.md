@@ -1,5 +1,26 @@
 # Lib-commons Changelog
 
+## [7.7.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.7.0)
+
+Features:
+- Allow idempotency to renew leases while long handlers are running. (@fredcamaral)
+- Enable idempotency to derive its tenant from a provider. (@fredcamaral)
+- Allow a consumer to fence an idempotency key as outcome-unknown. (@fredcamaral)
+
+Fixes:
+- Reject UUIDs of 38 characters if not wrapped in braces. (@fredcamaral)
+- Refuse tenants containing the store-key delimiter. (@fredcamaral)
+- Refuse idempotency leases that cannot be sustained by the heartbeat. (@fredcamaral)
+- Align the idempotency heartbeat tick with the stored lease. (@fredcamaral)
+- Clamp the heartbeat interval floor during construction. (@fredcamaral)
+
+Improvements:
+- Pin the fence at the provider tenant in tests. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.6.0...v7.7.0)
+
+---
+
 ## [7.6.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.6.0)
 
 Features:
