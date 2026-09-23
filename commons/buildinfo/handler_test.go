@@ -36,15 +36,6 @@ func getVersion(t *testing.T, service, target string) (*http.Response, map[strin
 	return resp, decoded
 }
 
-func manifestOf(t *testing.T, decoded map[string]any) map[string]any {
-	t.Helper()
-
-	manifest, ok := decoded["dependencyManifest"].(map[string]any)
-	require.True(t, ok, "dependencyManifest must be an object")
-
-	return manifest
-}
-
 // TestHandlerRespondsTheCompiledIdentity mutates the package-level injected
 // Build, a process-global: no t.Parallel(), and Cleanup puts the zero value
 // back.
@@ -68,13 +59,9 @@ func TestHandlerRespondsTheCompiledIdentity(t *testing.T) {
 	// The test binary carries no dirty VCS stamp.
 	assert.Equal(t, false, decoded["modified"])
 	assert.Equal(t, runtime.Version(), decoded["goVersion"])
-	assert.Len(t, decoded, 8, "FC-3 has exactly eight top-level keys")
-
-	manifest := manifestOf(t, decoded)
-	assert.Equal(t, "go-buildinfo-v1", manifest["format"])
-	assert.Equal(t, "lerian", manifest["scope"])
-	assert.NotNil(t, manifest["modules"], "modules is an empty array, never null")
-	assert.Len(t, manifest, 3)
+	assert.Len(t, decoded, 7, "the endpoint serves the identity and nothing else")
+	assert.NotContains(t, decoded, "dependencyManifest",
+		"the manifest leaves the process only through --version")
 }
 
 // TestHandlerKeepsAnEmptyServiceField reads the package-level injected Build, a
@@ -87,73 +74,16 @@ func TestHandlerKeepsAnEmptyServiceField(t *testing.T) {
 	assert.Equal(t, "", value)
 }
 
-func TestHandlerScopeFromQuery(t *testing.T) {
-	tests := []struct {
-		target string
-		want   string
-	}{
-		{"/version", "lerian"},
-		{"/version?full=1", "full"},
-		{"/version?full=true", "full"},
-		{"/version?full=0", "lerian"},
-		{"/version?full=yes", "lerian"},
-		{"/version?full=", "lerian"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.target, func(t *testing.T) {
+// TestHandlerIgnoresTheFullQuery pins that no query parameter can pull the
+// dependency manifest out over HTTP.
+func TestHandlerIgnoresTheFullQuery(t *testing.T) {
+	for _, target := range []string{"/version?full=1", "/version?full=true"} {
+		t.Run(target, func(t *testing.T) {
 			t.Parallel()
 
-			_, decoded := getVersion(t, "midaz-ledger", tt.target)
-			assert.Equal(t, tt.want, manifestOf(t, decoded)["scope"])
+			_, decoded := getVersion(t, "midaz-ledger", target)
+			assert.Len(t, decoded, 7)
+			assert.NotContains(t, decoded, "dependencyManifest")
 		})
 	}
-}
-
-func TestHandlerModulesUseContractKeys(t *testing.T) {
-	t.Parallel()
-
-	encoded, err := json.Marshal(manifest{
-		Format: manifestFormat,
-		Scope:  scopeFull,
-		Modules: []Module{
-			{Path: "github.com/LerianStudio/lib-commons/v7", Version: "v7.4.0", Sum: "h1:abc"},
-			{
-				Path:    "github.com/LerianStudio/lib-observability/v4",
-				Version: "v4.1.0",
-				Replace: &Module{Path: "../lib-observability", Version: "(devel)"},
-			},
-		},
-	})
-	require.NoError(t, err)
-
-	decoded := map[string]any{}
-	require.NoError(t, json.Unmarshal(encoded, &decoded))
-
-	modules, ok := decoded["modules"].([]any)
-	require.True(t, ok, "modules must be an array")
-	require.Len(t, modules, 2)
-
-	linked, ok := modules[0].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, map[string]any{
-		"path":    "github.com/LerianStudio/lib-commons/v7",
-		"version": "v7.4.0",
-		"sum":     "h1:abc",
-	}, linked, "an unreplaced module carries no replace object")
-
-	replaced, ok := modules[1].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, map[string]any{
-		"path":    "github.com/LerianStudio/lib-observability/v4",
-		"version": "v4.1.0",
-		"replace": map[string]any{"path": "../lib-observability", "version": "(devel)"},
-	}, replaced, "a module without a sum omits the key, as does a replace target")
-}
-
-func TestHandlerServesAnEmptyManifestAsAnArray(t *testing.T) {
-	_, decoded := getVersion(t, "midaz-ledger", "/version")
-
-	assert.Equal(t, []any{}, manifestOf(t, decoded)["modules"],
-		"a binary with no linked Lerian module answers [], never null")
 }

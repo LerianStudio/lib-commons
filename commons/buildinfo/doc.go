@@ -18,4 +18,8 @@
 // Everything else is read from runtime/debug. Per field, an injected value
 // wins; otherwise the VCS stamp the toolchain recorded is used; only then the
 // "dev" and "unknown" fallbacks. A version is never taken from VCS.
+//
+// Handler serves the identity alone on GET /version. The dependency manifest
+// is available only through --version; in a cluster, run
+// "kubectl exec <pod> -- /service --version".
 package buildinfo

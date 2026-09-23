@@ -20,6 +20,7 @@ import (
 	"time"
 
 	chttp "github.com/LerianStudio/lib-commons/v7/commons/constants"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
@@ -29,8 +30,8 @@ import (
 // streamProbe is what the protected handler reports back: whether the request
 // body was still a stream when the handler got it, and how many bytes the
 // handler itself could read. It is the whole differential of the streamed-body
-// test — a middleware that fingerprinted the raw body has already drained and
-// closed that stream, so Stream comes back false.
+// test — a middleware that drained the stream and left it closed hands the
+// handler a nil reader, so Stream comes back false and Bytes zero.
 type streamProbe struct {
 	Stream bool `json:"stream"`
 	Bytes  int  `json:"bytes"`
@@ -46,17 +47,22 @@ func streamProbeApp(mw fiber.Handler, called *atomic.Int32) *fiber.App {
 	app.Post("/test", func(c fiber.Ctx) error {
 		called.Add(1)
 
-		probe := streamProbe{Stream: c.Request().IsBodyStream()}
+		// Read the body the way humafiber does and nothing else: its
+		// BodyReader() branches on the SERVER's StreamRequestBody setting and
+		// returns Request().BodyStream() whatever that is, a nil reader
+		// included. It never falls back to c.Body(), so a probe that does
+		// falls back reports a body the real adapter would not have seen.
+		var probe streamProbe
 
-		if probe.Stream {
-			n, err := io.Copy(io.Discard, c.Request().BodyStream())
+		if r := c.Request().BodyStream(); r != nil {
+			probe.Stream = true
+
+			n, err := io.Copy(io.Discard, r)
 			if err != nil {
 				return err
 			}
 
 			probe.Bytes = int(n)
-		} else {
-			probe.Bytes = len(c.Body())
 		}
 
 		return c.Status(fiber.StatusCreated).JSON(probe)
@@ -98,7 +104,7 @@ func TestFingerprintProvider_StreamedBody_LeavesTheStreamUntouched(t *testing.T)
 
 	body := bytes.Repeat([]byte("x"), bodySize)
 
-	t.Run("without_provider_the_body_is_buffered", func(t *testing.T) {
+	t.Run("without_provider_the_handler_still_reads_the_stream", func(t *testing.T) {
 		t.Parallel()
 
 		conn := newRedisClient(t, miniredis.RunT(t))
@@ -110,9 +116,11 @@ func TestFingerprintProvider_StreamedBody_LeavesTheStreamUntouched(t *testing.T)
 
 		require.Equal(t, http.StatusCreated, resp.StatusCode)
 		probe := decodeStreamProbe(t, resp)
-		assert.False(t, probe.Stream,
-			"fingerprinting the raw body drains and closes the request stream")
-		assert.Equal(t, bodySize, probe.Bytes)
+		assert.True(t, probe.Stream,
+			"fingerprinting the raw body drains the stream and closes it; the handler below "+
+				"must still be handed a readable one")
+		assert.Equal(t, bodySize, probe.Bytes,
+			"the re-seated stream must carry the whole body, not a prefix of it")
 		assert.Equal(t, int32(1), called.Load())
 	})
 
@@ -283,13 +291,16 @@ func TestFingerprintProvider_Error_RefusesBeforeHandler(t *testing.T) {
 
 		var called atomic.Int32
 
-		resp := postBody(t, uploadApp(New(newRedisClient(t, mr), failing).Check(), &called),
+		logger := &recordingLogger{}
+
+		resp := postBody(t, uploadApp(New(newRedisClient(t, mr), failing, WithLogger(logger)).Check(), &called),
 			"k1", fiber.MIMEApplicationJSON, []byte(`{"amount":10}`))
 
 		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 		assert.Equal(t, "IDEMPOTENCY_UNAVAILABLE", decodeErrorBody(t, resp).Title)
 		assert.Equal(t, int32(0), called.Load(), "the handler must not run")
 		assert.Empty(t, mr.Keys(), "a provider error must leave no record behind")
+		logger.find(t, obs.LevelWarn, "fingerprint provider failed")
 	})
 
 	t.Run("routes_through_unavailable_handler", func(t *testing.T) {
@@ -729,6 +740,41 @@ func TestFingerprintProvider_StreamedDuplicate_LeavesTheConnectionUsable(t *test
 		assert.Equal(t, 2, client.dials,
 			"requests 1 and 2 share the first connection; only the one request 2 retired is redialled, "+
 				"and no request is lost to it")
+	})
+
+	t.Run("a_re_seated_provider_keeps_the_connection", func(t *testing.T) {
+		t.Parallel()
+
+		// The provider that drains the wire and hands the bytes back is the
+		// shape a service reaches for when the fingerprint must cover the
+		// payload: read the stream once, re-seat it so the handler still finds
+		// one. Nothing is left in the connection after it runs — every byte is
+		// in memory — so retiring the connection on the duplicates buys
+		// nothing and costs a handshake per retry.
+		app, called := newApp(t, WithFingerprintProvider(func(c fiber.Ctx) ([]byte, error) {
+			raw, err := io.ReadAll(c.Request().BodyStream())
+			if err != nil {
+				return nil, err
+			}
+
+			c.Request().SetBodyStream(bytes.NewReader(raw), len(raw))
+
+			return raw, nil
+		}))
+
+		client := newKeepAliveConn(t, serveStreamProbe(t, app))
+
+		for i := 1; i <= 3; i++ {
+			status, _, retired := client.post(key, body)
+
+			require.Equal(t, http.StatusCreated, status, "request %d must be answered", i)
+			assert.False(t, retired,
+				"the provider read the whole body into memory and re-seated it as a rewindable "+
+					"reader, so request %d holds nothing in the connection", i)
+		}
+
+		assert.Equal(t, int32(1), called.Load(), "the upload must be handled exactly once")
+		assert.Equal(t, 1, client.dials, "one connection must carry all three requests")
 	})
 
 	t.Run("without_provider_the_connection_is_reused", func(t *testing.T) {

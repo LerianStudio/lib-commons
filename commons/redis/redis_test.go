@@ -57,18 +57,22 @@ func unsetEnvVar(t *testing.T, key string) {
 	})
 }
 
+// loggedEntry is one recorded event. The level is kept because several tests
+// assert on severity rather than on wording: reporting a designed outcome at
+// ERROR is itself the defect they guard against.
+type loggedEntry struct {
+	level int
+	msg   string
+}
+
 type recordingLogger struct {
-	mu       sync.Mutex
-	warnings []string
+	mu      sync.Mutex
+	entries []loggedEntry
 }
 
 func (logger *recordingLogger) Log(_ context.Context, level int, msg string, _ ...any) {
-	if level != obs.LevelWarn {
-		return
-	}
-
 	logger.mu.Lock()
-	logger.warnings = append(logger.warnings, msg)
+	logger.entries = append(logger.entries, loggedEntry{level: level, msg: msg})
 	logger.mu.Unlock()
 }
 
@@ -76,11 +80,35 @@ func (logger *recordingLogger) Enabled(int) bool { return true }
 
 func (logger *recordingLogger) Sync(context.Context) error { return nil }
 
-func (logger *recordingLogger) warningMessages() []string {
+// loggedEntries returns every recorded event, ordered as emitted.
+func (logger *recordingLogger) loggedEntries() []loggedEntry {
 	logger.mu.Lock()
 	defer logger.mu.Unlock()
 
-	return append([]string(nil), logger.warnings...)
+	return append([]loggedEntry(nil), logger.entries...)
+}
+
+// hasLevel reports whether any recorded event was emitted at level.
+func (logger *recordingLogger) hasLevel(level int) bool {
+	for _, entry := range logger.loggedEntries() {
+		if entry.level == level {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (logger *recordingLogger) warningMessages() []string {
+	var warnings []string
+
+	for _, entry := range logger.loggedEntries() {
+		if entry.level == obs.LevelWarn {
+			warnings = append(warnings, entry.msg)
+		}
+	}
+
+	return warnings
 }
 
 func newStandaloneConfig(addr string) Config {

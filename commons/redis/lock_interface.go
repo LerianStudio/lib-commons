@@ -54,6 +54,10 @@ type LockManager interface {
 	// TryLock attempts to acquire a lock without retrying.
 	// Returns the handle and true if lock was acquired, nil and false otherwise.
 	// Use LockHandle.Unlock to release the lock when done.
+	// It uses a fixed 10-second expiry; a caller needing a different one on a
+	// single attempt uses (*RedisLockManager).TryLockWithOptions, which is
+	// deliberately absent from this interface so that adding it cannot break
+	// an external implementer.
 	TryLock(ctx context.Context, lockKey string) (LockHandle, bool, error)
 }
 

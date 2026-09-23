@@ -94,7 +94,7 @@ func TestWriteVersion(t *testing.T) {
 	require.True(t, ok, "dependencyManifest must be an object")
 	assert.Equal(t, "go-buildinfo-v1", manifest["format"])
 	assert.Equal(t, "lerian", manifest["scope"])
-	assert.NotNil(t, manifest["modules"], "modules must serialize as a list")
+	assert.Equal(t, []any{}, manifest["modules"], "a binary with no linked Lerian module prints [], never null")
 }
 
 func TestWriteVersionWriteFailure(t *testing.T) {
@@ -148,4 +148,45 @@ func TestHandleFlag(t *testing.T) {
 			assert.Equal(t, injectedBuildTime, got["buildTime"])
 		})
 	}
+}
+
+func TestManifestModulesUseContractKeys(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := json.Marshal(manifest{
+		Format: manifestFormat,
+		Scope:  scopeLerian,
+		Modules: []Module{
+			{Path: "github.com/LerianStudio/lib-commons/v7", Version: "v7.4.0", Sum: "h1:abc"},
+			{
+				Path:    "github.com/LerianStudio/lib-observability/v4",
+				Version: "v4.1.0",
+				Replace: &Module{Path: "../lib-observability", Version: "(devel)"},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	decoded := map[string]any{}
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+
+	modules, ok := decoded["modules"].([]any)
+	require.True(t, ok, "modules must be an array")
+	require.Len(t, modules, 2)
+
+	linked, ok := modules[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, map[string]any{
+		"path":    "github.com/LerianStudio/lib-commons/v7",
+		"version": "v7.4.0",
+		"sum":     "h1:abc",
+	}, linked, "an unreplaced module carries no replace object")
+
+	replaced, ok := modules[1].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, map[string]any{
+		"path":    "github.com/LerianStudio/lib-observability/v4",
+		"version": "v4.1.0",
+		"replace": map[string]any{"path": "../lib-observability", "version": "(devel)"},
+	}, replaced, "a module without a sum omits the key, as does a replace target")
 }
