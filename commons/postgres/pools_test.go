@@ -74,11 +74,16 @@ func TestNewFromPoolsNilPrimary(t *testing.T) {
 // no DSN, and a query routed through the resolver reaches the caller's mock.
 func TestNewFromPoolsServesInjectedPools(t *testing.T) {
 	tests := []struct {
-		name        string
+		name string
+		// withReplica injects a second, distinct pool as the replica.
 		withReplica bool
+		// replicaIsPrimary injects the primary handle a second time as the
+		// replica, the shape Config.hasReplica refuses on the dialing path.
+		replicaIsPrimary bool
 	}{
 		{name: "primary only"},
 		{name: "primary and replica", withReplica: true},
+		{name: "replica is the primary handle", replicaIsPrimary: true},
 	}
 
 	for _, tt := range tests {
@@ -91,11 +96,14 @@ func TestNewFromPoolsServesInjectedPools(t *testing.T) {
 
 			readMock := primaryMock
 
-			if tt.withReplica {
+			switch {
+			case tt.withReplica:
 				var replicaMock sqlmock.Sqlmock
 
 				replica, replicaMock = mockPool(t)
 				readMock = replicaMock
+			case tt.replicaIsPrimary:
+				replica = primary
 			}
 
 			// cfg carries no DSN on purpose: a dial would need one.
@@ -123,7 +131,7 @@ func TestNewFromPoolsServesInjectedPools(t *testing.T) {
 				assert.Same(t, replica, resolver.ReplicaDBs()[0])
 				assert.Same(t, replica, client.replica, "the client must keep the replica handle it was given")
 			} else {
-				assert.Empty(t, resolver.ReplicaDBs(), "a nil replica must leave the replica set empty")
+				assert.Empty(t, resolver.ReplicaDBs(), "no distinct replica must leave the replica set empty")
 				assert.Nil(t, client.replica, "the client must not keep a ghost replica handle")
 			}
 
@@ -201,4 +209,94 @@ func TestNewFromPoolsResolverFailure(t *testing.T) {
 
 	require.ErrorIs(t, err, assert.AnError)
 	assert.Nil(t, client)
+}
+
+// countingRecorder records the names of the counters emitted through it.
+type countingRecorder struct {
+	counters []string
+}
+
+func (r *countingRecorder) AddCounter(_ context.Context, name, _, _ string, _ map[string]string, _ int64) error {
+	r.counters = append(r.counters, name)
+
+	return nil
+}
+
+func (r *countingRecorder) SetGauge(_ context.Context, _, _, _ string, _ map[string]string, _ int64) error {
+	return nil
+}
+
+func (r *countingRecorder) RecordHistogram(
+	_ context.Context, _, _, _ string, _ map[string]string, _ float64, _ []float64,
+) error {
+	return nil
+}
+
+// TestNewFromPoolsNeverDials pins the refusal that makes the constructor safe.
+// An injected client carries a cfg that skipped validate() and the TLS policy,
+// so that DSN is not a target it may open — not through Connect, and not
+// through the lazy-connect path a CLOSED client falls into. The empty DSN is
+// the dangerous case: pgx resolves it from the ambient libpq environment, so a
+// client the caller believes is closed would silently attach to whatever
+// PGHOST/PGDATABASE name. failingOpen fails the test on any dial at all.
+func TestNewFromPoolsNeverDials(t *testing.T) {
+	tests := []struct {
+		name string
+		dsn  string
+	}{
+		{name: "no dsn at all"},
+		{name: "a dsn New would refuse", dsn: "postgres://u:p@other-host:5432/db?sslmode=disable"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			failingOpen(t)
+
+			primary, primaryMock := mockPool(t)
+			recorder := &countingRecorder{}
+
+			client, err := NewFromPools(primary, nil, Config{PrimaryDSN: tt.dsn, MetricsRecorder: recorder})
+			require.NoError(t, err)
+
+			// Connect refuses and changes NOTHING: unlike the reconnect contract
+			// of a dialed client, it neither closes nor replaces the injected pool.
+			require.ErrorIs(t, client.Connect(context.Background()), ErrInjectedPools)
+			assert.Equal(t, []string{connectionFailuresMetricName}, recorder.counters,
+				"the configured metrics recorder must see the refused connection")
+			require.NoError(t, primary.PingContext(context.Background()),
+				"Connect must leave the injected pool open")
+
+			gotPrimary, err := client.Primary()
+			require.NoError(t, err)
+			assert.Same(t, primary, gotPrimary, "Connect must leave the injected pool in place")
+
+			// After Close the resolver fast path is gone, so Resolver takes the
+			// lazy-connect path — which must refuse rather than dial.
+			primaryMock.ExpectClose()
+			require.NoError(t, client.Close())
+
+			resolver, err := client.Resolver(context.Background())
+			require.ErrorIs(t, err, ErrInjectedPools)
+			assert.Nil(t, resolver)
+		})
+	}
+}
+
+// TestNewFromPoolsErrorKeepsPoolsOpen pins the other half of the ownership
+// contract: ownership transfers only on success, so a constructor failure
+// leaves the caller's pools open for the caller to close.
+func TestNewFromPoolsErrorKeepsPoolsOpen(t *testing.T) {
+	primary, _ := mockPool(t)
+
+	original := createResolverFn
+	createResolverFn = func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) {
+		return nil, assert.AnError
+	}
+
+	t.Cleanup(func() { createResolverFn = original })
+
+	_, err := NewFromPools(primary, nil, Config{})
+	require.Error(t, err)
+
+	assert.NoError(t, primary.PingContext(context.Background()), "a failed constructor must close nothing")
 }
