@@ -175,3 +175,46 @@ func TestTenantProvider_NilKeepsDefault(t *testing.T) {
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	assert.Equal(t, []string{"idem:t1:k1"}, mr.Keys())
 }
+
+// A tenant carrying the store-key delimiter would share an address with a
+// different tenant ("a:b"+"c" and "a"+"b:c" are both <prefix>a:b:c), so it is
+// refused on both tenant sources and no record is written under either
+// spelling.
+func TestTenant_DelimiterInTenantIsRefused(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]func(*miniredis.Miniredis) (*fiber.App, *atomic.Int32){
+		"provider": func(mr *miniredis.Miniredis) (*fiber.App, *atomic.Int32) {
+			var calls atomic.Int32
+
+			m := New(newRedisClient(t, mr), WithKeyPrefix("idem:"),
+				WithTenantProvider(func(fiber.Ctx) (string, error) { return "a:b", nil }))
+
+			return tenantEchoApp(m.Check(), "tenant-from-tmcore", &calls), &calls
+		},
+		"tenant-manager context": func(mr *miniredis.Miniredis) (*fiber.App, *atomic.Int32) {
+			var calls atomic.Int32
+
+			m := New(newRedisClient(t, mr), WithKeyPrefix("idem:"))
+
+			return tenantEchoApp(m.Check(), "a:b", &calls), &calls
+		},
+	}
+
+	for name, build := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			mr := miniredis.RunT(t)
+			app, calls := build(mr)
+
+			resp := doPost(t, app, "c")
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			assert.Equal(t, "IDEMPOTENCY_TENANT_MALFORMED", decodeErrorBody(t, resp).Title)
+			assert.Equal(t, int32(0), calls.Load(), "the handler must not run")
+			assert.False(t, mr.Exists("idem:a:b:c"), "no record under the colliding address")
+			assert.Empty(t, mr.Keys())
+		})
+	}
+}

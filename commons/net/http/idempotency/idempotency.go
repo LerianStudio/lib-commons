@@ -87,6 +87,11 @@ var (
 	// different payload. Nothing was written; the existing record still answers
 	// the resend.
 	ErrFenceKeyHeld = errors.New("idempotency fence: key already holds a record")
+
+	// ErrTenantMalformed is returned by [Middleware.FenceOutcomeUnknown] when the
+	// resolved tenant contains ':', the store-key delimiter: such a tenant would
+	// address another tenant's records, so nothing is written.
+	ErrTenantMalformed = errors.New("idempotency: tenant contains the store-key delimiter ':'")
 )
 
 // requestFingerprint identifies WHICH request an idempotency key was spent on.
@@ -579,7 +584,8 @@ func WithFingerprintProvider(provider FingerprintProvider) Option {
 // An empty return or an error takes the absent-tenant branch, exactly as an
 // empty tenant-manager context does: pass-through by default, the
 // [WithRequireTenant] refusal when opted in. The error is logged; it is never a
-// refusal of its own.
+// refusal of its own. A tenant containing ':', from the provider or the
+// tenant-manager context, is refused with a 400 "IDEMPOTENCY_TENANT_MALFORMED".
 func WithTenantProvider(provider TenantProvider) Option {
 	return func(m *Middleware) {
 		if provider != nil {
@@ -1432,7 +1438,14 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	}
 
 	// Build a tenant-scoped Redis key for per-tenant isolation.
-	tenantID := m.resolveTenant(c)
+	tenantID, err := m.resolveTenant(c)
+	if err != nil {
+		return libHTTP.RespondError(c, http.StatusBadRequest,
+			"IDEMPOTENCY_TENANT_MALFORMED",
+			"tenant must not contain ':'",
+		)
+	}
+
 	if tenantID == "" {
 		if m.requireTenant {
 			return m.respondTenantRequired(c)
@@ -1530,21 +1543,31 @@ func recordTenant(c fiber.Ctx) string {
 
 // resolveTenant reads the tenant this request's record is rooted at. Without a
 // provider it is the tenant-manager context, which is the shipped behaviour. A
-// provider error is the absent tenant; see [WithTenantProvider].
-func (m *Middleware) resolveTenant(c fiber.Ctx) string {
+// provider error is the absent tenant; see [WithTenantProvider]. A tenant
+// containing the store-key delimiter, from either source, is [ErrTenantMalformed]:
+// rooted as-is it would address another tenant's records.
+func (m *Middleware) resolveTenant(c fiber.Ctx) (string, error) {
+	var tenantID string
+
 	if m.tenantProvider == nil {
-		return tmcore.GetTenantIDContext(c.Context())
+		tenantID = tmcore.GetTenantIDContext(c.Context())
+	} else {
+		var err error
+
+		tenantID, err = m.tenantProvider(c)
+		if err != nil {
+			m.logger.Log(c.Context(), obs.LevelWarn,
+				"idempotency: tenant provider failed; treating the request as tenant-less", "error", err)
+
+			return "", nil
+		}
 	}
 
-	tenantID, err := m.tenantProvider(c)
-	if err != nil {
-		m.logger.Log(c.Context(), obs.LevelWarn,
-			"idempotency: tenant provider failed; treating the request as tenant-less", "error", err)
-
-		return ""
+	if strings.Contains(tenantID, ":") {
+		return "", ErrTenantMalformed
 	}
 
-	return tenantID
+	return tenantID, nil
 }
 
 // resolveFingerprint builds the digest that identifies WHICH request spent this
@@ -2168,6 +2191,7 @@ func (m *Middleware) storeKey(tenantID, idempotencyKey string) string {
 // record is a KNOWN outcome with a receipt, and overwriting it would turn a
 // replayable answer into "unknown"; a processing record belongs to a live
 // owner; a fence for a different payload already refuses this one as reuse.
+// A tenant containing ':' returns [ErrTenantMalformed] and writes nothing.
 func (m *Middleware) FenceOutcomeUnknown(c fiber.Ctx, ttl time.Duration) error {
 	if m == nil || nilcheck.Interface(m.store) {
 		return errFenceStoreMissing
@@ -2190,7 +2214,11 @@ func (m *Middleware) FenceOutcomeUnknown(c fiber.Ctx, ttl time.Duration) error {
 		return errFenceKeyTooLong
 	}
 
-	tenantID := m.resolveTenant(c)
+	tenantID, err := m.resolveTenant(c)
+	if err != nil {
+		return err
+	}
+
 	if tenantID == "" {
 		return errFenceTenantMissing
 	}
