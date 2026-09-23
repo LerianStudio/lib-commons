@@ -193,6 +193,17 @@ and the manifest of the Lerian modules linked into it. Those values are compiled
 in by the CI, never read from the environment, and `commons/buildinfo` is the
 single source for `--version`, `GET /version` and the OTel `service.version`.
 
+| Field | `GET /version` | `--version` |
+|---|---|---|
+| `schemaVersion` | yes | yes |
+| `service` | yes | no |
+| `version`, `revision`, `buildTime`, `modified`, `goVersion` | yes | yes |
+| `dependencyManifest` (Lerian modules) | no | yes |
+
+The dependency manifest is available only through `--version`; run
+`kubectl exec <pod> -- /service --version` in a cluster. It never leaves the
+process over HTTP, and `GET /version` takes no query parameters.
+
 Build stage of the service Dockerfile:
 
 ```dockerfile
@@ -231,9 +242,8 @@ func main() {
 The symbol names `main.version`, `main.revision` and `main.buildTime` are stable
 forever; a major bump of lib-commons changes its module path, not these.
 
-`/version` is served on the admin port, never on the API port. `NewAdminApp`
-returns a Fiber app with `GET /version` already mounted; the service adds
-`/health`, `/readyz` and `/metrics` to it:
+`NewAdminApp` returns a Fiber app with `GET /version` already mounted; the
+service adds `/health`, `/readyz` and `/metrics` to it:
 
 ```go
 admin := server.NewAdminApp("midaz-ledger")
@@ -258,8 +268,6 @@ Rules:
   environment variable.
 - `revision` and `buildTime` fall back to the toolchain VCS stamp
   (`vcs.revision`, `vcs.time`), then to `unknown`.
-- `GET /version?full=1` widens `dependencyManifest` from the Lerian modules to
-  every module linked into the binary.
 - `commons/buildinfo.Scope(pkg)` gives a library its OTel instrumentation scope
   (module path plus module version); libraries announce their version that way
   and never expose an endpoint.
