@@ -427,10 +427,14 @@ func (dl *RedisLockManager) TryLock(ctx context.Context, lockKey string) (LockHa
 // The contract is TryLock's: the handle and true when the lock was taken,
 // (nil, false, nil) when another process holds it, and an error otherwise.
 // Unlike WithLockOptions, contention is not an error here — a caller that wants
-// the error shape uses that entry point instead. A caller whose own context
-// ended and a Redis that stopped answering are BOTH errors, never a busy lock,
-// however many Tries were configured: a worker told "busy" skips its cycle and
-// reports success, which would hide an outage for as long as it lasts.
+// the error shape uses that entry point instead. A Redis that stopped answering
+// is always an error, however many Tries were configured: a worker told "busy"
+// skips its cycle and reports success, which would hide an outage for as long
+// as it lasts. A caller whose own context ended before the first attempt is an
+// error too. One case reads as busy: the context ends while waiting out
+// RetryDelay after an attempt that found the lock held. The answer is then
+// (nil, false, nil), because the lock really was held; WithLockOptions reports
+// the same case as ErrLockContended for the same reason.
 //
 // Tries is honoured as supplied, so Tries: 3 makes three attempts, separated by
 // RetryDelay, before reporting the lock busy. Options are validated the same way
