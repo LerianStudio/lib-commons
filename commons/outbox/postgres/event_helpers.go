@@ -20,6 +20,8 @@ type createValues struct {
 	lastError   string
 	createdAt   time.Time
 	updatedAt   time.Time
+
+	traceContext map[string]string
 }
 
 func normalizedCreateValues(event *outbox.OutboxEvent, now time.Time) (createValues, error) {
@@ -48,6 +50,8 @@ func normalizedCreateValues(event *outbox.OutboxEvent, now time.Time) (createVal
 		lastError:   "",
 		createdAt:   createdAt,
 		updatedAt:   updatedAt,
+
+		traceContext: outbox.SanitizeTraceContext(event.TraceContext),
 	}, nil
 }
 

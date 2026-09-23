@@ -355,9 +355,9 @@ func (dispatcher *Dispatcher) DispatchOnceResult(ctx context.Context) DispatchRe
 
 		processed++
 
-		if err := dispatcher.publishEventWithRetry(ctx, event); err != nil {
-			dispatcher.handlePublishError(ctx, logger, event, err)
+		outcome := dispatcher.dispatchEvent(ctx, tracer, logger, tenantKey, event)
 
+		if !outcome.published {
 			failed++
 
 			continue
@@ -365,19 +365,8 @@ func (dispatcher *Dispatcher) DispatchOnceResult(ctx context.Context) DispatchRe
 
 		published++
 
-		if err := dispatcher.repo.MarkPublished(ctx, event.ID, time.Now().UTC()); err != nil {
-			logger.Log(
-				ctx,
-				obs.LevelError,
-				"outbox event published to broker but failed to persist PUBLISHED state; event may be retried",
-				"event_id", event.ID.String(),
-				"error", sanitizeErrorForStorage(err),
-			)
-			dispatcher.addStateUpdateFailure(ctx, tenantKey, 1)
-
+		if outcome.stateUpdateFailed {
 			stateUpdateFailed++
-
-			continue
 		}
 	}
 
@@ -391,6 +380,94 @@ func (dispatcher *Dispatcher) DispatchOnceResult(ctx context.Context) DispatchRe
 		Failed:            failed,
 		StateUpdateFailed: stateUpdateFailed,
 	}
+}
+
+// eventDispatchOutcome reports what happened to one event in a dispatch cycle.
+type eventDispatchOutcome struct {
+	published         bool
+	stateUpdateFailed bool
+}
+
+// dispatchEvent publishes one event and records its PUBLISHED state.
+//
+// When the event carries a producer trace carrier, the publish runs inside the
+// restored producer trace instead of the dispatcher's background trace, so a
+// client request stays connected to the broker publish it caused. Events
+// without a carrier run exactly as before, on the dispatch cycle context.
+func (dispatcher *Dispatcher) dispatchEvent(
+	ctx context.Context,
+	tracer trace.Tracer,
+	logger obs.Logger,
+	tenantKey string,
+	event *OutboxEvent,
+) eventDispatchOutcome {
+	ctx, span, endSpan := publishTraceScope(ctx, tracer, event)
+	defer endSpan()
+
+	if err := dispatcher.publishEventWithRetry(ctx, event); err != nil {
+		dispatcher.handlePublishError(ctx, logger, event, err)
+		handleOptionalSpanError(span, "failed to publish outbox event", err)
+
+		return eventDispatchOutcome{}
+	}
+
+	if err := dispatcher.repo.MarkPublished(ctx, event.ID, time.Now().UTC()); err != nil {
+		logger.Log(
+			ctx,
+			obs.LevelError,
+			"outbox event published to broker but failed to persist PUBLISHED state; event may be retried",
+			"event_id", event.ID.String(),
+			"error", sanitizeErrorForStorage(err),
+		)
+		dispatcher.addStateUpdateFailure(ctx, tenantKey, 1)
+		handleOptionalSpanError(span, "failed to persist outbox PUBLISHED state", err)
+
+		return eventDispatchOutcome{published: true, stateUpdateFailed: true}
+	}
+
+	return eventDispatchOutcome{published: true}
+}
+
+// publishTraceScope restores the producer trace carried by the event and opens
+// the per-event publish span as a child of it, linked back to the dispatch
+// cycle span so the cycle stays navigable from the restored trace.
+//
+// Without a usable carrier it returns the dispatch cycle context, a nil span
+// and a no-op closer: no extra span is created and behavior is unchanged.
+func publishTraceScope(
+	ctx context.Context,
+	tracer trace.Tracer,
+	event *OutboxEvent,
+) (context.Context, trace.Span, func()) {
+	restored, ok := RestoreTraceContext(ctx, event.TraceContext)
+	if !ok {
+		return ctx, nil, func() {}
+	}
+
+	publishCtx, span := tracer.Start(
+		restored,
+		"outbox.publish",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithLinks(trace.LinkFromContext(ctx)),
+	)
+
+	span.SetAttributes(
+		attribute.String("outbox.event.id", event.ID.String()),
+		attribute.String("outbox.event.type", event.EventType),
+	)
+
+	return publishCtx, span, func() { span.End() }
+}
+
+// handleOptionalSpanError attributes err to span when a per-event publish span
+// exists. Without one the dispatch cycle span is left untouched, preserving the
+// error reporting shape of dispatchers whose events carry no trace context.
+func handleOptionalSpanError(span trace.Span, message string, err error) {
+	if span == nil {
+		return
+	}
+
+	libOpentelemetry.HandleSpanError(span, message, err)
 }
 
 func (dispatcher *Dispatcher) tenantMetricAttribute(tenantKey string) (attribute.KeyValue, bool) {

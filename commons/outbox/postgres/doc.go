@@ -207,4 +207,22 @@
 // pool-track deployment sets PoolResolver instead. The outbox_events DDL is
 // identical across both tracks, so the table definition carries over unchanged;
 // only the wiring and the location of each tenant's rows differ.
+//
+// # Optional trace context column
+//
+// WithTraceContextColumn enables a nullable jsonb column (conventionally
+// "trace_context", see DefaultTraceContextColumn) holding each event's W3C
+// trace carrier. It is off by default, so a table that predates the column is
+// unaffected: the repository keeps emitting the legacy column list and never
+// references the column. Enabling it requires the
+// 000002_outbox_trace_context migration on every table the repository writes.
+//
+// With the column enabled, Create, CreateWithTx, CreateIdempotentWithTx and
+// CreateManyWithTx persist the event's carrier (NULL when it has none), and
+// every read path returns it, which is what lets the dispatcher publish the
+// event inside the trace of the request that produced it.
+//
+// A service that writes its outbox row with its own INSERT, and only reads
+// through this repository, binds EncodeTraceContext(event.TraceContext) to the
+// column instead of re-implementing the carrier's allowlist and encoding.
 package postgres

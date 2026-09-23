@@ -26,23 +26,24 @@ import (
 )
 
 const (
-	defaultCollectionName = "outbox_events"
-	defaultTenantField    = "tenant_id"
-	defaultScopeTenantID  = ""
-	maxListScanMultiplier = 8
-	defaultIndexTimeout   = 10 * time.Second
-	cursorCloseTimeout    = 2 * time.Second
-	mongoFieldStatus      = "status"
-	mongoFieldAttempts    = "attempts"
-	mongoFieldCreatedAt   = "created_at"
-	mongoFieldUpdatedAt   = "updated_at"
-	mongoFieldClaimToken  = "claim_token"
-	mongoFieldLastError   = "last_error"
-	mongoUpdateSet        = "$set"
-	mongoUpdateUnset      = "$unset"
-	mongoOperatorLTE      = "$lte"
-	mongoOperatorLT       = "$lt"
-	mongoOperatorIn       = "$in"
+	defaultCollectionName  = "outbox_events"
+	defaultTenantField     = "tenant_id"
+	defaultScopeTenantID   = ""
+	maxListScanMultiplier  = 8
+	defaultIndexTimeout    = 10 * time.Second
+	cursorCloseTimeout     = 2 * time.Second
+	mongoFieldStatus       = "status"
+	mongoFieldAttempts     = "attempts"
+	mongoFieldCreatedAt    = "created_at"
+	mongoFieldUpdatedAt    = "updated_at"
+	mongoFieldClaimToken   = "claim_token"
+	mongoFieldLastError    = "last_error"
+	mongoFieldTraceContext = "trace_context"
+	mongoUpdateSet         = "$set"
+	mongoUpdateUnset       = "$unset"
+	mongoOperatorLTE       = "$lte"
+	mongoOperatorLT        = "$lt"
+	mongoOperatorIn        = "$in"
 )
 
 var (
@@ -169,6 +170,11 @@ type document struct {
 	CreatedAt   time.Time  `bson:"created_at"`
 	UpdatedAt   time.Time  `bson:"updated_at"`
 	TenantID    string     `bson:"tenant_id,omitempty"`
+
+	// TraceContext is the producer's W3C trace carrier (traceparent, and
+	// tracestate when present). Absent on events written before the field
+	// existed, and on producers that do not capture it.
+	TraceContext map[string]string `bson:"trace_context,omitempty"`
 }
 
 // NewRepository creates a MongoDB outbox repository.

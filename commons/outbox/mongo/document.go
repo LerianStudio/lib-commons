@@ -37,6 +37,10 @@ func (doc document) toBSON(tenantField string) bson.M {
 		raw[tenantField] = doc.TenantID
 	}
 
+	if len(doc.TraceContext) > 0 {
+		raw[mongoFieldTraceContext] = doc.TraceContext
+	}
+
 	return raw
 }
 
@@ -215,6 +219,8 @@ func documentFromBSON(raw bson.M, tenantField string) (document, error) {
 		return document{}, err
 	}
 
+	traceContext := optionalStringMapField(raw, mongoFieldTraceContext)
+
 	tenantID := defaultScopeTenantID
 	if tenantField != "" {
 		tenantID, err = optionalStringField(raw, tenantField)
@@ -235,6 +241,8 @@ func documentFromBSON(raw bson.M, tenantField string) (document, error) {
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 		TenantID:    strings.TrimSpace(tenantID),
+
+		TraceContext: traceContext,
 	})
 }
 
@@ -250,6 +258,7 @@ func validateDecodedDocument(doc document) (document, error) {
 
 	doc.LastError = strings.TrimSpace(doc.LastError)
 	doc.TenantID = strings.TrimSpace(doc.TenantID)
+	doc.TraceContext = outbox.SanitizeTraceContext(doc.TraceContext)
 
 	return doc, nil
 }
@@ -319,6 +328,7 @@ func validateClaimDocument(doc document) (document, error) {
 
 	doc.LastError = strings.TrimSpace(doc.LastError)
 	doc.TenantID = strings.TrimSpace(doc.TenantID)
+	doc.TraceContext = outbox.SanitizeTraceContext(doc.TraceContext)
 
 	return doc, nil
 }
@@ -359,6 +369,8 @@ func (doc document) toOutboxEvent() (*outbox.OutboxEvent, error) {
 		LastError:   doc.LastError,
 		CreatedAt:   doc.CreatedAt,
 		UpdatedAt:   doc.UpdatedAt,
+
+		TraceContext: doc.TraceContext,
 	}, nil
 }
 
@@ -374,6 +386,45 @@ func stringField(raw bson.M, key string) (string, error) {
 	}
 
 	return str, nil
+}
+
+// optionalStringMapField reads an absent-or-string-map field, accepting both a
+// decoded bson sub-document and an already-typed map.
+//
+// A value of an unexpected shape is read as absent rather than as an error: the
+// trace carrier is optional telemetry, and rejecting the document would stop the
+// dispatcher from delivering an otherwise valid event.
+func optionalStringMapField(raw bson.M, key string) map[string]string {
+	value, ok := raw[key]
+	if !ok || value == nil {
+		return nil
+	}
+
+	switch typed := value.(type) {
+	case map[string]string:
+		return outbox.SanitizeTraceContext(typed)
+	case bson.M:
+		return stringMapFromBSON(typed)
+	case map[string]any:
+		return stringMapFromBSON(typed)
+	default:
+		return nil
+	}
+}
+
+func stringMapFromBSON(raw map[string]any) map[string]string {
+	converted := make(map[string]string, len(raw))
+
+	for entryKey, entryValue := range raw {
+		str, ok := entryValue.(string)
+		if !ok {
+			continue
+		}
+
+		converted[entryKey] = str
+	}
+
+	return outbox.SanitizeTraceContext(converted)
 }
 
 func optionalStringField(raw bson.M, key string) (string, error) {
@@ -452,6 +503,8 @@ type createValues struct {
 	lastError   string
 	createdAt   time.Time
 	updatedAt   time.Time
+
+	traceContext map[string]string
 }
 
 func documentFromCreateValues(values createValues, tenantID string) document {
@@ -467,6 +520,8 @@ func documentFromCreateValues(values createValues, tenantID string) document {
 		CreatedAt:   values.createdAt,
 		UpdatedAt:   values.updatedAt,
 		TenantID:    tenantID,
+
+		TraceContext: values.traceContext,
 	}
 }
 
@@ -492,6 +547,8 @@ func normalizedCreateValues(event *outbox.OutboxEvent, now time.Time) createValu
 		lastError:   "",
 		createdAt:   createdAt,
 		updatedAt:   updatedAt,
+
+		traceContext: outbox.SanitizeTraceContext(event.TraceContext),
 	}
 }
 

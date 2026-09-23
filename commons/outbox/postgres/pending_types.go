@@ -155,7 +155,7 @@ func (repo *Repository) listPendingByTypesRows(
 
 	args = append(args, limit)
 
-	return queryOutboxEvents(ctx, tx, query.String(), args, limit, "querying pending events by types")
+	return queryOutboxEvents(ctx, tx, query.String(), args, limit, "querying pending events by types", repo.tracesContext())
 }
 
 func normalizeEventTypes(eventTypes []string) []string {

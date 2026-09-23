@@ -47,6 +47,20 @@
 // forgotten once it is older than the interval, never because the scope
 // dropped out of one discovery pass.
 //
+// An event may carry an optional W3C trace carrier in OutboxEvent.TraceContext,
+// set at construction with WithTraceContext(ctx) (or WithTraceCarrier for a
+// carrier held outside a context). Only traceparent and tracestate are kept:
+// the explicit W3C propagator is used rather than the global one, so Baggage is
+// never written to a durable row. Persistence is adapter-specific and opt-in:
+// the postgres adapter writes it only when built with WithTraceContextColumn
+// and the matching migration has run, while the mongo adapter stores it as an
+// omitted-when-empty document field. When an event arrives at the dispatcher
+// carrying a usable carrier, the dispatcher restores it and opens the per-event
+// "outbox.publish" span as a child of the producing request, linked back to the
+// dispatch cycle span so the cycle stays navigable. An event without a carrier
+// is published exactly as before, on the dispatch cycle context and with no
+// extra span.
+//
 // These optional interfaces and scheduling controls are backward compatible:
 // repositories that do not implement TenantDispatchScopeRepository continue to
 // produce one dispatch scope for every ListTenants entry, and

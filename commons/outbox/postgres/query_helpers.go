@@ -15,6 +15,7 @@ func queryOutboxEvents(
 	args []any,
 	limit int,
 	errorPrefix string,
+	withTraceContext bool,
 ) ([]*outbox.OutboxEvent, error) {
 	if tx == nil {
 		return nil, ErrConnectionRequired
@@ -34,7 +35,7 @@ func queryOutboxEvents(
 	events := make([]*outbox.OutboxEvent, 0, limit)
 
 	for rows.Next() {
-		event, scanErr := scanOutboxEvent(rows)
+		event, scanErr := scanOutboxEvent(rows, withTraceContext)
 		if scanErr != nil {
 			return nil, fmt.Errorf("scanning outbox event: %w", scanErr)
 		}

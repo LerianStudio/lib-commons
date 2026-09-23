@@ -70,6 +70,20 @@ func WithTenantColumn(tenantColumn string) Option {
 	}
 }
 
+// WithTraceContextColumn enables the optional trace context column, a jsonb
+// column holding each event's W3C trace carrier (traceparent/tracestate).
+//
+// It is off by default: a deployment whose outbox table predates the column
+// keeps working untouched. Enable it only after applying the
+// 000002_outbox_trace_context migration to the table this repository writes.
+// With it enabled the dispatcher publishes each event inside the trace of the
+// request that produced it. An empty name disables the column.
+func WithTraceContextColumn(column string) Option {
+	return func(repo *Repository) {
+		repo.traceContextColumn = column
+	}
+}
+
 func WithTransactionTimeout(timeout time.Duration) Option {
 	return func(repo *Repository) {
 		if timeout > 0 {
@@ -91,6 +105,7 @@ type Repository struct {
 	logger             obs.Logger
 	tableName          string
 	tenantColumn       string
+	traceContextColumn string
 	transactionTimeout time.Duration
 }
 
@@ -158,6 +173,14 @@ func NewRepository(
 		}
 	}
 
+	repo.traceContextColumn = strings.TrimSpace(repo.traceContextColumn)
+
+	if repo.traceContextColumn != "" {
+		if err := validateIdentifier(repo.traceContextColumn); err != nil {
+			return nil, fmt.Errorf("trace context column: %w", err)
+		}
+	}
+
 	return repo, nil
 }
 
@@ -182,7 +205,7 @@ func (repo *Repository) GetByID(ctx context.Context, id uuid.UUID) (*outbox.Outb
 
 	result, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) (*outbox.OutboxEvent, error) {
 		table := quoteIdentifierPath(repo.tableName)
-		query := "SELECT " + outboxColumns + " FROM " + table + " WHERE id = $1" // #nosec G202 -- table name validated at construction via validateIdentifierPath; quoteIdentifierPath escapes identifiers
+		query := "SELECT " + repo.selectColumns() + " FROM " + table + " WHERE id = $1" // #nosec G202 -- table name validated at construction via validateIdentifierPath; quoteIdentifierPath escapes identifiers
 
 		tenantID, tenantErr := repo.tenantIDFromContext(ctx)
 		if tenantErr != nil {
@@ -203,7 +226,7 @@ func (repo *Repository) GetByID(ctx context.Context, id uuid.UUID) (*outbox.Outb
 
 		row := tx.QueryRowContext(ctx, query, args...)
 
-		return scanOutboxEvent(row)
+		return repo.scanEvent(row)
 	})
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -286,6 +309,17 @@ func (repo *Repository) create(
 			args = append(args, tenantID)
 		}
 
+		if repo.tracesContext() {
+			traceContext, encodeErr := EncodeTraceContext(values.traceContext)
+			if encodeErr != nil {
+				return nil, encodeErr
+			}
+
+			query += ", " + quoteIdentifier(repo.traceContextColumn)
+
+			args = append(args, traceContext)
+		}
+
 		var placeholders strings.Builder
 
 		for i := range args {
@@ -296,11 +330,11 @@ func (repo *Repository) create(
 			fmt.Fprintf(&placeholders, "$%d", i+1)
 		}
 
-		query += ") VALUES (" + placeholders.String() + ") RETURNING " + outboxColumns
+		query += ") VALUES (" + placeholders.String() + ") RETURNING " + repo.selectColumns()
 
 		row := execTx.QueryRowContext(ctx, query, args...)
 
-		return scanOutboxEvent(row)
+		return repo.scanEvent(row)
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to create outbox event", err)
@@ -387,6 +421,17 @@ func (repo *Repository) CreateIdempotentWithTx(
 			conflictTarget = "(" + quoteIdentifier(repo.tenantColumn) + ", id)"
 		}
 
+		if repo.tracesContext() {
+			traceContext, encodeErr := EncodeTraceContext(values.traceContext)
+			if encodeErr != nil {
+				return nil, encodeErr
+			}
+
+			query += ", " + quoteIdentifier(repo.traceContextColumn)
+
+			args = append(args, traceContext)
+		}
+
 		var placeholders strings.Builder
 
 		for i := range args {
@@ -402,11 +447,11 @@ func (repo *Repository) CreateIdempotentWithTx(
 			" WHERE existing.event_type = EXCLUDED.event_type" +
 			" AND existing.aggregate_id = EXCLUDED.aggregate_id" +
 			" AND existing.payload = EXCLUDED.payload" +
-			" RETURNING " + outboxColumns
+			" RETURNING " + repo.selectColumns()
 
 		row := execTx.QueryRowContext(ctx, query, args...)
 
-		stored, scanErr := scanOutboxEvent(row)
+		stored, scanErr := repo.scanEvent(row)
 		if scanErr != nil {
 			if errors.Is(scanErr, sql.ErrNoRows) {
 				return nil, outbox.ErrReplayConflict
@@ -615,7 +660,7 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 
 func (repo *Repository) listPendingRows(ctx context.Context, tx *sql.Tx, limit int) ([]*outbox.OutboxEvent, error) {
 	table := quoteIdentifierPath(repo.tableName)
-	query := "SELECT " + outboxColumns + " FROM " + table + " WHERE status = $1"
+	query := "SELECT " + repo.selectColumns() + " FROM " + table + " WHERE status = $1"
 
 	tenantID, tenantErr := repo.tenantIDFromContext(ctx)
 	if tenantErr != nil {
@@ -636,7 +681,7 @@ func (repo *Repository) listPendingRows(ctx context.Context, tx *sql.Tx, limit i
 	query += fmt.Sprintf(" ORDER BY created_at ASC LIMIT $%d FOR UPDATE SKIP LOCKED", len(args)+1)
 	args = append(args, limit)
 
-	return queryOutboxEvents(ctx, tx, query, args, limit, "querying pending events")
+	return queryOutboxEvents(ctx, tx, query, args, limit, "querying pending events", repo.tracesContext())
 }
 
 func (repo *Repository) listPendingByTypeRows(
@@ -646,7 +691,7 @@ func (repo *Repository) listPendingByTypeRows(
 	limit int,
 ) ([]*outbox.OutboxEvent, error) {
 	table := quoteIdentifierPath(repo.tableName)
-	query := "SELECT " + outboxColumns + " FROM " + table + " WHERE status = $1 AND event_type = $2"
+	query := "SELECT " + repo.selectColumns() + " FROM " + table + " WHERE status = $1 AND event_type = $2"
 
 	tenantID, tenantErr := repo.tenantIDFromContext(ctx)
 	if tenantErr != nil {
@@ -668,7 +713,7 @@ func (repo *Repository) listPendingByTypeRows(
 	query += fmt.Sprintf(" ORDER BY created_at ASC LIMIT $%d FOR UPDATE SKIP LOCKED", len(args)+1)
 	args = append(args, limit)
 
-	return queryOutboxEvents(ctx, tx, query, args, limit, "querying pending events by type")
+	return queryOutboxEvents(ctx, tx, query, args, limit, "querying pending events by type", repo.tracesContext())
 }
 
 func (repo *Repository) listFailedForRetryRows(
@@ -680,7 +725,7 @@ func (repo *Repository) listFailedForRetryRows(
 	forUpdate bool,
 ) ([]*outbox.OutboxEvent, error) {
 	table := quoteIdentifierPath(repo.tableName)
-	query := "SELECT " + outboxColumns + " FROM " + table +
+	query := "SELECT " + repo.selectColumns() + " FROM " + table +
 		" WHERE status = $1 AND attempts < $2 AND updated_at <= $3"
 
 	tenantID, tenantErr := repo.tenantIDFromContext(ctx)
@@ -706,7 +751,7 @@ func (repo *Repository) listFailedForRetryRows(
 		query += " FOR UPDATE SKIP LOCKED"
 	}
 
-	return queryOutboxEvents(ctx, tx, query, args, limit, "querying failed events for retry")
+	return queryOutboxEvents(ctx, tx, query, args, limit, "querying failed events for retry", repo.tracesContext())
 }
 
 func (repo *Repository) listStuckProcessingRows(
@@ -716,7 +761,7 @@ func (repo *Repository) listStuckProcessingRows(
 	processingBefore time.Time,
 ) ([]*outbox.OutboxEvent, error) {
 	table := quoteIdentifierPath(repo.tableName)
-	query := "SELECT " + outboxColumns + " FROM " + table +
+	query := "SELECT " + repo.selectColumns() + " FROM " + table +
 		" WHERE status = $1 AND updated_at <= $2"
 
 	tenantID, tenantErr := repo.tenantIDFromContext(ctx)
@@ -738,7 +783,7 @@ func (repo *Repository) listStuckProcessingRows(
 	query += fmt.Sprintf(" ORDER BY updated_at ASC LIMIT $%d FOR UPDATE SKIP LOCKED", len(args)+1)
 	args = append(args, limit)
 
-	return queryOutboxEvents(ctx, tx, query, args, limit, "querying stuck events")
+	return queryOutboxEvents(ctx, tx, query, args, limit, "querying stuck events", repo.tracesContext())
 }
 
 func (repo *Repository) markEventsProcessing(
@@ -964,12 +1009,22 @@ func applyProcessingState(events []*outbox.OutboxEvent, now time.Time) {
 	}
 }
 
-func scanOutboxEvent(scanner interface{ Scan(dest ...any) error }) (*outbox.OutboxEvent, error) {
+// scanEvent reads one row using this repository's column list.
+func (repo *Repository) scanEvent(scanner interface{ Scan(dest ...any) error }) (*outbox.OutboxEvent, error) {
+	return scanOutboxEvent(scanner, repo.tracesContext())
+}
+
+func scanOutboxEvent(
+	scanner interface{ Scan(dest ...any) error },
+	withTraceContext bool,
+) (*outbox.OutboxEvent, error) {
 	var event outbox.OutboxEvent
 
 	var lastError sql.NullString
 
-	if err := scanner.Scan(
+	var rawTraceContext []byte
+
+	dest := []any{
 		&event.ID,
 		&event.EventType,
 		&event.AggregateID,
@@ -980,12 +1035,22 @@ func scanOutboxEvent(scanner interface{ Scan(dest ...any) error }) (*outbox.Outb
 		&lastError,
 		&event.CreatedAt,
 		&event.UpdatedAt,
-	); err != nil {
+	}
+
+	if withTraceContext {
+		dest = append(dest, &rawTraceContext)
+	}
+
+	if err := scanner.Scan(dest...); err != nil {
 		return nil, fmt.Errorf("scanning outbox event: %w", err)
 	}
 
 	if lastError.Valid {
 		event.LastError = lastError.String
+	}
+
+	if withTraceContext {
+		event.TraceContext = decodeTraceContext(rawTraceContext)
 	}
 
 	return &event, nil

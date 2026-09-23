@@ -32,6 +32,35 @@ type OutboxEvent struct {
 	LastError   string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+
+	// TraceContext is an optional W3C trace carrier (traceparent, and
+	// tracestate when present) captured from the producer's context so the
+	// dispatcher can publish the event inside the originating trace instead of
+	// its own background trace. It is persisted only by repositories
+	// configured with a trace context column; see WithTraceContext.
+	TraceContext map[string]string
+}
+
+// EventOption customizes an outbox event at construction.
+type EventOption func(*OutboxEvent)
+
+// WithTraceContext captures the caller's W3C trace context onto the event, so
+// the dispatcher later publishes it as a child of the producing request rather
+// than starting a disconnected trace. Only traceparent and tracestate are
+// captured; a context without a valid span leaves the carrier unset.
+func WithTraceContext(ctx context.Context) EventOption {
+	return func(event *OutboxEvent) {
+		event.TraceContext = CaptureTraceContext(ctx)
+	}
+}
+
+// WithTraceCarrier sets an already-extracted W3C trace carrier on the event,
+// for callers that hold one outside a Go context (a consumed message header,
+// for instance). The carrier is reduced to traceparent and tracestate.
+func WithTraceCarrier(carrier map[string]string) EventOption {
+	return func(event *OutboxEvent) {
+		event.TraceContext = SanitizeTraceContext(carrier)
+	}
 }
 
 // NewOutboxEvent creates a valid outbox event initialized as pending.
@@ -40,8 +69,9 @@ func NewOutboxEvent(
 	eventType string,
 	aggregateID uuid.UUID,
 	payload []byte,
+	opts ...EventOption,
 ) (*OutboxEvent, error) {
-	return NewOutboxEventWithID(ctx, uuid.New(), eventType, aggregateID, payload)
+	return NewOutboxEventWithID(ctx, uuid.New(), eventType, aggregateID, payload, opts...)
 }
 
 // NewOutboxEventWithID creates a valid outbox event initialized as pending using a caller-provided ID.
@@ -51,6 +81,7 @@ func NewOutboxEventWithID(
 	eventType string,
 	aggregateID uuid.UUID,
 	payload []byte,
+	opts ...EventOption,
 ) (*OutboxEvent, error) {
 	asserter := assert.New(ctx, nil, "outbox", "outbox.new_event")
 
@@ -82,7 +113,7 @@ func NewOutboxEventWithID(
 
 	now := time.Now().UTC()
 
-	return &OutboxEvent{
+	event := &OutboxEvent{
 		ID:          eventID,
 		EventType:   eventType,
 		AggregateID: aggregateID,
@@ -91,5 +122,15 @@ func NewOutboxEventWithID(
 		Attempts:    0,
 		CreatedAt:   now,
 		UpdatedAt:   now,
-	}, nil
+	}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt(event)
+		}
+	}
+
+	event.TraceContext = SanitizeTraceContext(event.TraceContext)
+
+	return event, nil
 }

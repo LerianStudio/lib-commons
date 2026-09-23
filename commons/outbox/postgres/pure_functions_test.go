@@ -31,7 +31,7 @@ func TestScanOutboxEvent_ScanError(t *testing.T) {
 	t.Parallel()
 
 	scanner := &mockScanner{err: ErrConnectionRequired}
-	_, err := scanOutboxEvent(scanner)
+	_, err := scanOutboxEvent(scanner, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "scanning outbox event")
 }
@@ -230,7 +230,7 @@ func TestTenantFilterClause_WithTenantIDAndColumn(t *testing.T) {
 func TestQueryOutboxEvents_NilTx(t *testing.T) {
 	t.Parallel()
 
-	events, err := queryOutboxEvents(context.Background(), nil, "SELECT 1", nil, 10, "test")
+	events, err := queryOutboxEvents(context.Background(), nil, "SELECT 1", nil, 10, "test", false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrConnectionRequired)
 	assert.Nil(t, events)

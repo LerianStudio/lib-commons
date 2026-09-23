@@ -67,6 +67,7 @@ func (repo *Repository) CreateManyWithTx(
 			args,
 			len(events),
 			"inserting outbox event batch",
+			repo.tracesContext(),
 		)
 		if queryErr != nil {
 			return nil, queryErr
@@ -104,6 +105,10 @@ func (repo *Repository) createManyQuery(
 		columnCount++
 	}
 
+	if repo.tracesContext() {
+		columnCount++
+	}
+
 	args := make([]any, 0, len(events)*columnCount)
 
 	var placeholders strings.Builder
@@ -125,6 +130,15 @@ func (repo *Repository) createManyQuery(
 			args = append(args, tenantID)
 		}
 
+		if repo.tracesContext() {
+			traceContext, encodeErr := EncodeTraceContext(values.traceContext)
+			if encodeErr != nil {
+				return "", nil, encodeErr
+			}
+
+			args = append(args, traceContext)
+		}
+
 		writePlaceholderTuple(&placeholders, start, columnCount)
 	}
 
@@ -136,7 +150,11 @@ func (repo *Repository) createManyQuery(
 		query += ", " + quoteIdentifier(repo.tenantColumn)
 	}
 
-	query += ") VALUES " + placeholders.String() + " RETURNING " + outboxColumns
+	if repo.tracesContext() {
+		query += ", " + quoteIdentifier(repo.traceContextColumn)
+	}
+
+	query += ") VALUES " + placeholders.String() + " RETURNING " + repo.selectColumns()
 
 	return query, args, nil
 }
