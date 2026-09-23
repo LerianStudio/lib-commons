@@ -41,6 +41,11 @@ var ErrAdminAddressConflict = errors.New("conflicting HTTP addresses configured:
 // server must have an address of its own.
 var ErrAdditionalHTTPAddressConflict = errors.New("conflicting HTTP addresses configured: WithAdditionalStdlibHTTPServer() needs an address different from every other server")
 
+// ErrAdditionalHTTPServerAlreadyConfigured indicates the additional stdlib
+// HTTP slot was given a server while it already held one. The slot holds a
+// single server by design; a second stdlib surface goes on the main slot.
+var ErrAdditionalHTTPServerAlreadyConfigured = errors.New("additional HTTP server already configured: WithAdditionalStdlibHTTPServer() and WithAdditionalStdlibHTTPListener() accept one server; put another stdlib server on the main slot")
+
 const defaultReadHeaderTimeout = 5 * time.Second
 
 // ServerManager handles the graceful shutdown of multiple server types.
@@ -54,6 +59,7 @@ type ServerManager struct {
 	stdlibHTTPListener  net.Listener
 	additionalHTTP      *http.Server
 	additionalListener  net.Listener
+	additionalReplaced  bool
 	grpcServer          *grpc.Server
 	licenseClient       *license.ManagerShutdown
 	telemetry           obs.TelemetryShutdowner
@@ -253,15 +259,31 @@ func (sm *ServerManager) WithStdlibHTTPListener(srv *http.Server, listener net.L
 // server", and its address must differ from every other configured server,
 // otherwise StartWithGracefulShutdownWithError returns
 // ErrAdditionalHTTPAddressConflict before any goroutine is launched.
+//
+// The slot holds ONE server. Giving it a non-nil server while it already
+// holds one (through either additional option) makes
+// StartWithGracefulShutdownWithError return
+// ErrAdditionalHTTPServerAlreadyConfigured; a second stdlib surface goes on the
+// main slot. A nil srv clears the slot, as it does for WithStdlibHTTPServer,
+// and a later non-nil server then fills an empty slot.
 func (sm *ServerManager) WithAdditionalStdlibHTTPServer(srv *http.Server) *ServerManager {
 	if sm == nil {
 		return nil
 	}
 
-	if srv != nil && srv.ReadHeaderTimeout == 0 {
+	if srv == nil {
+		sm.additionalHTTP = nil
+		sm.additionalListener = nil
+		sm.additionalReplaced = false
+
+		return sm
+	}
+
+	if srv.ReadHeaderTimeout == 0 {
 		srv.ReadHeaderTimeout = defaultReadHeaderTimeout
 	}
 
+	sm.additionalReplaced = sm.additionalReplaced || sm.additionalHTTP != nil
 	sm.additionalHTTP = srv
 	sm.additionalListener = nil
 
@@ -270,7 +292,9 @@ func (sm *ServerManager) WithAdditionalStdlibHTTPServer(srv *http.Server) *Serve
 
 // WithAdditionalStdlibHTTPListener is WithAdditionalStdlibHTTPServer with a
 // caller-owned, pre-bound listener, as WithStdlibHTTPListener is to
-// WithStdlibHTTPServer. A nil server or listener leaves the manager unchanged.
+// WithStdlibHTTPServer. A nil server or listener leaves the manager unchanged;
+// a non-nil pair on an occupied slot is refused at start with
+// ErrAdditionalHTTPServerAlreadyConfigured.
 func (sm *ServerManager) WithAdditionalStdlibHTTPListener(srv *http.Server, listener net.Listener) *ServerManager {
 	if sm == nil {
 		return nil
@@ -284,6 +308,7 @@ func (sm *ServerManager) WithAdditionalStdlibHTTPListener(srv *http.Server, list
 		srv.ReadHeaderTimeout = defaultReadHeaderTimeout
 	}
 
+	sm.additionalReplaced = sm.additionalReplaced || sm.additionalHTTP != nil
 	sm.additionalHTTP = srv
 	sm.additionalListener = listener
 
@@ -374,18 +399,34 @@ func (sm *ServerManager) validateConfiguration() error {
 		}
 	}
 
-	if sm.additionalHTTP != nil {
-		address := stdlibAddress(sm.additionalHTTP, sm.additionalListener)
-
-		for _, other := range []string{sm.mainHTTPAddress(), sm.adminAddressIfConfigured(), sm.grpcAddressIfConfigured()} {
-			if address != "" && other != "" && sameListenAddress(address, other) {
-				return ErrAdditionalHTTPAddressConflict
-			}
-		}
+	if err := sm.validateAdditionalHTTP(); err != nil {
+		return err
 	}
 
 	if sm.httpServer == nil && sm.stdlibHTTPServer == nil && sm.additionalHTTP == nil && sm.grpcServer == nil && sm.adminServer == nil {
 		return ErrNoServersConfigured
+	}
+
+	return nil
+}
+
+// validateAdditionalHTTP checks the additional stdlib slot: filled once, on
+// an address of its own.
+func (sm *ServerManager) validateAdditionalHTTP() error {
+	if sm.additionalReplaced {
+		return ErrAdditionalHTTPServerAlreadyConfigured
+	}
+
+	if sm.additionalHTTP == nil {
+		return nil
+	}
+
+	address := stdlibAddress(sm.additionalHTTP, sm.additionalListener)
+
+	for _, other := range []string{sm.mainHTTPAddress(), sm.adminAddressIfConfigured(), sm.grpcAddressIfConfigured()} {
+		if address != "" && other != "" && sameListenAddress(address, other) {
+			return ErrAdditionalHTTPAddressConflict
+		}
 	}
 
 	return nil

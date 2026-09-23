@@ -381,3 +381,72 @@ func TestWithAdditionalStdlibHTTPServer_NilReceiver(t *testing.T) {
 	assert.Nil(t, sm.WithAdditionalStdlibHTTPServer(&http.Server{}))
 	assert.Nil(t, sm.WithAdditionalStdlibHTTPListener(&http.Server{}, nil))
 }
+
+// TestAdditionalStdlibHTTPServerSecondServerIsRefused pins that the single
+// slot never silently replaces a server, through either option.
+func TestAdditionalStdlibHTTPServerSecondServerIsRefused(t *testing.T) {
+	cases := map[string]func(sm *server.ServerManager) *server.ServerManager{
+		"server then server": func(sm *server.ServerManager) *server.ServerManager {
+			return sm.WithAdditionalStdlibHTTPServer(newTestStdlibServer(reserveFreeAddr(t), http.NewServeMux())).
+				WithAdditionalStdlibHTTPServer(newTestStdlibServer(reserveFreeAddr(t), http.NewServeMux()))
+		},
+		"server then listener": func(sm *server.ServerManager) *server.ServerManager {
+			listener := newTestStdlibListener(t)
+
+			return sm.WithAdditionalStdlibHTTPServer(newTestStdlibServer(reserveFreeAddr(t), http.NewServeMux())).
+				WithAdditionalStdlibHTTPListener(newTestStdlibServer(listener.Addr().String(), http.NewServeMux()), listener)
+		},
+		"listener then server": func(sm *server.ServerManager) *server.ServerManager {
+			listener := newTestStdlibListener(t)
+
+			return sm.WithAdditionalStdlibHTTPListener(newTestStdlibServer(listener.Addr().String(), http.NewServeMux()), listener).
+				WithAdditionalStdlibHTTPServer(newTestStdlibServer(reserveFreeAddr(t), http.NewServeMux()))
+		},
+	}
+
+	for name, configure := range cases {
+		t.Run(name, func(t *testing.T) {
+			sm := configure(server.NewServerManager(nil, nil, nil))
+
+			require.ErrorIs(t, sm.StartWithGracefulShutdownWithError(), server.ErrAdditionalHTTPServerAlreadyConfigured)
+
+			select {
+			case <-sm.ServersStarted():
+				t.Fatal("no server goroutine may be launched when the slot was filled twice")
+			default:
+			}
+		})
+	}
+}
+
+// TestAdditionalStdlibHTTPServerNilClearsTheSlot pins that nil empties the
+// slot, and that a server given after the clear fills an empty slot.
+func TestAdditionalStdlibHTTPServerNilClearsTheSlot(t *testing.T) {
+	t.Run("cleared slot leaves no servers", func(t *testing.T) {
+		sm := server.NewServerManager(nil, nil, nil).
+			WithAdditionalStdlibHTTPServer(newTestStdlibServer(reserveFreeAddr(t), http.NewServeMux())).
+			WithAdditionalStdlibHTTPServer(nil)
+
+		err := sm.StartWithGracefulShutdownWithError()
+		require.ErrorIs(t, err, server.ErrNoServersConfigured)
+		assert.Contains(t, err.Error(), "no servers configured")
+	})
+
+	t.Run("server after the clear serves", func(t *testing.T) {
+		addr := reserveFreeAddr(t)
+		shutdown := make(chan struct{})
+
+		sm := server.NewServerManager(nil, nil, nil).
+			WithAdditionalStdlibHTTPServer(newTestStdlibServer(reserveFreeAddr(t), probeMux("old"))).
+			WithAdditionalStdlibHTTPServer(nil).
+			WithAdditionalStdlibHTTPServer(newTestStdlibServer(addr, probeMux("soap"))).
+			WithShutdownChannel(shutdown).
+			WithShutdownTimeout(5 * time.Second)
+
+		done := runManager(t, sm)
+
+		assert.Equal(t, "soap", fetchProbe(t, addr))
+
+		requireCleanExit(t, shutdown, done)
+	})
+}
