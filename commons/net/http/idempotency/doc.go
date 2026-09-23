@@ -348,6 +348,22 @@
 // cannot answer falls back to [WithProcessingTTL] — whatever that constant is,
 // so size it to stand alone — rather than refusing the request.
 //
+// A handler whose duration cannot be bounded up front — a streamed upload —
+// takes [WithProcessingHeartbeat] instead of a guessed constant: the middleware
+// renews the lease every interval while the handler runs, through the optional
+// [LeaseExtender] store capability (the Redis store implements it), and stops
+// before the completion is written. A store without it, or an interval not
+// shorter than a fixed [WithProcessingTTL], is reported once by [Middleware.Err]
+// and refuses keyed mutations with 503 rather than run them unrenewed:
+//
+//	idem := idempotency.New(conn,
+//	    idempotency.WithProcessingTTL(time.Minute),
+//	    idempotency.WithProcessingHeartbeat(15*time.Second),
+//	)
+//	if err := idem.Err(); err != nil {
+//	    return err // fail boot
+//	}
+//
 // [WithKeyProvider] resolves the key itself for each mutating request; unset,
 // the middleware reads the X-Idempotency header, which is the shipped
 // behaviour. An empty return takes the unkeyed branch and a provider error
