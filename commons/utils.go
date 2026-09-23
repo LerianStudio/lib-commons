@@ -3,6 +3,7 @@ package commons
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os/exec"
@@ -106,9 +107,25 @@ func SafeIntToUint32(value int) (converted uint32, ok bool) {
 	return uint32(value), true
 }
 
-// IsUUID Validate if the string pass through is an uuid
+// ErrUUIDWrapper is returned by ParseUUID for a 38-byte input not wrapped in
+// braces.
+var ErrUUIDWrapper = errors.New("invalid UUID format: 38-byte form must be wrapped in braces")
+
+// ParseUUID is uuid.Parse, except that a 38-byte input must start with '{' and
+// end with '}'. uuid.Parse checks neither byte, so "0<uuid>0" would parse as
+// the UUID inside it.
+func ParseUUID(s string) (uuid.UUID, error) {
+	if len(s) == 38 && (s[0] != '{' || s[37] != '}') {
+		return uuid.Nil, ErrUUIDWrapper
+	}
+
+	return uuid.Parse(s)
+}
+
+// IsUUID reports whether s is a UUID in a form ParseUUID accepts: dashed,
+// dashless, braced or "urn:uuid:".
 func IsUUID(s string) bool {
-	_, err := uuid.Parse(s)
+	_, err := ParseUUID(s)
 
 	return err == nil
 }
