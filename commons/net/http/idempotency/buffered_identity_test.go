@@ -126,7 +126,8 @@ func TestBufferedIdentity_ReSeatsTheRawBytes(t *testing.T) {
 	c := streamedCtx(t, app, encoded, len(encoded))
 	c.Request().Header.Set(fiber.HeaderContentEncoding, "gzip")
 
-	identity := bufferedIdentity(c)
+	identity, err := bufferedIdentity(c)
+	require.NoError(t, err)
 
 	assert.Equal(t, plain, identity,
 		"the digest covers the decompressed body, exactly as it did before re-seating existed")
@@ -166,13 +167,14 @@ func TestBufferedIdentity_DetachesFromTheRequestBuffer(t *testing.T) {
 	c.RequestCtx().Init2(nil, nil, false)
 
 	// Reading the stream consumes it, so capture the buffer and re-seat a copy:
-	// the kept buffer is where bufferedIdentity reads the body back into.
+	// the kept buffer is the request storage neither result may point into.
 	before := c.Request().Body()
 	require.NotEmpty(t, before)
 	c.Request().SetBodyStream(bytes.NewReader(bytes.Clone(before)), len(before))
 	require.True(t, c.Request().IsBodyStream())
 
-	returned := bufferedIdentity(c)
+	returned, err := bufferedIdentity(c)
+	require.NoError(t, err)
 
 	assert.Equal(t, body, returned)
 	assert.False(t, sharesArray(returned, before),
@@ -183,7 +185,7 @@ func TestBufferedIdentity_DetachesFromTheRequestBuffer(t *testing.T) {
 
 	var reSeated sliceCapture
 
-	_, err := reader.WriteTo(&reSeated)
+	_, err = reader.WriteTo(&reSeated)
 	require.NoError(t, err)
 	assert.Equal(t, body, reSeated.got)
 	assert.False(t, sharesArray(reSeated.got, before),
@@ -211,7 +213,9 @@ func TestBufferedIdentity_NonStreamedRequestIsUntouched(t *testing.T) {
 
 	require.False(t, c.Request().IsBodyStream())
 
-	assert.Equal(t, body, bufferedIdentity(c))
+	identity, err := bufferedIdentity(c)
+	require.NoError(t, err)
+	assert.Equal(t, body, identity)
 	assert.False(t, c.Request().IsBodyStream(),
 		"a request the server buffered must not reach the handler as a stream")
 }
@@ -253,7 +257,8 @@ func TestBufferedIdentity_KeepsTheClientsFraming(t *testing.T) {
 			app := fiber.New()
 			c := streamedCtx(t, app, body, testCase.size)
 
-			bufferedIdentity(c)
+			_, err := bufferedIdentity(c)
+			require.NoError(t, err)
 
 			assert.Equal(t, testCase.wantContentLength, c.Request().Header.ContentLength(),
 				"the handler must observe the length the client declared")
@@ -472,4 +477,54 @@ func TestChunkedKeyedRequest_ReachesTheHandlerChunked(t *testing.T) {
 		"the client declared no length and the handler must not see one invented")
 	assert.Equal(t, "chunked", got.Transfer,
 		"the client framed this chunked and the handler must see it that way")
+}
+
+// TestStreamedBody_ReadFailure_RefusesBeforeHandler pins what the default
+// fingerprint does when the body stream fails part-way through.
+//
+// fasthttp's Request.Body() swallows a stream read error and puts its text in
+// the body buffer, so reading the body through c.Body() fingerprinted that text
+// and re-seated it as the request body: the handler stored the error string as
+// the upload, and a retry carrying the real payload under the same key was then
+// answered 422 IDEMPOTENCY_KEY_REUSE. A chunked request whose second chunk size
+// is garbage is a stream failure any client can put on the wire, and chunked is
+// the framing fasthttp never pre-reads, so the failure surfaces inside the
+// middleware's own read. The request must be refused as unavailable with the
+// handler never called.
+func TestStreamedBody_ReadFailure_RefusesBeforeHandler(t *testing.T) {
+	t.Parallel()
+
+	var (
+		called atomic.Int32
+		seen   atomic.Value
+	)
+
+	app := fiber.New(fiber.Config{StreamRequestBody: true})
+	app.Use(tenantMiddleware("t1"))
+	app.Use(New(newRedisClient(t, miniredis.RunT(t))).Check())
+	app.Post("/test", func(c fiber.Ctx) error {
+		called.Add(1)
+
+		body, err := io.ReadAll(c.Request().BodyStream())
+		if err != nil {
+			return err
+		}
+
+		seen.Store(string(body))
+
+		return c.SendStatus(fiber.StatusCreated)
+	})
+
+	wire := []byte("POST /test HTTP/1.1\r\nHost: idempotency.test\r\n" +
+		chttp.IdempotencyKey + ": broken-stream\r\n" +
+		"Content-Type: " + fiber.MIMEOctetStream + "\r\nTransfer-Encoding: chunked\r\n\r\n" +
+		"5\r\nhello\r\nzz\r\n")
+
+	status, _, retired := newKeepAliveConn(t, serveStreamProbe(t, app)).roundTrip(wire)
+
+	assert.Equal(t, http.StatusServiceUnavailable, status,
+		"a body that failed to read must be refused before the handler, as unavailable")
+	assert.Equal(t, int32(0), called.Load(), "the handler must never run on a body that failed to read")
+	assert.Nil(t, seen.Load(), "the handler must never be handed the read error as the request body")
+	assert.True(t, retired, "the rest of a body that failed to read is still on the wire, so the connection must go")
 }

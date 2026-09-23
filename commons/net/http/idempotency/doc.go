@@ -69,7 +69,8 @@
 // buffer. The route's BodyLimit does not: under streaming fasthttp hands an
 // oversize body over as a stream rather than refusing it, and the stream
 // enforces no total of its own, so the ceiling is whatever the client chooses to
-// send. A provider is the only bound available on such a route — with one the
+// send. A body stream that fails to read is refused as unavailable before the
+// handler runs. A provider is the only bound available on such a route — with one the
 // middleware never calls c.Body() and the stream reaches the handler intact and
 // unbuffered. And a multipart encoder picks a fresh
 // random boundary per request, so a byte-identical logical retry never matches

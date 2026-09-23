@@ -75,6 +75,7 @@ var (
 	errResponseTooLarge      = errors.New("idempotency replay response exceeds configured limit")
 	errEmptyEncodedResponse  = errors.New("idempotency response codec produced no bytes")
 	errInvalidReplayResponse = errors.New("idempotency replay response is invalid")
+	errRequestBodyUnreadable = errors.New("idempotency request body stream failed to read")
 )
 
 // requestFingerprint identifies WHICH request an idempotency key was spent on.
@@ -486,7 +487,9 @@ func WithFingerprintScopeProvider(provider FingerprintScopeProvider) Option {
 // upload to fingerprint it and re-seats it as an in-memory stream for the
 // handler, and nothing bounds that buffer — the route's BodyLimit does not,
 // because under streaming fasthttp hands an oversize body over as a stream
-// rather than refusing it. This option is the only bound available there. And a
+// rather than refusing it. This option is the only bound available there. A
+// body stream that fails to read is refused as unavailable before the handler
+// runs. And a
 // multipart encoder picks a fresh random boundary per request, so a
 // byte-identical logical retry never
 // matches its own stored fingerprint and is refused
@@ -1455,7 +1458,12 @@ func (m *Middleware) resolveFingerprint(c fiber.Ctx) (string, error) {
 			return "", err
 		}
 	} else {
-		identity = bufferedIdentity(c)
+		var err error
+
+		identity, err = bufferedIdentity(c)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	if m.fingerprintScopeProvider != nil {
@@ -1484,15 +1492,31 @@ func (m *Middleware) resolveFingerprint(c fiber.Ctx) (string, error) {
 // [Middleware.Check] never see the *fiber.App, and StreamRequestBody is only
 // reachable per request through c.App(). A per-request refusal would turn a
 // route that buffers but works into a 500.
-func bufferedIdentity(c fiber.Ctx) []byte {
-	streamed := c.Request().IsBodyStream()
-
-	identity := c.Body()
-	if !streamed {
+//
+// The stream is read here and not through c.Body(): fasthttp's Request.Body()
+// swallows a stream read error and leaves its text in the body buffer, which
+// would then be fingerprinted and re-seated as the request body. A stream that
+// fails to read returns [errRequestBodyUnreadable] instead, so the request is
+// refused before the handler; the half-read stream is left in place, and
+// retireUnreadRequestStream ends the connection it came from.
+func bufferedIdentity(c fiber.Ctx) ([]byte, error) {
+	if !c.Request().IsBodyStream() {
 		// Re-seating here would hand a handler that was never given a stream
 		// one anyway, which is the same defect in the other direction.
-		return identity
+		return c.Body(), nil
 	}
+
+	read, err := io.ReadAll(c.Request().BodyStream())
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errRequestBodyUnreadable, err)
+	}
+
+	// SetBodyRaw closes the drained stream, so c.Body() below reads these bytes
+	// and never the stream again. The header is untouched: the framing check
+	// further down still sees what the client declared.
+	c.Request().SetBodyRaw(read)
+
+	identity := c.Body()
 
 	// What goes back on the stream is c.Request().Body(), the bytes the socket
 	// would have given the handler, and NOT c.Body(), which Fiber decompresses
@@ -1515,7 +1539,7 @@ func bufferedIdentity(c fiber.Ctx) []byte {
 
 	c.Request().SetBodyStream(bytes.NewReader(raw), size)
 
-	return identity
+	return identity, nil
 }
 
 // detachBody copies the digest bytes and the raw body out of the buffer
