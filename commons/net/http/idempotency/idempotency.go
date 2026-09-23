@@ -1532,8 +1532,8 @@ func bufferedIdentity(c fiber.Ctx) []byte {
 // Cloning twice on that path doubled the memory a keyed streamed upload holds,
 // for nothing.
 //
-// Neither returned slice shares memory with identity or raw, and a nil or empty
-// input returns nil.
+// Neither returned slice shares memory with identity or raw. An empty input
+// comes back empty, nil or not; the digest over it is the same either way.
 func detachBody(identity, raw []byte) (detachedIdentity, detachedRaw []byte) {
 	detachedRaw = bytes.Clone(raw)
 

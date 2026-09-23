@@ -137,6 +137,59 @@ func TestBufferedIdentity_ReSeatsTheRawBytes(t *testing.T) {
 		"the handler declared Content-Encoding and must be handed the encoded bytes back")
 }
 
+// sliceCapture keeps the slice a reader hands to Write, which is the slice the
+// reader reads from: bytes.Reader.WriteTo passes its own backing array, where
+// io.ReadAll would copy it and hide the aliasing this probe exists to see.
+type sliceCapture struct{ got []byte }
+
+func (s *sliceCapture) Write(p []byte) (int, error) {
+	s.got = p
+
+	return len(p), nil
+}
+
+// TestBufferedIdentity_DetachesFromTheRequestBuffer pins the copy at the call
+// site, where TestDetachBody cannot: skipping detachBody inside bufferedIdentity
+// leaves the bytes correct and every other test green.
+//
+// Init2 with reduceMemoryUsage=false is the server's default and makes
+// ResetBody keep the request's buffer instead of pooling it, so the buffer the
+// body lived in before the call is still observable afterwards and the probe
+// is deterministic.
+func TestBufferedIdentity_DetachesFromTheRequestBuffer(t *testing.T) {
+	t.Parallel()
+
+	body := bytes.Repeat([]byte("C"), 4<<10)
+
+	app := fiber.New()
+	c := streamedCtx(t, app, body, len(body))
+	c.RequestCtx().Init2(nil, nil, false)
+
+	// Reading the stream consumes it, so capture the buffer and re-seat a copy:
+	// the kept buffer is where bufferedIdentity reads the body back into.
+	before := c.Request().Body()
+	require.NotEmpty(t, before)
+	c.Request().SetBodyStream(bytes.NewReader(bytes.Clone(before)), len(before))
+	require.True(t, c.Request().IsBodyStream())
+
+	returned := bufferedIdentity(c)
+
+	assert.Equal(t, body, returned)
+	assert.False(t, sharesArray(returned, before),
+		"the digest bytes must not point into the request's body buffer")
+
+	reader, ok := c.Request().BodyStream().(io.WriterTo)
+	require.True(t, ok, "the re-seated stream must expose its backing slice")
+
+	var reSeated sliceCapture
+
+	_, err := reader.WriteTo(&reSeated)
+	require.NoError(t, err)
+	assert.Equal(t, body, reSeated.got)
+	assert.False(t, sharesArray(reSeated.got, before),
+		"the re-seated reader must not point into the request's body buffer")
+}
+
 // TestBufferedIdentity_NonStreamedRequestIsUntouched pins the guard that scopes
 // re-seating to requests the server streamed. Handing a stream to a handler
 // that was never given one is the same defect in the other direction, and it
