@@ -480,6 +480,7 @@ func stdlibAddress(srv *http.Server, listener net.Listener) string {
 // port anyway. So the port must match and either host must be a wildcard or
 // the two hosts must be equal. Two spellings of one host (127.0.0.1 and
 // localhost) are not resolved: the kernel catches that pair at bind time.
+// Port 0 asks the kernel for an ephemeral port, so it never collides.
 func sameListenAddress(a, b string) bool {
 	hostA, portA, errA := net.SplitHostPort(a)
 	hostB, portB, errB := net.SplitHostPort(b)
@@ -488,7 +489,7 @@ func sameListenAddress(a, b string) bool {
 		return a == b
 	}
 
-	if portA != portB {
+	if portA == "0" || portB == "0" || portA != portB {
 		return false
 	}
 

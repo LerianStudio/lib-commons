@@ -450,3 +450,30 @@ func TestAdditionalStdlibHTTPServerNilClearsTheSlot(t *testing.T) {
 		requireCleanExit(t, shutdown, done)
 	})
 }
+
+// TestEphemeralPortsNeverConflict pins that two ":0" addresses are two
+// kernel-chosen ports, not one socket, for both address checks.
+func TestEphemeralPortsNeverConflict(t *testing.T) {
+	cases := map[string]func(sm *server.ServerManager) *server.ServerManager{
+		"additional beside stdlib main": func(sm *server.ServerManager) *server.ServerManager {
+			return sm.WithStdlibHTTPServer(newTestStdlibServer("127.0.0.1:0", http.NewServeMux())).
+				WithAdditionalStdlibHTTPServer(newTestStdlibServer("127.0.0.1:0", http.NewServeMux()))
+		},
+		"admin beside fiber main": func(sm *server.ServerManager) *server.ServerManager {
+			return sm.WithHTTPServer(fiber.New(), "127.0.0.1:0").
+				WithAdminHTTPServer(fiber.New(), "127.0.0.1:0")
+		},
+	}
+
+	for name, configure := range cases {
+		t.Run(name, func(t *testing.T) {
+			shutdown := make(chan struct{})
+
+			sm := configure(server.NewServerManager(nil, nil, nil)).
+				WithShutdownChannel(shutdown).
+				WithShutdownTimeout(5 * time.Second)
+
+			requireCleanExit(t, shutdown, runManager(t, sm))
+		})
+	}
+}
