@@ -584,8 +584,9 @@ func WithFingerprintProvider(provider FingerprintProvider) Option {
 // An empty return or an error takes the absent-tenant branch, exactly as an
 // empty tenant-manager context does: pass-through by default, the
 // [WithRequireTenant] refusal when opted in. The error is logged; it is never a
-// refusal of its own. A tenant containing ':', from the provider or the
-// tenant-manager context, is refused with a 400 "IDEMPOTENCY_TENANT_MALFORMED".
+// refusal of its own. On a keyed mutating request, a tenant containing ':', from
+// the provider or the tenant-manager context, is refused with a 400
+// "IDEMPOTENCY_TENANT_MALFORMED"; an unkeyed one never resolves a tenant.
 func WithTenantProvider(provider TenantProvider) Option {
 	return func(m *Middleware) {
 		if provider != nil {
