@@ -47,8 +47,11 @@ type LockExtender interface {
 	// It returns (true, nil) when renewed and (false, nil) when the key is no
 	// longer ours — it expired, or another holder took it — in which case the
 	// caller no longer has mutual exclusion and must stop. Any error means
-	// nothing was learned about the lease: the caller's own context ended
-	// (the error unwraps to that context error) or Redis did not answer.
+	// nothing conclusive was learned about the lease, which may still be
+	// ours: the caller's own context ended (the error unwraps to that context
+	// error), Redis did not answer, or a quorum accepted the renewal but the
+	// round trip outlived the lease (the error unwraps to
+	// redsync.ErrExtendFailed).
 	Extend(ctx context.Context) (bool, error)
 }
 

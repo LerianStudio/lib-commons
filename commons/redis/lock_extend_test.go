@@ -4,6 +4,8 @@ package redis
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 
 	libobs "github.com/LerianStudio/lib-observability/v4"
 	"github.com/alicebob/miniredis/v2"
+	"github.com/go-redsync/redsync/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/codes"
@@ -104,6 +107,72 @@ func TestLockHandle_Extend_AfterAnotherHolderTookTheKeyReportsLost(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, otherValue, stillOther, "Extend must never touch another holder's key")
 	assert.Equal(t, 10*time.Second, mr.TTL("test:extend:stolen"), "the other holder's lease must be left as it was")
+}
+
+// TestLockHandle_Extend_ConcurrentCallsOnOneHandle pins that a handle shared by
+// goroutines can be extended concurrently: run under -race.
+func TestLockHandle_Extend_ConcurrentCallsOnOneHandle(t *testing.T) {
+	_, lock := setupExtendLock(t)
+	extender := acquireExtender(t, lock, "test:extend:concurrent")
+
+	const callers = 8
+
+	var wg sync.WaitGroup
+
+	errs := make(chan error, callers)
+
+	for range callers {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			renewed, err := extender.Extend(context.Background())
+			if err == nil && !renewed {
+				err = errors.New("lease reported lost")
+			}
+
+			errs <- err
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+}
+
+// TestLockHandle_Extend_ExhaustedRenewalIsInconclusive builds redsync's
+// ErrExtendFailed deterministically: the quorum accepts the touch (value
+// matches, PEXPIRE succeeds) but a 1µs expiry leaves no validity window, so
+// redsync cannot vouch for the lease. That is not a lost lease.
+func TestLockHandle_Extend_ExhaustedRenewalIsInconclusive(t *testing.T) {
+	mr, lock := setupExtendLock(t)
+	acquireExtender(t, lock, "test:extend:exhausted")
+
+	value, err := mr.Get("test:extend:exhausted")
+	require.NoError(t, err)
+
+	exhausted := &lockHandle{
+		mutex: lock.redsync.NewMutex("test:extend:exhausted",
+			redsync.WithValue(value), redsync.WithExpiry(time.Microsecond), redsync.WithTries(1)),
+		logger: obs.Nop(),
+	}
+
+	recorder := recordSpans(t)
+	logger := &recordingLogger{}
+	ctx := libobs.ContextWithLogger(context.Background(), logger)
+
+	renewed, err := exhausted.Extend(ctx)
+	require.ErrorIs(t, err, redsync.ErrExtendFailed)
+	assert.False(t, renewed)
+
+	entries := logger.loggedEntries()
+	require.Len(t, entries, 1, "Extend logs exactly one line per outcome; got %+v", entries)
+	assert.Equal(t, obs.LevelError, entries[0].level)
+	assert.Equal(t, codes.Error, lockSpanStatus(t, recorder, "redis.lock.extend").Status().Code)
 }
 
 func TestLockHandle_Extend_CancelledContextReturnsTheCallersError(t *testing.T) {
