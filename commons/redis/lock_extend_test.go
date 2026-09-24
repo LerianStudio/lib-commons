@@ -250,3 +250,35 @@ func TestLockHandle_Extend_OutcomeSeverity(t *testing.T) {
 		})
 	}
 }
+
+// TestLockHandle_Unlock_WaitsForAnInFlightExtend pins the ordering: a release
+// never completes while a renewal is in flight on the same handle, so Extend
+// cannot answer true for a lease Unlock already gave up.
+func TestLockHandle_Unlock_WaitsForAnInFlightExtend(t *testing.T) {
+	_, lock := setupExtendLock(t)
+	extender := acquireExtender(t, lock, "test:extend:unlock-waits")
+
+	handle, ok := extender.(*lockHandle)
+	require.True(t, ok)
+
+	handle.leaseMu.Lock()
+
+	released := make(chan error, 1)
+
+	go func() { released <- handle.Unlock(context.Background()) }()
+
+	select {
+	case err := <-released:
+		t.Fatalf("Unlock returned %v while a renewal held the handle", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	handle.leaseMu.Unlock()
+
+	select {
+	case err := <-released:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Unlock did not return after the renewal finished")
+	}
+}

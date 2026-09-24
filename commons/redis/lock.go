@@ -160,9 +160,11 @@ type lockHandle struct {
 	mutex  *redsync.Mutex
 	logger obs.Logger
 
-	// extendMu serialises Extend: a successful redsync ExtendContext writes the
-	// mutex's validity deadline unsynchronised.
-	extendMu sync.Mutex
+	// leaseMu serialises Extend and Unlock on one handle: a successful redsync
+	// ExtendContext writes the mutex's validity deadline unsynchronised, and a
+	// renewal that completed after the release would vouch for a lease the
+	// handle no longer holds.
+	leaseMu sync.Mutex
 }
 
 // Unlock releases the distributed lock.
@@ -171,7 +173,10 @@ func (h *lockHandle) Unlock(ctx context.Context) error {
 		return ErrNilLockHandle
 	}
 
+	h.leaseMu.Lock()
 	ok, err := h.mutex.UnlockContext(ctx)
+	h.leaseMu.Unlock()
+
 	if err != nil {
 		h.logger.Log(ctx, obs.LevelError, "failed to release lock", "error", err)
 		return fmt.Errorf("distributed lock: unlock: %w", err)
@@ -217,9 +222,9 @@ func (h *lockHandle) Extend(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("distributed lock: extend %s: %w", safeLockKey, err)
 	}
 
-	h.extendMu.Lock()
+	h.leaseMu.Lock()
 	renewed, err := h.mutex.ExtendContext(ctx)
-	h.extendMu.Unlock()
+	h.leaseMu.Unlock()
 
 	switch {
 	case renewed:
