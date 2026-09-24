@@ -177,6 +177,68 @@ func (h *lockHandle) Unlock(ctx context.Context) error {
 	return nil
 }
 
+// Extend renews the lease to the expiry the lock was acquired with; see
+// LockExtender for the contract.
+//
+// The redsync mutex carries that expiry from acquisition, so the renewal can
+// never silently change the lease length. A lost lease logs at WARN, like an
+// Unlock of a lock that was not held, and leaves the span status unset: it is a
+// designed outcome the caller branches on, not an infrastructure fault.
+func (h *lockHandle) Extend(ctx context.Context) (bool, error) {
+	if h == nil || h.mutex == nil {
+		return false, ErrNilLockHandle
+	}
+
+	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
+	safeLockKey := safeLockKeyForLogs(h.mutex.Name())
+
+	ctx, span := tracer.Start(ctx, "redis.lock.extend")
+	defer span.End()
+
+	// Read before Redis is asked anything, as acquireLock does: once a command
+	// is in flight the error chain cannot tell the caller's deadline apart from
+	// a node timeout.
+	if err := ctx.Err(); err != nil {
+		logger.Log(ctx, obs.LevelDebug, "lock extension abandoned: caller context ended",
+			"lock_key", safeLockKey, "error", err)
+
+		return false, fmt.Errorf("distributed lock: extend %s: %w", safeLockKey, err)
+	}
+
+	renewed, err := h.mutex.ExtendContext(ctx)
+
+	switch {
+	case renewed:
+		logger.Log(ctx, obs.LevelDebug, "lock extended", "lock_key", safeLockKey)
+
+		return true, nil
+
+	case isLeaseLost(err):
+		logger.Log(ctx, obs.LevelWarn, "lock lease lost: expired or held by another process", "lock_key", safeLockKey)
+
+		return false, nil
+
+	default:
+		logger.Log(ctx, obs.LevelError, "failed to extend lock", "lock_key", safeLockKey, "error", err)
+		opentelemetry.HandleSpanError(span, "Failed to extend lock", err)
+
+		return false, fmt.Errorf("distributed lock: extend %s: %w", safeLockKey, err)
+	}
+}
+
+// isLeaseLost reports whether a failed ExtendContext means the key is no longer
+// ours. MEASURED against redsync v4.17: when a quorum of nodes answers the touch
+// script with 0 — the key is gone or carries another holder's value — redsync
+// returns *ErrTaken, and a renewal whose round trip ate the whole validity
+// window returns ErrExtendFailed. Anything else, including a sub-quorum mix of
+// taken nodes and nodes that did not answer, is a fault: nothing conclusive was
+// learned about the key.
+func isLeaseLost(err error) bool {
+	var errTaken *redsync.ErrTaken
+
+	return errors.Is(err, redsync.ErrExtendFailed) || errors.As(err, &errTaken)
+}
+
 // nilLockAssert fires a nil-receiver assertion and returns an error.
 func nilLockAssert(ctx context.Context, operation string) error {
 	a := assert.New(ctx, resolvePackageLogger(), "redis.RedisLockManager", operation)
