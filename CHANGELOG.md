@@ -1,5 +1,40 @@
 # Lib-commons Changelog
 
+## [7.8.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.8.0)
+
+Features:
+- Document the status a service answers validation failures with. (@fredcamaral)
+- Allow a lock holder to extend its lease. (@fredcamaral)
+- Add an additional stdlib HTTP server slot. (@fredcamaral)
+
+Fixes:
+- Serialize lock release with lease extension for Redis. (@fredcamaral)
+- Keep a `422` status if the service declares it. (@fredcamaral)
+- Drop the `422` status from Huma documents when the service answers with a different status. (@fredcamaral)
+- Stop warning on every raw Mongo URI resolution in the tenant manager. (@fredcamaral)
+- Refuse a sub-millisecond lock expiry in Redis. (@fredcamaral)
+- Serialize lock extension and treat an exhausted renewal as inconclusive in Redis. (@fredcamaral)
+- Compare scoped IPv6 listen hosts by address and zone in the server. (@fredcamaral)
+- Compare listen addresses by IP and port number, not by spelling, in the server. (@fredcamaral)
+- Stop waiting for the Fiber listen goroutine when the drain budget ends in the server. (@fredcamaral)
+- Bound the Fiber main and admin drains by the shutdown budget in the server. (@fredcamaral)
+- Refuse an additional server with no handler in the server. (@fredcamaral)
+- Compare an empty listen address as the port it really binds in the server. (@fredcamaral)
+- Never report two ephemeral ports as an address conflict in the server. (@fredcamaral)
+- Refuse a second server on the additional slot in the server. (@fredcamaral)
+- Drain the additional server concurrently with the main server under one budget. (@fredcamaral)
+
+Improvements:
+- State every shutdown stage `WithShutdownTimeout` bounds in the server documentation. (@fredcamaral)
+- Document and pin the abandoned Fiber connection past the deadline in the server. (@fredcamaral)
+- State the Fiber main drain bound beside the shared budget in the server documentation. (@fredcamaral)
+- Assert the abandoned Fiber connection stays kept alive on the late request in server tests. (@fredcamaral)
+- Cover the additional slot alone, beside a listener main and its timeouts in server tests. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.7.0...v7.8.0)
+
+---
+
 ## [7.7.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.7.0)
 
 Features:
