@@ -669,6 +669,33 @@ func TestBaselineErrors_BinaryRawBodyDoesNotAdd422(t *testing.T) {
 	assert.ElementsMatch(t, []string{"200", "500", "default"}, responseKeys(op))
 }
 
+// TestBaselineErrors_DocumentsTheServiceValidationStatus proves the validation
+// status follows huma.NewError: a service that rewrites Huma's 422 into 400
+// gets 400 documented, never the 422 it never answers.
+func TestBaselineErrors_DocumentsTheServiceValidationStatus(t *testing.T) {
+	// NOT parallel: mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	huma.NewError = func(status int, msg string, errs ...error) huma.StatusError {
+		if status == http.StatusUnprocessableEntity {
+			status = http.StatusBadRequest
+		}
+
+		return original(status, msg, errs...)
+	}
+
+	app := fiber.New()
+	api := New(app, app.Group("/"), testConfig())
+
+	registerBaseline[echoInput](api, "baseline-rewritten", http.MethodPost, "/baseline/rewritten")
+
+	op := api.OpenAPI().Paths["/baseline/rewritten"].Post
+	require.NotNil(t, op)
+
+	assert.ElementsMatch(t, []string{"200", "400", "500", "default"}, responseKeys(op))
+}
+
 func TestBaselineResponses_AddedStatusesPreserveMediaMetadata(t *testing.T) {
 	t.Parallel()
 
