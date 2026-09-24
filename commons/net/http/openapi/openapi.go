@@ -191,10 +191,10 @@ func baselineResponses(extra []int) huma.AddOpFunc {
 		if len(op.Parameters) > 0 || hasValidationBody(op.RequestBody) {
 			status := validationStatus()
 
-			// A service that rewrites Huma's validation error never answers 422, so
-			// the 422 Huma writes from a declared op.Errors is a status the
-			// operation cannot return: drop it and document the real one.
-			if status != http.StatusUnprocessableEntity {
+			// Huma appends its own 422 to a declared op.Errors, so a single entry
+			// is Huma's and a status the rewriting service cannot answer: drop it.
+			// Two entries mean the service declared 422 itself, and that stays.
+			if status != http.StatusUnprocessableEntity && count(op.Errors, http.StatusUnprocessableEntity) == 1 {
 				delete(op.Responses, strconv.Itoa(http.StatusUnprocessableEntity))
 			}
 
@@ -230,6 +230,18 @@ func baselineResponses(extra []int) huma.AddOpFunc {
 
 // validationStatus is the status huma.Register answers a validation failure
 // with: 422 unless the service's huma.NewError rewrites it.
+func count(statuses []int, status int) int {
+	n := 0
+
+	for _, s := range statuses {
+		if s == status {
+			n++
+		}
+	}
+
+	return n
+}
+
 func validationStatus() int {
 	if err := huma.NewError(http.StatusUnprocessableEntity, "validation failed"); err != nil {
 		return err.GetStatus()

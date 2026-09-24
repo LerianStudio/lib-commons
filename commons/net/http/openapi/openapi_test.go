@@ -710,6 +710,21 @@ func TestBaselineErrors_DocumentsTheServiceValidationStatus(t *testing.T) {
 	require.NotNil(t, declared)
 
 	assert.ElementsMatch(t, []string{"200", "400", "401", "500"}, responseKeys(declared))
+
+	// A 422 the service declares itself is its own statement and stays.
+	huma.Register(api, huma.Operation{
+		OperationID: "baseline-rewritten-explicit",
+		Method:      http.MethodPost,
+		Path:        "/baseline/rewritten/explicit",
+		Errors:      []int{http.StatusUnprocessableEntity},
+	}, func(context.Context, *echoInput) (*echoOutput, error) {
+		return &echoOutput{}, nil
+	})
+
+	explicit := api.OpenAPI().Paths["/baseline/rewritten/explicit"].Post
+	require.NotNil(t, explicit)
+
+	assert.ElementsMatch(t, []string{"200", "400", "422", "500"}, responseKeys(explicit))
 }
 
 func TestBaselineResponses_AddedStatusesPreserveMediaMetadata(t *testing.T) {
