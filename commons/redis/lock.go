@@ -40,8 +40,8 @@ var (
 	ErrNilLockFn = errors.New("lock function is nil")
 	// ErrEmptyLockKey is returned when an empty lock key is provided.
 	ErrEmptyLockKey = errors.New("lock key cannot be empty")
-	// ErrLockExpiryInvalid is returned when lock expiry is not positive.
-	ErrLockExpiryInvalid = errors.New("lock expiry must be greater than 0")
+	// ErrLockExpiryInvalid is returned when lock expiry is below the 1ms minimum.
+	ErrLockExpiryInvalid = errors.New("lock expiry must be at least 1ms")
 	// ErrLockTriesInvalid is returned when lock tries is less than 1.
 	ErrLockTriesInvalid = errors.New("lock tries must be at least 1")
 	// ErrLockTriesExceeded is returned when lock tries exceeds the maximum.
@@ -91,7 +91,10 @@ type RedisLockManager struct {
 // Use DefaultLockOptions() for sensible defaults.
 type LockOptions struct {
 	// Expiry is how long the lock is held before auto-expiring (prevents deadlocks)
-	// Default: 10 seconds
+	// Default: 10 seconds, Minimum: 1ms. A shorter expiry is refused with
+	// ErrLockExpiryInvalid because redsync renews in whole milliseconds: a
+	// sub-millisecond expiry would renew as PEXPIRE 0, deleting the lock while
+	// Extend could still report success.
 	Expiry time.Duration
 
 	// Tries is the number of attempts to acquire the lock before giving up
@@ -750,7 +753,7 @@ func isLockContention(err error) bool {
 }
 
 func validateLockOptions(opts LockOptions) error {
-	if opts.Expiry <= 0 {
+	if opts.Expiry < time.Millisecond {
 		return ErrLockExpiryInvalid
 	}
 

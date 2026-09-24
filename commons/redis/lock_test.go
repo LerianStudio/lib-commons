@@ -243,7 +243,7 @@ func TestRedisLockManager_OptionValidation(t *testing.T) {
 		RetryDelay:  time.Millisecond,
 		DriftFactor: 0.01,
 	}, func(context.Context) error { return nil })
-	assert.ErrorContains(t, err, "lock expiry must be greater than 0")
+	assert.ErrorContains(t, err, "lock expiry must be at least 1ms")
 
 	err = lock.WithLockOptions(context.Background(), "test:key", LockOptions{
 		Expiry:      time.Second,
@@ -535,7 +535,7 @@ func TestRedisLockManager_WithLockOptions_NegativeExpiry(t *testing.T) {
 	}, func(context.Context) error { return nil })
 
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "lock expiry must be greater than 0")
+	assert.ErrorContains(t, err, "lock expiry must be at least 1ms")
 }
 
 func TestRedisLockManager_WithLockOptions_ZeroRetryDelay(t *testing.T) {
@@ -728,7 +728,7 @@ func TestValidateLockOptions_AllInvalid(t *testing.T) {
 				RetryDelay:  time.Millisecond,
 				DriftFactor: 0.01,
 			},
-			errText: "lock expiry must be greater than 0",
+			errText: "lock expiry must be at least 1ms",
 		},
 		{
 			name: "negative expiry",
@@ -738,7 +738,7 @@ func TestValidateLockOptions_AllInvalid(t *testing.T) {
 				RetryDelay:  time.Millisecond,
 				DriftFactor: 0.01,
 			},
-			errText: "lock expiry must be greater than 0",
+			errText: "lock expiry must be at least 1ms",
 		},
 		{
 			name: "zero tries",
