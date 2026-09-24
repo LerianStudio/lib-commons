@@ -189,7 +189,16 @@ func baselineResponses(extra []int) huma.AddOpFunc {
 		// would also mean duplicating the framework's field walk and re-syncing
 		// it on every upgrade.
 		if len(op.Parameters) > 0 || hasValidationBody(op.RequestBody) {
-			statuses = append(statuses, validationStatus())
+			status := validationStatus()
+
+			// A service that rewrites Huma's validation error never answers 422, so
+			// the 422 Huma writes from a declared op.Errors is a status the
+			// operation cannot return: drop it and document the real one.
+			if status != http.StatusUnprocessableEntity {
+				delete(op.Responses, strconv.Itoa(http.StatusUnprocessableEntity))
+			}
+
+			statuses = append(statuses, status)
 		}
 
 		statuses = append(statuses, extra...)

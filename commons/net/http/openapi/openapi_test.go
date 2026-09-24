@@ -694,6 +694,22 @@ func TestBaselineErrors_DocumentsTheServiceValidationStatus(t *testing.T) {
 	require.NotNil(t, op)
 
 	assert.ElementsMatch(t, []string{"200", "400", "500", "default"}, responseKeys(op))
+
+	// With op.Errors declared, Huma itself writes a 422 response for an
+	// operation that reads input. The service still cannot answer it.
+	huma.Register(api, huma.Operation{
+		OperationID: "baseline-rewritten-declared",
+		Method:      http.MethodPost,
+		Path:        "/baseline/rewritten/declared",
+		Errors:      []int{http.StatusUnauthorized},
+	}, func(context.Context, *echoInput) (*echoOutput, error) {
+		return &echoOutput{}, nil
+	})
+
+	declared := api.OpenAPI().Paths["/baseline/rewritten/declared"].Post
+	require.NotNil(t, declared)
+
+	assert.ElementsMatch(t, []string{"200", "400", "401", "500"}, responseKeys(declared))
 }
 
 func TestBaselineResponses_AddedStatusesPreserveMediaMetadata(t *testing.T) {
