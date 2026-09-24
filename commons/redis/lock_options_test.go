@@ -121,6 +121,31 @@ func TestTryLockWithOptions_HonoursTries(t *testing.T) {
 		"Tries was not passed through: the call returned before two retry delays could elapse")
 }
 
+// TestTryLockWithOptions_RefusesSubMillisecondExpiry pins the 1ms floor.
+// go-redis rounds a sub-millisecond PX up to 1ms on acquisition, while redsync
+// truncates the same expiry to 0ms on renewal, so Extend would run PEXPIRE 0,
+// delete the key, and could still report success. Refusing before any command
+// is the only safe answer.
+func TestTryLockWithOptions_RefusesSubMillisecondExpiry(t *testing.T) {
+	mr, lock := setupTestLockWithServer(t)
+
+	const key = "test:try-opts:sub-ms"
+
+	opts := LockOptions{Expiry: time.Millisecond - time.Nanosecond, Tries: 1, DriftFactor: 0.01}
+
+	handle, acquired, err := lock.TryLockWithOptions(context.Background(), key, opts)
+	require.ErrorIs(t, err, ErrLockExpiryInvalid)
+	assert.False(t, acquired)
+	assert.Nil(t, handle)
+	assert.False(t, mr.Exists(key), "a refused expiry must not write the lock key")
+
+	// The floor itself is valid. Asserted on the validator, not on an
+	// acquisition: redsync bounds one attempt by Expiry x 0.05, a 50µs window
+	// no real round trip fits in.
+	opts.Expiry = time.Millisecond
+	require.NoError(t, validateLockOptions(opts))
+}
+
 // TestTryLockWithOptions_RejectsInvalidOptions pins that this entry point
 // validates like WithLockOptions instead of handing redsync nonsense.
 func TestTryLockWithOptions_RejectsInvalidOptions(t *testing.T) {

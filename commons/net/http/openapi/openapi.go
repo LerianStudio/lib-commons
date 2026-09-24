@@ -75,7 +75,9 @@ type Config struct {
 	Servers []string
 	// BaselineErrors lists extra statuses this service's middleware stack can
 	// return on ANY operation, documented on every operation alongside the 500
-	// (and the 422 for an operation that reads input) the wrapper always adds.
+	// (and the validation status, Huma's 422 or what the service's
+	// huma.NewError rewrites it to, for an operation that reads input) the
+	// wrapper always adds.
 	// 401 and 403 belong here only when authentication runs inside this Huma
 	// API; a service that authenticates ahead of Huma answers them before an
 	// operation is ever reached, so they are not this document's to promise.
@@ -172,18 +174,31 @@ func baselineResponses(extra []int) huma.AddOpFunc {
 		statuses = append(statuses, http.StatusInternalServerError)
 
 		// Follows huma.Register's rule: an operation that reads a parameter or a
-		// body with a validation schema can fail request validation with 422.
+		// body with a validation schema can fail request validation. The status
+		// comes from huma.NewError, because a service that rewrites Huma's
+		// validation error answers that rewritten status; the override must be
+		// installed before huma.Register runs, since this reads it then.
 		//
 		// One deliberate divergence. This reads the RENDERED parameters, while
 		// Register reads its internal input metadata, which still counts a field
 		// tagged hidden. An operation whose only input is a hidden header plus a
-		// raw body therefore gets 422 from Register and not from here. Neither a
-		// hidden header nor a raw body is schema-validated, so that 422 cannot
-		// occur, and documenting a status the operation never returns is the worse
-		// error. Reproducing the internal metadata would also mean duplicating the
-		// framework's field walk and re-syncing it on every upgrade.
+		// raw body therefore gets the validation status from Register and not
+		// from here. Neither a hidden header nor a raw body is schema-validated,
+		// so that status cannot occur, and documenting a status the operation
+		// never returns is the worse error. Reproducing the internal metadata
+		// would also mean duplicating the framework's field walk and re-syncing
+		// it on every upgrade.
 		if len(op.Parameters) > 0 || hasValidationBody(op.RequestBody) {
-			statuses = append(statuses, http.StatusUnprocessableEntity)
+			status := validationStatus()
+
+			// Huma appends its own 422 to a declared op.Errors, so a single entry
+			// is Huma's and a status the rewriting service cannot answer: drop it.
+			// Two entries mean the service declared 422 itself, and that stays.
+			if status != http.StatusUnprocessableEntity && count(op.Errors, http.StatusUnprocessableEntity) == 1 {
+				delete(op.Responses, strconv.Itoa(http.StatusUnprocessableEntity))
+			}
+
+			statuses = append(statuses, status)
 		}
 
 		statuses = append(statuses, extra...)
@@ -211,6 +226,28 @@ func baselineResponses(extra []int) huma.AddOpFunc {
 		// op.Responses["default"] is never touched: a status nobody enumerated is
 		// still documented by it.
 	}
+}
+
+// validationStatus is the status huma.Register answers a validation failure
+// with: 422 unless the service's huma.NewError rewrites it.
+func count(statuses []int, status int) int {
+	n := 0
+
+	for _, s := range statuses {
+		if s == status {
+			n++
+		}
+	}
+
+	return n
+}
+
+func validationStatus() int {
+	if err := huma.NewError(http.StatusUnprocessableEntity, "validation failed"); err != nil {
+		return err.GetStatus()
+	}
+
+	return http.StatusUnprocessableEntity
 }
 
 func registeredErrorContent(oapi *huma.OpenAPI) map[string]*huma.MediaType {

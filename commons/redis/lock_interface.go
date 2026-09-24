@@ -23,6 +23,38 @@ type LockHandle interface {
 	Unlock(ctx context.Context) error
 }
 
+// LockExtender is an optional capability of a LockHandle: renewing the lease
+// before it expires, so work that outlives the lock's expiry keeps the lock
+// without re-acquiring it. The handles RedisLockManager returns implement it;
+// it is deliberately a separate interface, not a method on LockHandle, so that
+// adding it cannot break an external LockHandle implementation or mock.
+// Callers discover it with a type assertion:
+//
+//	extender, ok := handle.(redis.LockExtender)
+//	if !ok {
+//	    return errors.New("lock handle cannot be extended")
+//	}
+//
+//	renewed, err := extender.Extend(ctx)
+//	if err != nil {
+//	    return err // Redis fault, or ctx ended: the lease may still be ours
+//	}
+//	if !renewed {
+//	    return errLeaseLost // expired or taken by another holder: stop the work
+//	}
+type LockExtender interface {
+	// Extend renews the lease to the full expiry the lock was acquired with.
+	// It returns (true, nil) when renewed and (false, nil) when the key is no
+	// longer ours — it expired, or another holder took it — in which case the
+	// caller no longer has mutual exclusion and must stop. Any error means
+	// nothing conclusive was learned about the lease, which may still be
+	// ours: the caller's own context ended (the error unwraps to that context
+	// error), Redis did not answer, or a quorum accepted the renewal but the
+	// round trip outlived the lease (the error unwraps to
+	// redsync.ErrExtendFailed).
+	Extend(ctx context.Context) (bool, error)
+}
+
 // LockManager provides an interface for distributed locking operations.
 // This interface allows for easy mocking in tests without requiring a real Redis instance.
 //
@@ -63,3 +95,6 @@ type LockManager interface {
 
 // Ensure RedisLockManager implements LockManager interface at compile time.
 var _ LockManager = (*RedisLockManager)(nil)
+
+// Ensure the handle RedisLockManager returns can be extended.
+var _ LockExtender = (*lockHandle)(nil)

@@ -720,7 +720,7 @@ func TestBuildMongoURI(t *testing.T) {
 			Database: "testdb",
 		}
 
-		_, err := buildMongoURI(cfg, nil)
+		_, err := buildMongoURI(cfg)
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "mongo host is required")
@@ -732,7 +732,7 @@ func TestBuildMongoURI(t *testing.T) {
 			Database: "testdb",
 		}
 
-		_, err := buildMongoURI(cfg, nil)
+		_, err := buildMongoURI(cfg)
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "mongo port is required")
@@ -743,7 +743,7 @@ func TestBuildMongoURI(t *testing.T) {
 			Database: "testdb",
 		}
 
-		_, err := buildMongoURI(cfg, nil)
+		_, err := buildMongoURI(cfg)
 
 		require.Error(t, err)
 		// Host is checked first
@@ -755,7 +755,7 @@ func TestBuildMongoURI(t *testing.T) {
 			URI: "mongodb://custom-uri",
 		}
 
-		uri, err := buildMongoURI(cfg, nil)
+		uri, err := buildMongoURI(cfg)
 
 		require.NoError(t, err)
 		assert.Equal(t, "mongodb://custom-uri", uri)
@@ -766,7 +766,7 @@ func TestBuildMongoURI(t *testing.T) {
 			URI: "mongodb://custom-uri",
 		}
 
-		uri, err := buildMongoURI(cfg, nil)
+		uri, err := buildMongoURI(cfg)
 
 		require.NoError(t, err)
 		assert.Equal(t, "mongodb://custom-uri", uri)
@@ -775,7 +775,7 @@ func TestBuildMongoURI(t *testing.T) {
 	t.Run("rejects unsupported URI scheme", func(t *testing.T) {
 		cfg := &core.MongoDBConfig{URI: "http://example.com"}
 
-		_, err := buildMongoURI(cfg, nil)
+		_, err := buildMongoURI(cfg)
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid mongo URI scheme")
@@ -790,7 +790,7 @@ func TestBuildMongoURI(t *testing.T) {
 			Password: "pass",
 		}
 
-		uri, err := buildMongoURI(cfg, nil)
+		uri, err := buildMongoURI(cfg)
 
 		require.NoError(t, err)
 		assert.Equal(t, "mongodb://user:pass@localhost:27017/testdb?authSource=admin", uri)
@@ -803,7 +803,7 @@ func TestBuildMongoURI(t *testing.T) {
 			Database: "testdb",
 		}
 
-		uri, err := buildMongoURI(cfg, nil)
+		uri, err := buildMongoURI(cfg)
 
 		require.NoError(t, err)
 		assert.Equal(t, "mongodb://localhost:27017/testdb", uri)
@@ -818,7 +818,7 @@ func TestBuildMongoURI(t *testing.T) {
 			Password: "secret",
 		}
 
-		uri, err := buildMongoURI(cfg, nil)
+		uri, err := buildMongoURI(cfg)
 
 		require.NoError(t, err)
 		assert.Contains(t, uri, "authSource=admin")
@@ -834,7 +834,7 @@ func TestBuildMongoURI(t *testing.T) {
 			AuthSource: "customauth",
 		}
 
-		uri, err := buildMongoURI(cfg, nil)
+		uri, err := buildMongoURI(cfg)
 
 		require.NoError(t, err)
 		assert.Contains(t, uri, "authSource=customauth")
@@ -848,7 +848,7 @@ func TestBuildMongoURI(t *testing.T) {
 			Database: "tenantdb",
 		}
 
-		uri, err := buildMongoURI(cfg, nil)
+		uri, err := buildMongoURI(cfg)
 
 		require.NoError(t, err)
 		assert.NotContains(t, uri, "authSource")
@@ -902,7 +902,7 @@ func TestBuildMongoURI(t *testing.T) {
 					Password: tt.password,
 				}
 
-				uri, err := buildMongoURI(cfg, nil)
+				uri, err := buildMongoURI(cfg)
 				require.NoError(t, err)
 
 				expectedURI := fmt.Sprintf("mongodb://%s:%s@localhost:27017/testdb?authSource=admin",
@@ -1120,7 +1120,7 @@ func TestBuildMongoURI_TLS(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			uri, err := buildMongoURI(tt.cfg, nil)
+			uri, err := buildMongoURI(tt.cfg)
 
 			require.NoError(t, err)
 

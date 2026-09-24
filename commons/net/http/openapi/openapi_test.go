@@ -669,6 +669,64 @@ func TestBaselineErrors_BinaryRawBodyDoesNotAdd422(t *testing.T) {
 	assert.ElementsMatch(t, []string{"200", "500", "default"}, responseKeys(op))
 }
 
+// TestBaselineErrors_DocumentsTheServiceValidationStatus proves the validation
+// status follows huma.NewError: a service that rewrites Huma's 422 into 400
+// gets 400 documented, never the 422 it never answers.
+func TestBaselineErrors_DocumentsTheServiceValidationStatus(t *testing.T) {
+	// NOT parallel: mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	huma.NewError = func(status int, msg string, errs ...error) huma.StatusError {
+		if status == http.StatusUnprocessableEntity {
+			status = http.StatusBadRequest
+		}
+
+		return original(status, msg, errs...)
+	}
+
+	app := fiber.New()
+	api := New(app, app.Group("/"), testConfig())
+
+	registerBaseline[echoInput](api, "baseline-rewritten", http.MethodPost, "/baseline/rewritten")
+
+	op := api.OpenAPI().Paths["/baseline/rewritten"].Post
+	require.NotNil(t, op)
+
+	assert.ElementsMatch(t, []string{"200", "400", "500", "default"}, responseKeys(op))
+
+	// With op.Errors declared, Huma itself writes a 422 response for an
+	// operation that reads input. The service still cannot answer it.
+	huma.Register(api, huma.Operation{
+		OperationID: "baseline-rewritten-declared",
+		Method:      http.MethodPost,
+		Path:        "/baseline/rewritten/declared",
+		Errors:      []int{http.StatusUnauthorized},
+	}, func(context.Context, *echoInput) (*echoOutput, error) {
+		return &echoOutput{}, nil
+	})
+
+	declared := api.OpenAPI().Paths["/baseline/rewritten/declared"].Post
+	require.NotNil(t, declared)
+
+	assert.ElementsMatch(t, []string{"200", "400", "401", "500"}, responseKeys(declared))
+
+	// A 422 the service declares itself is its own statement and stays.
+	huma.Register(api, huma.Operation{
+		OperationID: "baseline-rewritten-explicit",
+		Method:      http.MethodPost,
+		Path:        "/baseline/rewritten/explicit",
+		Errors:      []int{http.StatusUnprocessableEntity},
+	}, func(context.Context, *echoInput) (*echoOutput, error) {
+		return &echoOutput{}, nil
+	})
+
+	explicit := api.OpenAPI().Paths["/baseline/rewritten/explicit"].Post
+	require.NotNil(t, explicit)
+
+	assert.ElementsMatch(t, []string{"200", "400", "422", "500"}, responseKeys(explicit))
+}
+
 func TestBaselineResponses_AddedStatusesPreserveMediaMetadata(t *testing.T) {
 	t.Parallel()
 
