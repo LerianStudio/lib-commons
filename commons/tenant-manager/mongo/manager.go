@@ -510,7 +510,7 @@ func (p *Manager) detectAndReconnectMongo(ctx context.Context, tenantID string, 
 		return false
 	}
 
-	freshURI, err := buildMongoURI(mongoConfig, p.logger)
+	freshURI, err := buildMongoURI(mongoConfig)
 	if err != nil {
 		if p.logger != nil {
 			p.logger.Warnf("config change detection: invalid MongoDB URI for tenant %s: %v", tenantID, err)
@@ -847,9 +847,13 @@ func (p *Manager) buildAndCacheNewConnection(
 		return nil, err
 	}
 
-	uri, err := buildMongoURI(mongoConfig, logger)
+	uri, err := buildMongoURI(mongoConfig)
 	if err != nil {
 		return nil, err
+	}
+
+	if mongoConfig.URI != "" {
+		logger.Debug("using raw mongodb URI from tenant configuration")
 	}
 
 	maxConnections := DefaultMaxConnections
@@ -1192,9 +1196,12 @@ func (p *Manager) IsMultiTenant() bool {
 // all components (credentials, host, database, query parameters) are properly
 // escaped according to RFC 3986. This prevents injection of URI control
 // characters through tenant-supplied configuration values.
-func buildMongoURI(cfg *core.MongoDBConfig, logger *logcompat.Logger) (string, error) {
+//
+// It is pure validation and never logs: config change detection calls it on
+// every tenant revalidation, so any line here repeats while nothing changes.
+func buildMongoURI(cfg *core.MongoDBConfig) (string, error) {
 	if cfg.URI != "" {
-		return validateAndReturnRawURI(cfg.URI, logger)
+		return validateAndReturnRawURI(cfg.URI)
 	}
 
 	if err := validateMongoHostPort(cfg); err != nil {
@@ -1212,7 +1219,7 @@ func buildMongoURI(cfg *core.MongoDBConfig, logger *logcompat.Logger) (string, e
 }
 
 // validateAndReturnRawURI validates and returns a raw MongoDB URI when provided directly.
-func validateAndReturnRawURI(uri string, logger *logcompat.Logger) (string, error) {
+func validateAndReturnRawURI(uri string) (string, error) {
 	parsed, err := url.Parse(uri)
 	if err != nil {
 		return "", fmt.Errorf("invalid mongo URI: %w", err)
@@ -1220,10 +1227,6 @@ func validateAndReturnRawURI(uri string, logger *logcompat.Logger) (string, erro
 
 	if parsed.Scheme != "mongodb" && parsed.Scheme != "mongodb+srv" {
 		return "", fmt.Errorf("invalid mongo URI scheme %q", parsed.Scheme)
-	}
-
-	if logger != nil {
-		logger.Warn("using raw mongodb URI from tenant configuration")
 	}
 
 	return uri, nil

@@ -115,7 +115,7 @@ func TestMongoCloseConnection_NonExistentTenant(t *testing.T) {
 func TestValidateAndReturnRawURI_Valid(t *testing.T) {
 	t.Parallel()
 
-	uri, err := validateAndReturnRawURI("mongodb://localhost:27017/db", nil)
+	uri, err := validateAndReturnRawURI("mongodb://localhost:27017/db")
 	require.NoError(t, err)
 	assert.Equal(t, "mongodb://localhost:27017/db", uri)
 }
@@ -123,7 +123,7 @@ func TestValidateAndReturnRawURI_Valid(t *testing.T) {
 func TestValidateAndReturnRawURI_ValidSRV(t *testing.T) {
 	t.Parallel()
 
-	uri, err := validateAndReturnRawURI("mongodb+srv://cluster.example.com/db", nil)
+	uri, err := validateAndReturnRawURI("mongodb+srv://cluster.example.com/db")
 	require.NoError(t, err)
 	assert.Contains(t, uri, "mongodb+srv://")
 }
@@ -131,7 +131,7 @@ func TestValidateAndReturnRawURI_ValidSRV(t *testing.T) {
 func TestValidateAndReturnRawURI_InvalidScheme(t *testing.T) {
 	t.Parallel()
 
-	_, err := validateAndReturnRawURI("http://localhost:27017", nil)
+	_, err := validateAndReturnRawURI("http://localhost:27017")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid mongo URI scheme")
 }
@@ -140,7 +140,7 @@ func TestValidateAndReturnRawURI_InvalidURL(t *testing.T) {
 	t.Parallel()
 
 	// A truly malformed URL that Go's url.Parse fails on
-	_, err := validateAndReturnRawURI("://bad-url", nil)
+	_, err := validateAndReturnRawURI("://bad-url")
 	// url.Parse may or may not error, but scheme check should fail
 	if err == nil {
 		// If no error from url.Parse, the scheme check should catch it
@@ -322,7 +322,7 @@ func TestBuildMongoURI_WithRawURI(t *testing.T) {
 		URI: "mongodb://localhost:27017/db",
 	}
 
-	uri, err := buildMongoURI(cfg, nil)
+	uri, err := buildMongoURI(cfg)
 	require.NoError(t, err)
 	assert.Equal(t, "mongodb://localhost:27017/db", uri)
 }
@@ -336,7 +336,7 @@ func TestBuildMongoURI_WithHostPort(t *testing.T) {
 		Database: "testdb",
 	}
 
-	uri, err := buildMongoURI(cfg, nil)
+	uri, err := buildMongoURI(cfg)
 	require.NoError(t, err)
 	assert.Contains(t, uri, "mongodb://")
 	assert.Contains(t, uri, "localhost:27017")
@@ -349,7 +349,7 @@ func TestBuildMongoURI_MissingHost(t *testing.T) {
 		Port: 27017,
 	}
 
-	_, err := buildMongoURI(cfg, nil)
+	_, err := buildMongoURI(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "host is required")
 }
