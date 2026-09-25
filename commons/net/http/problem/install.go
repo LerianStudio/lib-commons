@@ -78,12 +78,11 @@ var installMu sync.Mutex
 //     order (skip nil, honor huma.ErrorDetailer) — exactly like the stock
 //     huma.NewError, so native 422 validation errors keep their per-field
 //     errors[] list.
-//   - at ANY status, an *Upstream found in errs (see takeUpstream) is lifted into
-//     the upstream extension member instead of being folded. It is the single
-//     exception to the >=500 scrub, and the exception is carried by the TYPE, not
-//     by a flag: only a value a call site deliberately built as an *Upstream can
-//     land there, and its shape cannot hold a provider's raw body. Everything
-//     else about a 5xx — detail, errors[], our own code — stays scrubbed.
+//   - at ANY status, an *Upstream, an Extensions or a PublicDetail found in errs
+//     is lifted onto the body instead of being folded (see curated). They are
+//     the only exceptions to the >=500 scrub, and each is carried by its TYPE,
+//     not by a flag: only a value a call site deliberately built lands there.
+//     Everything else about a 5xx — the raw msg, errors[] — stays scrubbed.
 //
 // For framework errors Code stays empty (dropped by omitempty) and Type stays at
 // the RFC default about:blank.
@@ -127,19 +126,37 @@ func installed(constructor func(status int, msg string, errs ...error) huma.Stat
 // tests without mutating the process-global, and so every Install() republishes
 // the same stable reference.
 func newError(status int, msg string, errs ...error) huma.StatusError {
-	upstream, errs := takeUpstream(errs)
+	var members curated
 
-	if status >= http.StatusInternalServerError {
-		return &Detail{
-			ErrorModel: huma.ErrorModel{
-				Status: status,
-				Title:  http.StatusText(status),
-				Detail: genericServerErrorDetail,
-			},
-			Upstream: upstream,
+	rest := make([]error, 0, len(errs))
+
+	for _, e := range errs {
+		if !members.collect(e) {
+			rest = append(rest, e)
 		}
 	}
 
+	pd := &Detail{
+		ErrorModel: huma.ErrorModel{
+			Status: status,
+			Title:  http.StatusText(status),
+			Detail: genericServerErrorDetail,
+		},
+	}
+
+	if status < http.StatusInternalServerError {
+		pd.Detail = msg
+		pd.Errors = fold(rest)
+	}
+
+	members.apply(pd)
+
+	return pd
+}
+
+// fold renders errs as errors[] exactly like the stock huma.NewError: nil errs
+// are skipped and a huma.ErrorDetailer contributes its own detail.
+func fold(errs []error) []*huma.ErrorDetail {
 	details := make([]*huma.ErrorDetail, 0, len(errs))
 
 	for _, e := range errs {
@@ -160,45 +177,9 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 		details = append(details, &huma.ErrorDetail{Message: e.Error()})
 	}
 
-	var folded []*huma.ErrorDetail
-	if len(details) > 0 {
-		folded = details
+	if len(details) == 0 {
+		return nil
 	}
 
-	return &Detail{
-		ErrorModel: huma.ErrorModel{
-			Status: status,
-			Title:  http.StatusText(status),
-			Detail: msg,
-			Errors: folded,
-		},
-		Upstream: upstream,
-	}
-}
-
-// takeUpstream pulls the upstream extension member out of errs (by the shared
-// upstreamFrom rule) and returns the remaining errors to fold. An err the type
-// is found in is never folded, so upstream data lives in exactly one place on
-// the wire; the first non-empty match wins, and an empty or typed-nil *Upstream
-// is dropped as if it had not been passed.
-func takeUpstream(errs []error) (*Upstream, []error) {
-	var (
-		found *Upstream
-		rest  = make([]error, 0, len(errs))
-	)
-
-	for _, e := range errs {
-		up, matched := upstreamFrom(e)
-		if !matched {
-			rest = append(rest, e)
-
-			continue
-		}
-
-		if found == nil {
-			found = up
-		}
-	}
-
-	return found, rest
+	return details
 }

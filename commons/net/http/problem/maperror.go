@@ -20,8 +20,9 @@ import (
 //   - codeOf -> (code, msg, true) -> a *Detail with Status=statusOf(code). When
 //     code is non-empty, Code holds the bare domain code and Type is the flat
 //     URI (BaseURI + "/" + code); the code is NOT appended to detail. 5xx details
-//     are sanitized to "internal error" so a raw cause never leaks, while
-//     Code/Type still let clients branch on a sanitized 500. An empty code yields
+//     are sanitized to "internal error" so a raw cause never leaks, unless err
+//     carries a PublicDetail, while Code/Type still let clients branch on a
+//     sanitized 500. An empty code yields
 //     a bare body (no Code, default Type) for rails without a code taxonomy.
 //
 // codeOf extracts a (code, msg, ok) triple from err: ok=false signals the error
@@ -29,15 +30,15 @@ import (
 // maps a code to its HTTP status. fallbackCode is the code carried in the body
 // when the error is nil or unrecognized.
 //
-// An *Upstream reachable from err (wrapped or not) is lifted into the upstream
-// extension member on whatever body comes out, at every status. This seam has to
+// An *Upstream, an Extensions or a PublicDetail reachable from err (wrapped or
+// not) is lifted onto whatever body comes out, at every status. This seam has to
 // do that lifting itself: it returns a concrete *Detail straight to Huma, and a
 // handler error that already satisfies huma.StatusError is written verbatim
 // without huma.NewError ever being called — so the Install override never sees
 // it, and a rail whose only error path is MapError would otherwise have no way
 // to publish the member at all. As in the override, the exception to the >=500
 // sanitization is carried by the TYPE, not by a flag: only a value a call site
-// deliberately built as an *Upstream can land there.
+// deliberately built as one of those types can land there.
 //
 // It returns a concrete *Detail directly rather than round-tripping through
 // huma.NewError, so the result is independent of whether Install ran.
@@ -49,9 +50,10 @@ func MapError(
 ) error {
 	pd := mapProblem(err, codeOf, statusOf, fallbackCode)
 
-	if up, _ := upstreamFrom(err); up != nil {
-		pd.Upstream = up
-	}
+	var members curated
+
+	members.collect(err)
+	members.apply(pd)
 
 	return pd
 }

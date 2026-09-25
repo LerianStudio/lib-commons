@@ -19,8 +19,10 @@
 package problem
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/danielgtaylor/huma/v2"
 )
@@ -149,7 +151,8 @@ func bound(s string, maxRunes int) string {
 
 // Detail is the single RFC 9457 error body for every Lerian rail. It embeds
 // Huma's ErrorModel (type/title/status/detail/instance/errors) and adds the
-// flat machine-readable domain code plus the optional upstream extension member.
+// flat machine-readable domain code, the optional upstream extension member and
+// any extension members the service curated (see Extensions).
 //
 // The embedded `instance` member is populated by InstanceTransformer with the
 // request's trace id; it is `omitempty`, so it is absent rather than empty when
@@ -175,4 +178,146 @@ type Detail struct {
 	// own error catalog.
 	Code     string    `json:"code,omitempty" doc:"Stable, machine-readable domain error code scoped to the emitting service (format: <SERVICE>-NNNN)."`
 	Upstream *Upstream `json:"upstream,omitempty" doc:"RFC 9457 extension member: the error a proxied third-party provider reported. Absent unless the emitting service explicitly surfaced one."`
+	// Extensions are rendered as top-level members by MarshalJSON, never as a
+	// member of their own.
+	Extensions Extensions `json:"-"`
+
+	// A body may carry extension members, so the published schema must allow them.
+	_ struct{} `json:"-" additionalProperties:"true"`
+}
+
+// MarshalJSON renders the standard members, then each extension member in key
+// order, so one body always renders the same bytes.
+func (d Detail) MarshalJSON() ([]byte, error) {
+	type wire Detail // sheds this method, so the call below does not recurse
+
+	body, err := marshalUnescaped(wire(d))
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make([]string, 0, len(d.Extensions))
+
+	for key := range d.Extensions {
+		if _, reserved := reservedMembers[key]; !reserved {
+			keys = append(keys, key)
+		}
+	}
+
+	if len(keys) == 0 {
+		return body, nil
+	}
+
+	slices.Sort(keys)
+
+	out := body[:len(body)-1] // reopen the object: body always ends in '}'
+
+	for _, key := range keys {
+		name, err := marshalUnescaped(key)
+		if err != nil {
+			return nil, err
+		}
+
+		value, err := marshalUnescaped(d.Extensions[key])
+		if err != nil {
+			return nil, err
+		}
+
+		if len(out) > 1 {
+			out = append(out, ',')
+		}
+
+		out = append(append(append(out, name...), ':'), value...)
+	}
+
+	return append(out, '}'), nil
+}
+
+// marshalUnescaped leaves HTML characters as they are: the encoder writing the
+// response applies its own escaping policy to these bytes, exactly as it did
+// before Detail had a MarshalJSON of its own.
+func marshalUnescaped(v any) ([]byte, error) {
+	var buf bytes.Buffer
+
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+// reservedMembers are the document's own members. An extension never overrides
+// one, so no call site can rewrite a status, a code or a scrubbed detail.
+var reservedMembers = map[string]struct{}{
+	"type": {}, "title": {}, "status": {}, "detail": {}, "instance": {}, "errors": {}, "code": {}, "upstream": {},
+}
+
+// Extensions carries RFC 9457 extension members: data a client needs to act on
+// the problem, such as the id of the resource to poll. It travels in an error
+// chain like *Upstream and, like it, survives the >=500 scrub.
+type Extensions map[string]any
+
+// Error lets an Extensions value travel in an error chain. It names no cause.
+func (Extensions) Error() string { return "problem extensions" }
+
+// PublicDetail is a detail its service has judged safe for a client to read at
+// any status, the remedy a 5xx must not lose included ("do not resend"). It
+// replaces the detail the status policy chose; nothing else about a 5xx changes.
+type PublicDetail string
+
+// Error lets a PublicDetail travel in an error chain.
+func (d PublicDetail) Error() string { return string(d) }
+
+// curated holds the values a call site deliberately built for the wire. They are
+// the only content of a 5xx the scrub lets through, each carried by its TYPE.
+type curated struct {
+	upstream   *Upstream
+	extensions Extensions
+	detail     PublicDetail
+}
+
+// collect records what err carries, wrapped or not; the first non-empty value of
+// each kind wins. matched reports that any of the types was present, even empty,
+// so the caller never folds err into errors[].
+func (c *curated) collect(err error) (matched bool) {
+	if up, ok := upstreamFrom(err); ok {
+		matched = true
+
+		if c.upstream == nil {
+			c.upstream = up
+		}
+	}
+
+	var extensions Extensions
+	if errors.As(err, &extensions) {
+		matched = true
+
+		if c.extensions == nil && len(extensions) > 0 {
+			c.extensions = extensions
+		}
+	}
+
+	var detail PublicDetail
+	if errors.As(err, &detail) {
+		matched = true
+
+		if c.detail == "" {
+			c.detail = detail
+		}
+	}
+
+	return matched
+}
+
+// apply writes the curated values onto a body.
+func (c *curated) apply(pd *Detail) {
+	pd.Upstream = c.upstream
+	pd.Extensions = c.extensions
+
+	if c.detail != "" {
+		pd.Detail = string(c.detail)
+	}
 }
