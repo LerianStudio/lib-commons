@@ -11,8 +11,8 @@
 //
 // It does import commons/net/http/problem, for one thing only: registering
 // problem.InstanceTransformer on the API it builds, so every error body carries
-// the RFC 9457 `instance` member (the request's trace id) with no per-service
-// wiring. That transformer leaves any body that is not the shared model
+// the RFC 9457 `instance` member (the request's trace id) and its extension
+// members with no per-service wiring. That transformer leaves any body that is not the shared model
 // untouched, so importing it neither selects a model nor changes one.
 //
 // This package is platform glue shared by every Lerian service; it must not

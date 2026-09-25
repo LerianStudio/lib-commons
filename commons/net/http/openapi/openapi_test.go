@@ -483,6 +483,48 @@ func TestErrorSeams_UpstreamReachesTheClient(t *testing.T) {
 	}
 }
 
+// TestErrorSeams_ExtensionsReachTheClient drives both seams through a real
+// request: the curated detail and members survive the 5xx scrub, and Huma's
+// encoder leaves "->" unescaped exactly as it does on a body without members.
+func TestErrorSeams_ExtensionsReachTheClient(t *testing.T) {
+	// NOT parallel: mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	problem.Install()
+
+	const remedy = "CREATED->PROCESSING failed; do not resend"
+
+	curated := fmt.Errorf("process: %w", errors.Join(
+		errors.New("leaky raw cause"),
+		problem.PublicDetail(remedy),
+		problem.Extensions{"transferId": "770e8400"},
+	))
+
+	cases := map[string]error{
+		"MapError seam": problem.MapError(curated,
+			func(error) (string, string, bool) { return "BTF-9011", "leaky raw cause", true },
+			func(string) int { return http.StatusInternalServerError },
+			"BTF-9000",
+		),
+		"huma.Error5xx seam": huma.Error500InternalServerError("leaky raw msg", problem.PublicDetail(remedy), problem.Extensions{"transferId": "770e8400"}),
+	}
+
+	for name, handlerErr := range cases {
+		t.Run(name, func(t *testing.T) {
+			app := fiber.New()
+			api := New(app, app.Group("/"), testConfig())
+			registerFailing(api, handlerErr)
+
+			status, body := doReq(t, app, http.MethodGet, "/fail")
+			assert.Equal(t, http.StatusInternalServerError, status)
+			assert.Contains(t, body, `"detail":"`+remedy+`"`)
+			assert.Contains(t, body, `"transferId":"770e8400"`)
+			assert.NotContains(t, body, "leaky")
+		})
+	}
+}
+
 // registerFailing registers a GET operation whose handler always returns err, so
 // a test can drive a real request through Huma's own error-writing path.
 func registerFailing(api huma.API, err error) {
