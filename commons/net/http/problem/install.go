@@ -8,10 +8,10 @@ import (
 )
 
 // genericServerErrorDetail is the static, leak-free public detail served for
-// every status>=500 error built through the installed override. It carries no
-// operation name and no underlying cause, so a careless call site (including a
-// direct huma.Error500(rawErr.Error())) cannot interpolate an internal error
-// into a client-visible 5xx body.
+// every status>=500 error built through the installed override that carries no
+// PublicDetail. It carries no operation name and no underlying cause, so a
+// careless call site (including a direct huma.Error500(rawErr.Error())) cannot
+// interpolate an internal error into a client-visible 5xx body.
 const genericServerErrorDetail = "internal error"
 
 // installMu serializes reads and writes of the process-global huma.NewError so

@@ -10,7 +10,7 @@
 // light, transport-free half of the wrapper. The heavier Fiber binding lives in
 // commons/net/http/openapi, which imports this package for exactly one thing:
 // registering InstanceTransformer on the API it builds, so every service carries
-// the RFC 9457 `instance` member without writing a line. Choosing the error
+// the RFC 9457 `instance` member and its extension members without writing a line. Choosing the error
 // MODEL remains the consumer bootstrap's concern — it calls Install — and the
 // binding still applies none of that policy.
 //
@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 )
@@ -50,8 +51,8 @@ const BaseURI = "https://errors.lerian.studio/v1"
 // *Upstream is an error, which is how it reaches a problem document: pass it as
 // an errs argument to huma.NewError / huma.Error4xx / huma.Error5xx (wrapped or
 // not) and the installed override (see Install) lifts it into the member. That
-// is also what makes it the only thing that survives the >=500 scrub — being
-// this type IS the curation signal, so there is no flag to forget.
+// is also what lets it survive the >=500 scrub, as Extensions and PublicDetail
+// do — being this type IS the curation signal, so there is no flag to forget.
 type Upstream struct {
 	Code    string `json:"code,omitempty" doc:"The upstream provider's own error code, verbatim." example:"E4001"`
 	Message string `json:"message,omitempty" doc:"The upstream provider's own error message, verbatim (bounded, never its raw response body)." example:"account not found at provider"`
@@ -103,35 +104,6 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// isEmpty reports whether the member carries nothing worth publishing. An empty
-// member is treated as absent so a document never shows an `upstream` object
-// with nothing in it.
-func (u *Upstream) isEmpty() bool {
-	return u == nil || (u.Code == "" && u.Message == "")
-}
-
-// upstreamFrom is the SINGLE detection rule for the extension member, shared by
-// both seams that can produce a problem document (the Install override and
-// MapError) so the two can never drift on what counts as an upstream error.
-//
-// It unwraps (errors.As), because a real call site wraps the rail error with
-// local context before returning it. matched reports that the TYPE was present
-// even when the value carries nothing worth publishing: an empty or typed-nil
-// *Upstream must be dropped everywhere rather than folded into errors[] as a
-// blank entry.
-func upstreamFrom(err error) (up *Upstream, matched bool) {
-	var candidate *Upstream
-	if !errors.As(err, &candidate) {
-		return nil, false
-	}
-
-	if candidate.isEmpty() {
-		return nil, true
-	}
-
-	return candidate, true
-}
-
 // bound truncates s to at most maxRunes runes, marking the cut so a reader can
 // tell the value was shortened.
 func bound(s string, maxRunes int) string {
@@ -178,34 +150,41 @@ type Detail struct {
 	// own error catalog.
 	Code     string    `json:"code,omitempty" doc:"Stable, machine-readable domain error code scoped to the emitting service (format: <SERVICE>-NNNN)."`
 	Upstream *Upstream `json:"upstream,omitempty" doc:"RFC 9457 extension member: the error a proxied third-party provider reported. Absent unless the emitting service explicitly surfaced one."`
-	// Extensions are rendered as top-level members by MarshalJSON, never as a
-	// member of their own.
+	// Extensions are rendered as top-level members by Body, never as a member of
+	// their own.
 	Extensions Extensions `json:"-"`
 
 	// A body may carry extension members, so the published schema must allow them.
 	_ struct{} `json:"-" additionalProperties:"true"`
 }
 
-// MarshalJSON renders the standard members, then each extension member in key
-// order, so one body always renders the same bytes.
-func (d Detail) MarshalJSON() ([]byte, error) {
-	type wire Detail // sheds this method, so the call below does not recurse
+// Body is the value to encode for d: d itself, unless d carries extension
+// members, which only this view renders. Detail has no MarshalJSON of its own,
+// because every type embedding it would inherit one and lose its own fields.
+func Body(d *Detail) any {
+	if d == nil || len(d.Extensions) == 0 {
+		return d
+	}
 
-	body, err := marshalUnescaped(wire(d))
+	return extended{d}
+}
+
+// extended renders the standard members, then each extension member in key
+// order, so one body always renders the same bytes.
+type extended struct{ *Detail }
+
+func (e extended) MarshalJSON() ([]byte, error) {
+	body, err := marshalUnescaped(e.Detail)
 	if err != nil {
 		return nil, err
 	}
 
-	keys := make([]string, 0, len(d.Extensions))
+	keys := make([]string, 0, len(e.Extensions))
 
-	for key := range d.Extensions {
-		if _, reserved := reservedMembers[key]; !reserved {
+	for key := range e.Extensions {
+		if !reserved(key) {
 			keys = append(keys, key)
 		}
-	}
-
-	if len(keys) == 0 {
-		return body, nil
 	}
 
 	slices.Sort(keys)
@@ -213,14 +192,11 @@ func (d Detail) MarshalJSON() ([]byte, error) {
 	out := body[:len(body)-1] // reopen the object: body always ends in '}'
 
 	for _, key := range keys {
-		name, err := marshalUnescaped(key)
-		if err != nil {
-			return nil, err
-		}
+		name, nameErr := marshalUnescaped(key)
+		value, valueErr := marshalUnescaped(e.Extensions[key])
 
-		value, err := marshalUnescaped(d.Extensions[key])
-		if err != nil {
-			return nil, err
+		if nameErr != nil || valueErr != nil {
+			continue // an error body must always render, so the member is dropped
 		}
 
 		if len(out) > 1 {
@@ -234,8 +210,8 @@ func (d Detail) MarshalJSON() ([]byte, error) {
 }
 
 // marshalUnescaped leaves HTML characters as they are: the encoder writing the
-// response applies its own escaping policy to these bytes, exactly as it did
-// before Detail had a MarshalJSON of its own.
+// response applies its own escaping policy to these bytes, exactly as it does to
+// a body with no extension members.
 func marshalUnescaped(v any) ([]byte, error) {
 	var buf bytes.Buffer
 
@@ -249,15 +225,22 @@ func marshalUnescaped(v any) ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
-// reservedMembers are the document's own members. An extension never overrides
-// one, so no call site can rewrite a status, a code or a scrubbed detail.
-var reservedMembers = map[string]struct{}{
-	"type": {}, "title": {}, "status": {}, "detail": {}, "instance": {}, "errors": {}, "code": {}, "upstream": {},
+// reservedMembers are the document's own members. An extension never renders
+// one in any letter case: a Go client decodes JSON keys without regard to case
+// and keeps the last duplicate, so a case variant would rewrite the member.
+var reservedMembers = []string{"type", "title", "status", "detail", "instance", "errors", "code", "upstream"}
+
+func reserved(key string) bool {
+	return slices.ContainsFunc(reservedMembers, func(member string) bool { return strings.EqualFold(key, member) })
 }
 
 // Extensions carries RFC 9457 extension members: data a client needs to act on
-// the problem, such as the id of the resource to poll. It travels in an error
-// chain like *Upstream and, like it, survives the >=500 scrub.
+// the problem, such as the id of the resource to poll. Pass it BY VALUE in an
+// error chain; it survives the >=500 scrub like *Upstream, but nothing bounds
+// it, so each value is published verbatim at every status and an error or a
+// provider struct never belongs in one. A key naming a document member and a
+// value that does not marshal are dropped. The members render through Body only,
+// which InstanceTransformer applies on every API openapi.New builds.
 type Extensions map[string]any
 
 // Error lets an Extensions value travel in an error chain. It names no cause.
@@ -265,7 +248,8 @@ func (Extensions) Error() string { return "problem extensions" }
 
 // PublicDetail is a detail its service has judged safe for a client to read at
 // any status, the remedy a 5xx must not lose included ("do not resend"). It
-// replaces the detail the status policy chose; nothing else about a 5xx changes.
+// replaces the detail the status policy chose, verbatim and unbounded; nothing
+// else about a 5xx changes.
 type PublicDetail string
 
 // Error lets a PublicDetail travel in an error chain.
@@ -279,14 +263,16 @@ type curated struct {
 	detail     PublicDetail
 }
 
-// collect records what err carries, wrapped or not; the first non-empty value of
-// each kind wins. matched reports that any of the types was present, even empty,
-// so the caller never folds err into errors[].
+// collect records what err carries, wrapped or not: errors.As takes the first
+// match in a chain, and across separate errs the first non-empty value of each
+// kind wins. matched reports a type was present, even empty, so the caller never
+// folds err into errors[].
 func (c *curated) collect(err error) (matched bool) {
-	if up, ok := upstreamFrom(err); ok {
+	var up *Upstream
+	if errors.As(err, &up) {
 		matched = true
 
-		if c.upstream == nil {
+		if c.upstream == nil && up != nil && (up.Code != "" || up.Message != "") {
 			c.upstream = up
 		}
 	}

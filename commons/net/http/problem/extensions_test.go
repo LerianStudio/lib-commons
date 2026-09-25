@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -27,19 +30,14 @@ func TestDetail_JSON_InlinesExtensions(t *testing.T) {
 		Extensions: Extensions{"transferId": "770e8400", "openTime": "06:30"},
 	}
 
-	raw, err := json.Marshal(d)
+	raw, err := json.Marshal(Body(d))
 	require.NoError(t, err)
 	assert.Equal(t, `{"title":"Internal Server Error","status":500,"detail":"internal error","code":"BTF-9011","openTime":"06:30","transferId":"770e8400"}`, string(raw))
-
-	value, err := json.Marshal(*d)
-	require.NoError(t, err)
-	assert.Equal(t, string(raw), string(value), "a Detail value and a *Detail must render the same body")
 }
 
 // TestDetail_JSON_ExtensionsCannotShadowTheDocumentsOwnMembers proves an
-// extension can only ADD a member: a key naming a standard or library member is
-// dropped, so no call site can rewrite the status, the code or the scrubbed
-// detail through the extension map.
+// extension only ADDS a member: a key naming a document member in any letter
+// case is dropped, which is what a Go client, decoding keys by case fold, needs.
 func TestDetail_JSON_ExtensionsCannotShadowTheDocumentsOwnMembers(t *testing.T) {
 	t.Parallel()
 
@@ -49,10 +47,11 @@ func TestDetail_JSON_ExtensionsCannotShadowTheDocumentsOwnMembers(t *testing.T) 
 		Extensions: Extensions{
 			"type": "x", "title": "x", "status": 200, "detail": "raw cause", "instance": "x",
 			"errors": "x", "code": "OTHER", "upstream": "x", "refusalCode": "IDEMPOTENCY_UNFENCED",
+			"Status": 200, "\u017ftatus": 201, "CODE": "OTHER", "Detail": "raw cause",
 		},
 	}
 
-	raw, err := json.Marshal(d)
+	raw, err := json.Marshal(Body(d))
 	require.NoError(t, err)
 
 	var body map[string]any
@@ -62,6 +61,62 @@ func TestDetail_JSON_ExtensionsCannotShadowTheDocumentsOwnMembers(t *testing.T) 
 		"title": "Service Unavailable", "status": float64(http.StatusServiceUnavailable),
 		"detail": "internal error", "code": "BTF-0019", "refusalCode": "IDEMPOTENCY_UNFENCED",
 	}, body)
+
+	var decoded Detail
+	require.NoError(t, json.Unmarshal(raw, &decoded))
+	assert.Equal(t, http.StatusServiceUnavailable, decoded.Status)
+	assert.Equal(t, "BTF-0019", decoded.Code)
+	assert.Equal(t, "internal error", decoded.Detail)
+}
+
+// TestReservedMembers_AreEveryJSONMemberOfDetail reads the member names off the
+// type itself, so a member Huma or this package adds later cannot be shadowed.
+func TestReservedMembers_AreEveryJSONMemberOfDetail(t *testing.T) {
+	t.Parallel()
+
+	var members []string
+
+	for _, field := range reflect.VisibleFields(reflect.TypeFor[Detail]()) {
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if field.Anonymous || !field.IsExported() || name == "-" {
+			continue
+		}
+
+		members = append(members, name)
+	}
+
+	slices.Sort(members)
+	assert.Equal(t, members, slices.Sorted(slices.Values(reservedMembers)))
+}
+
+// TestBody_EmbeddingTypesKeepTheirOwnFields: Detail has no marshaler for an
+// embedding type to inherit, so the type's own members still reach the wire.
+func TestBody_EmbeddingTypesKeepTheirOwnFields(t *testing.T) {
+	t.Parallel()
+
+	type nameTaken struct {
+		*Detail
+		ExistingID string `json:"existing_id"`
+	}
+
+	raw, err := json.Marshal(nameTaken{
+		Detail:     &Detail{ErrorModel: huma.ErrorModel{Status: http.StatusConflict, Title: "Conflict"}, Extensions: Extensions{"k": "v"}},
+		ExistingID: "a1",
+	})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"title":"Conflict","status":409,"existing_id":"a1"}`, string(raw))
+}
+
+// TestBody_DropsAMemberThatCannotMarshal: the error body is the last thing that
+// must render, so one bad value costs its own member and nothing else.
+func TestBody_DropsAMemberThatCannotMarshal(t *testing.T) {
+	t.Parallel()
+
+	d := &Detail{ErrorModel: huma.ErrorModel{Status: http.StatusInternalServerError}, Extensions: Extensions{"bad": math.NaN(), "ok": "x"}}
+
+	raw, err := json.Marshal(Body(d))
+	require.NoError(t, err)
+	assert.Equal(t, `{"status":500,"ok":"x"}`, string(raw))
 }
 
 // TestDetail_JSON_NoExtensionsLeavesTheBodyUnchanged is the additive guarantee
@@ -69,23 +124,21 @@ func TestDetail_JSON_ExtensionsCannotShadowTheDocumentsOwnMembers(t *testing.T) 
 func TestDetail_JSON_NoExtensionsLeavesTheBodyUnchanged(t *testing.T) {
 	t.Parallel()
 
-	for name, ext := range map[string]Extensions{"nil": nil, "empty": {}, "only reserved keys": {"status": 1}} {
+	for name, ext := range map[string]Extensions{"none": nil, "only reserved keys": {"status": 1}} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
 			d := &Detail{ErrorModel: huma.ErrorModel{Status: http.StatusNotFound, Title: "Not Found"}, Extensions: ext}
 
-			raw, err := json.Marshal(d)
+			raw, err := json.Marshal(Body(d))
 			require.NoError(t, err)
 			assert.Equal(t, `{"title":"Not Found","status":404}`, string(raw))
 		})
 	}
 }
 
-// TestDetail_Schema_AllowsAdditionalProperties keeps the published contract
-// honest: a body can carry extension members, so the generated error schema must
-// not declare additionalProperties false, which a strict client validator would
-// enforce against every body that carries one.
+// TestDetail_Schema_AllowsAdditionalProperties: a body can carry extension
+// members, and a strict client validator enforces additionalProperties false.
 func TestDetail_Schema_AllowsAdditionalProperties(t *testing.T) {
 	t.Parallel()
 

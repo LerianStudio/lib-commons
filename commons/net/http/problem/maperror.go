@@ -22,8 +22,8 @@ import (
 //     URI (BaseURI + "/" + code); the code is NOT appended to detail. 5xx details
 //     are sanitized to "internal error" so a raw cause never leaks, unless err
 //     carries a PublicDetail, while Code/Type still let clients branch on a
-//     sanitized 500. An empty code yields
-//     a bare body (no Code, default Type) for rails without a code taxonomy.
+//     sanitized 500. An empty code yields a bare body (no Code, default Type)
+//     for rails without a code taxonomy.
 //
 // codeOf extracts a (code, msg, ok) triple from err: ok=false signals the error
 // is not a recognized domain error (fall back to the canonical 500). statusOf
@@ -58,8 +58,8 @@ func MapError(
 	return pd
 }
 
-// mapProblem is MapError's status/code/detail policy, split out so the upstream
-// member can be attached to every body it can return from one place.
+// mapProblem is MapError's status/code/detail policy, split out so the curated
+// members can be attached to every body it can return from one place.
 func mapProblem(
 	err error,
 	codeOf func(error) (code, msg string, ok bool),
