@@ -25,6 +25,8 @@ import (
 // the huma.Context. It is therefore the only point that sees both the request and
 // the body, on every status the library can emit.
 //
+// It also hands every *Detail to Body, the only encoder of the extension members.
+//
 // It is safe on any value: anything that is not a *Detail is returned untouched,
 // so registering it on an API whose consumer never called Install() changes
 // nothing. An instance a caller set itself is never overwritten.
@@ -40,17 +42,17 @@ import (
 // write through a pointer whose ownership it cannot see.
 func InstanceTransformer(ctx huma.Context, _ string, v any) (any, error) {
 	pd, ok := v.(*Detail)
-	if !ok || pd == nil || pd.Instance != "" || ctx == nil {
+	if !ok || pd == nil {
 		return v, nil
 	}
 
-	traceID := tracing.GetTraceIDFromContext(ctx.Context())
-	if traceID == "" {
-		return v, nil
+	if pd.Instance == "" && ctx != nil {
+		if traceID := tracing.GetTraceIDFromContext(ctx.Context()); traceID != "" {
+			stamped := *pd
+			stamped.Instance = traceID
+			pd = &stamped
+		}
 	}
 
-	stamped := *pd
-	stamped.Instance = traceID
-
-	return &stamped, nil
+	return Body(pd), nil
 }
