@@ -1,5 +1,17 @@
 # Lib-commons Changelog
 
+## [7.9.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.9.0)
+
+Features:
+- Introduced the ability to carry extension members and a public `5xx` detail in problem reports, enhancing the flexibility and detail of error handling. (@fredcamaral)
+
+Fixes:
+- Resolved an issue where problem extensions were not rendered correctly without a Detail marshaler, ensuring consistent output for error details. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.8.0...v7.9.0)
+
+---
+
 ## [7.8.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.8.0)
 
 Features:
