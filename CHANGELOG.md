@@ -1,5 +1,14 @@
 # Lib-commons Changelog
 
+## [7.10.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.10.0)
+
+Features:
+- Implemented a mechanism to sweep idle tenants in the outbox retention process. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.9.0...v7.10.0)
+
+---
+
 ## [7.9.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.9.0)
 
 Features:
