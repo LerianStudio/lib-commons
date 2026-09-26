@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
@@ -43,6 +44,8 @@ type TenantMiddleware struct {
 	mongoModules map[string]*tmmongo.Manager    // module -> MongoDB manager
 
 	enabled bool
+
+	refusalsToErrorHandler bool // refusals are returned for the app's ErrorHandler, never written
 }
 
 // TenantMiddlewareOption configures a TenantMiddleware.
@@ -63,6 +66,14 @@ func WithTenantCache(cache *tenantcache.TenantCache) TenantMiddlewareOption {
 func WithTenantLoader(loader *tenantcache.TenantLoader) TenantMiddlewareOption {
 	return func(m *TenantMiddleware) {
 		m.loader = loader
+	}
+}
+
+// WithRefusalsToErrorHandler makes WithTenantDB write nothing on a refusal and
+// return it instead, for the app's ErrorHandler to render. See refusalError.
+func WithRefusalsToErrorHandler() TenantMiddlewareOption {
+	return func(m *TenantMiddleware) {
+		m.refusalsToErrorHandler = true
 	}
 }
 
@@ -137,7 +148,8 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "missing authorization token",
 			core.ErrAuthorizationTokenRequired)
 
-		return unauthorizedError(c, "MISSING_TOKEN", "Authorization token is required")
+		return m.refuse(c, unauthorizedRefusal(core.ErrAuthorizationTokenRequired,
+			"MISSING_TOKEN", "Authorization token is required"))
 	}
 
 	// Parse JWT token without signature verification.
@@ -147,7 +159,8 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 		logger.Base().Log(ctx, obs.LevelError, "failed to parse JWT token", "error", err)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "failed to parse token", err)
 
-		return unauthorizedError(c, "INVALID_TOKEN", "Failed to parse authorization token")
+		return m.refuse(c, unauthorizedRefusal(fmt.Errorf("%w: %w", core.ErrInvalidAuthorizationToken, err),
+			"INVALID_TOKEN", "Failed to parse authorization token"))
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
@@ -156,7 +169,8 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "invalid claims format",
 			core.ErrInvalidTenantClaims)
 
-		return unauthorizedError(c, "INVALID_TOKEN", "JWT claims are not in expected format")
+		return m.refuse(c, unauthorizedRefusal(core.ErrInvalidTenantClaims,
+			"INVALID_TOKEN", "JWT claims are not in expected format"))
 	}
 
 	// Extract tenantId from claims
@@ -166,7 +180,8 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "missing tenantId in JWT",
 			core.ErrMissingTenantIDClaim)
 
-		return unauthorizedError(c, "MISSING_TENANT", "tenantId is required in JWT token")
+		return m.refuse(c, unauthorizedRefusal(core.ErrMissingTenantIDClaim,
+			"MISSING_TENANT", "tenantId is required in JWT token"))
 	}
 
 	tenantID, err = core.CanonicalTenantID(tenantID)
@@ -176,7 +191,7 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "invalid tenantId format",
 			core.ErrInvalidTenantClaims)
 
-		return unauthorizedError(c, "INVALID_TENANT", "tenantId has invalid format")
+		return m.refuse(c, unauthorizedRefusal(err, "INVALID_TENANT", "tenantId has invalid format"))
 	}
 
 	logger.Base().Log(ctx, obs.LevelDebug, "tenant context resolved",
@@ -196,7 +211,7 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 			"tenant_id", tenantID, "error", err)
 		libOpentelemetry.HandleSpanError(span, "failed to lazy-load tenant config", err)
 
-		return mapDomainErrorToHTTP(c, err, tenantID)
+		return m.refuse(c, domainRefusal(err, tenantID))
 	}
 
 	// Resolve PostgreSQL connections.
@@ -208,7 +223,7 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 			"tenant_id", tenantID, "error", pgErr)
 		libOpentelemetry.HandleSpanError(span, "failed to resolve tenant PostgreSQL connection", pgErr)
 
-		return mapDomainErrorToHTTP(c, pgErr, tenantID)
+		return m.refuse(c, domainRefusal(pgErr, tenantID))
 	}
 
 	// Resolve MongoDB connections.
@@ -220,7 +235,7 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 			"tenant_id", tenantID, "error", mongoErr)
 		libOpentelemetry.HandleSpanError(span, "failed to resolve tenant MongoDB connection", mongoErr)
 
-		return mapDomainErrorToHTTP(c, mongoErr, tenantID)
+		return m.refuse(c, domainRefusal(mongoErr, tenantID))
 	}
 
 	// Update Fiber context

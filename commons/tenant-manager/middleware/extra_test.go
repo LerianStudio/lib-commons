@@ -22,6 +22,11 @@ func newFiberTestApp(handler fiber.Handler) *fiber.App {
 	return app
 }
 
+// mapDomainErrorToHTTP writes the refusal WithTenantDB answers err with.
+func mapDomainErrorToHTTP(c fiber.Ctx, err error, tenantID string) error {
+	return NewTenantMiddleware().refuse(c, domainRefusal(err, tenantID))
+}
+
 // TestMapDomainErrorToHTTP_AuthErrors covers the 401 path.
 func TestMapDomainErrorToHTTP_AuthorizationTokenRequired(t *testing.T) {
 	t.Parallel()
@@ -180,20 +185,6 @@ func TestMapDomainErrorToHTTP_DefaultError(t *testing.T) {
 
 	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, errors.New("unexpected error"), "t1")
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	resp, err := app.Test(req)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-}
-
-// TestInternalServerError covers the internalServerError helper.
-func TestInternalServerError(t *testing.T) {
-	t.Parallel()
-
-	app := newFiberTestApp(func(c fiber.Ctx) error {
-		return internalServerError(c, "TEST_CODE", "Test Title")
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
