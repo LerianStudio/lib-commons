@@ -27,9 +27,17 @@
 // RetentionBatchSize PUBLISHED events older than the retention window, oldest
 // first, sparing the types listed in RetentionKeepEventTypes, so a large
 // backlog drains one batch per interval without a long transaction. PENDING,
-// PROCESSING, FAILED and INVALID events are not deleted at any age: an INVALID
-// event is the durable record that a fact was abandoned after the retry
-// budget. A failed sweep is logged and does not affect dispatch.
+// PROCESSING and FAILED events are not deleted at any age. An INVALID event is
+// the durable record that a fact was abandoned after the retry budget and is
+// kept forever unless WithRetentionInvalid is set, alone or with
+// WithRetentionPublished: each sweep then also calls DeleteInvalidBefore of
+// the optional InvalidPurger capability, removing up to RetentionBatchSize
+// INVALID events that became INVALID longer ago than that window, under the
+// same kept types. The postgres adapter implements InvalidPurger and measures
+// that age from updated_at, which the transition to INVALID stamps and nothing
+// writes afterwards; the mongo adapter does not implement it, so NewDispatcher
+// returns ErrOutboxRetentionUnsupported there.
+// A failed sweep is logged and does not affect dispatch.
 //
 // Pool-per-tenant and schema-per-tenant postgres repositories, and mongo
 // repositories with a tenant database resolver, discover every known tenant, so
@@ -38,7 +46,10 @@
 // with PENDING, PROCESSING or FAILED rows, so they also implement
 // PublishedTenantLister: once per RetentionSweepInterval the dispatcher lists
 // every tenant holding a PUBLISHED event older than the retention window and
-// sweeps each one, idle or not, every sweep scoped to its own tenant.
+// sweeps each one, idle or not, every sweep scoped to its own tenant. With
+// WithRetentionInvalid, column-per-tenant postgres also lists, through
+// InvalidPurger, every tenant holding an INVALID event past that window, so a
+// tenant whose only rows are abandoned is swept too.
 //
 // The interval is kept per dispatcher instance, in memory: N replicas produce
 // up to N batches per scope per interval. Deletes are idempotent, so replicas

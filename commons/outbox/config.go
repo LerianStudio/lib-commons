@@ -75,17 +75,20 @@ type DispatcherConfig struct {
 	// a dispatch attempt but remains retryable (marked FAILED). It must not
 	// panic; panics and errors are logged and swallowed.
 	OnFailed func(ctx context.Context, event *OutboxEvent, err error)
-	// RetentionPublished enables the retention sweep when positive: a PUBLISHED
-	// event created longer ago than this is deleted. Zero disables retention and
-	// the other Retention fields are ignored; a negative value is rejected.
-	// PENDING, PROCESSING, FAILED and INVALID events are never deleted.
+	// RetentionPublished, when positive, makes the sweep delete a PUBLISHED
+	// event created longer ago than this. While it and RetentionInvalid are both
+	// zero, retention is off and the other Retention fields are ignored.
 	RetentionPublished time.Duration
+	// RetentionInvalid, when positive, makes the sweep delete an event that became
+	// INVALID longer ago than this; zero keeps them forever. Negative windows are
+	// rejected. PENDING, PROCESSING and FAILED events are never deleted.
+	RetentionInvalid time.Duration
 	// RetentionSweepInterval is how often each dispatch scope is swept. It
 	// defaults to one hour when retention is enabled.
 	RetentionSweepInterval time.Duration
-	// RetentionBatchSize bounds the events deleted per sweep per dispatch scope,
-	// so a large backlog drains one batch per interval. It defaults to 500 when
-	// retention is enabled; a negative value is rejected.
+	// RetentionBatchSize bounds the events of each swept status deleted per sweep
+	// per dispatch scope, so a large backlog drains one batch per interval. It
+	// defaults to 500 when retention is enabled; a negative value is rejected.
 	RetentionBatchSize int
 	// RetentionKeepEventTypes lists event types the sweep never deletes.
 	RetentionKeepEventTypes []string
@@ -197,7 +200,11 @@ func (cfg *DispatcherConfig) validate() error {
 		return fmt.Errorf("%w: retention %s must not be negative", ErrOutboxRetentionConfigInvalid, cfg.RetentionPublished)
 	}
 
-	if cfg.RetentionPublished > 0 && cfg.RetentionBatchSize < 0 {
+	if cfg.RetentionInvalid < 0 {
+		return fmt.Errorf("%w: invalid retention %s must not be negative", ErrOutboxRetentionConfigInvalid, cfg.RetentionInvalid)
+	}
+
+	if cfg.retentionEnabled() && cfg.RetentionBatchSize < 0 {
 		return fmt.Errorf("%w: batch size %d must not be negative", ErrOutboxRetentionConfigInvalid, cfg.RetentionBatchSize)
 	}
 
@@ -205,7 +212,7 @@ func (cfg *DispatcherConfig) validate() error {
 }
 
 func (cfg *DispatcherConfig) retentionEnabled() bool {
-	return cfg.RetentionPublished > 0
+	return cfg.RetentionPublished > 0 || cfg.RetentionInvalid > 0
 }
 
 // DispatcherOption mutates dispatcher configuration at construction.
@@ -414,6 +421,15 @@ func WithRetentionPublished(retention time.Duration) DispatcherOption {
 	}
 }
 
+// WithRetentionInvalid makes the retention sweep also delete events that became
+// INVALID longer ago than retention. Zero, the default, keeps them forever; a
+// negative value makes NewDispatcher fail.
+func WithRetentionInvalid(retention time.Duration) DispatcherOption {
+	return func(dispatcher *Dispatcher) {
+		dispatcher.cfg.RetentionInvalid = retention
+	}
+}
+
 // WithRetentionSweepInterval sets how often each dispatch scope is swept.
 // Non-positive values keep the one-hour default.
 func WithRetentionSweepInterval(interval time.Duration) DispatcherOption {
@@ -422,9 +438,9 @@ func WithRetentionSweepInterval(interval time.Duration) DispatcherOption {
 	}
 }
 
-// WithRetentionBatchSize bounds the events deleted per sweep per dispatch
-// scope. Zero keeps the default of 500; a negative value makes NewDispatcher
-// fail while retention is enabled.
+// WithRetentionBatchSize bounds the events of each swept status deleted per
+// sweep per dispatch scope. Zero keeps the default of 500; a negative value
+// makes NewDispatcher fail while retention is enabled.
 func WithRetentionBatchSize(size int) DispatcherOption {
 	return func(dispatcher *Dispatcher) {
 		dispatcher.cfg.RetentionBatchSize = size

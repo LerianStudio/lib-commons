@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
@@ -13,6 +14,21 @@ import (
 var (
 	_ outbox.PublishedPurger       = (*Repository)(nil)
 	_ outbox.PublishedTenantLister = (*Repository)(nil)
+	_ outbox.InvalidPurger         = (*Repository)(nil)
+)
+
+// agedRows names the rows one retention deletes: a terminal status and the
+// column its age is read from.
+type agedRows struct {
+	status string
+	since  string
+}
+
+var (
+	agedPublished = agedRows{status: outbox.OutboxStatusPublished, since: "created_at"}
+	// INVALID is terminal and both transitions into it stamp updated_at, so
+	// updated_at is the time the row became INVALID; (status, updated_at) is indexed.
+	agedInvalid = agedRows{status: outbox.OutboxStatusInvalid, since: "updated_at"}
 )
 
 // DeletePublishedBefore deletes at most limit PUBLISHED events created before
@@ -26,6 +42,28 @@ var (
 // deletes nothing, so the statement is always bounded.
 func (repo *Repository) DeletePublishedBefore(
 	ctx context.Context,
+	before time.Time,
+	keepEventTypes []string,
+	limit int,
+) (int64, error) {
+	return repo.deleteAgedBefore(ctx, agedPublished, before, keepEventTypes, limit)
+}
+
+// DeleteInvalidBefore deletes at most limit INVALID events that became INVALID
+// (updated_at) before the cutoff, oldest first, skipping event types listed in
+// keepEventTypes, and returns how many rows were deleted.
+func (repo *Repository) DeleteInvalidBefore(
+	ctx context.Context,
+	before time.Time,
+	keepEventTypes []string,
+	limit int,
+) (int64, error) {
+	return repo.deleteAgedBefore(ctx, agedInvalid, before, keepEventTypes, limit)
+}
+
+func (repo *Repository) deleteAgedBefore(
+	ctx context.Context,
+	rows agedRows,
 	before time.Time,
 	keepEventTypes []string,
 	limit int,
@@ -44,13 +82,15 @@ func (repo *Repository) DeletePublishedBefore(
 
 	tracer := tracerFromContext(ctx)
 
-	ctx, span := tracer.Start(ctx, "postgres.delete_published_outbox_events")
+	label := strings.ToLower(rows.status)
+
+	ctx, span := tracer.Start(ctx, "postgres.delete_"+label+"_outbox_events")
 	defer span.End()
 
 	if missing, err := repo.tenantOutboxTableMissing(ctx); err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to check outbox table presence", err)
 
-		return 0, fmt.Errorf("deleting published events: %w", err)
+		return 0, fmt.Errorf("deleting %s events: %w", label, err)
 	} else if missing {
 		return 0, nil
 	}
@@ -62,7 +102,7 @@ func (repo *Repository) DeletePublishedBefore(
 		}
 
 		table := quoteIdentifierPath(repo.tableName)
-		where, args := publishedBeforeClause(before, keepEventTypes)
+		where, args := rows.clause(before, keepEventTypes)
 		selection := "SELECT id FROM " + table + where
 
 		filter, filterArgs, filterErr := repo.tenantFilterClause(len(args)+1, tenantID)
@@ -71,7 +111,7 @@ func (repo *Repository) DeletePublishedBefore(
 		}
 
 		args = append(args, filterArgs...)
-		selection += filter + fmt.Sprintf(" ORDER BY created_at ASC, id ASC LIMIT $%d", len(args)+1)
+		selection += filter + fmt.Sprintf(" ORDER BY %s ASC, id ASC LIMIT $%d", rows.since, len(args)+1)
 		args = append(args, limit)
 
 		// The outer tenant filter reuses the inner placeholder: in column-per-tenant
@@ -106,9 +146,9 @@ func (repo *Repository) DeletePublishedBefore(
 		return affected, nil
 	})
 	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "failed to delete published outbox events", err)
+		libOpentelemetry.HandleSpanError(span, "failed to delete "+label+" outbox events", err)
 
-		return 0, fmt.Errorf("deleting published events: %w", err)
+		return 0, fmt.Errorf("deleting %s events: %w", label, err)
 	}
 
 	return deleted, nil
@@ -119,6 +159,25 @@ func (repo *Repository) DeletePublishedBefore(
 // skips idle tenants. Other modes discover every tenant and return none.
 func (repo *Repository) ListTenantsWithPublishedBefore(
 	ctx context.Context,
+	before time.Time,
+	keepEventTypes []string,
+) ([]string, error) {
+	return repo.listTenantsAgedBefore(ctx, agedPublished, before, keepEventTypes)
+}
+
+// ListTenantsWithInvalidBefore lists the tenants DeleteInvalidBefore would
+// delete from, for column-per-tenant repositories. Other modes return none.
+func (repo *Repository) ListTenantsWithInvalidBefore(
+	ctx context.Context,
+	before time.Time,
+	keepEventTypes []string,
+) ([]string, error) {
+	return repo.listTenantsAgedBefore(ctx, agedInvalid, before, keepEventTypes)
+}
+
+func (repo *Repository) listTenantsAgedBefore(
+	ctx context.Context,
+	rows agedRows,
 	before time.Time,
 	keepEventTypes []string,
 ) ([]string, error) {
@@ -136,21 +195,24 @@ func (repo *Repository) ListTenantsWithPublishedBefore(
 
 	tracer := tracerFromContext(ctx)
 
-	ctx, span := tracer.Start(ctx, "postgres.list_outbox_tenants_with_published")
+	label := strings.ToLower(rows.status)
+
+	ctx, span := tracer.Start(ctx, "postgres.list_outbox_tenants_with_"+label)
 	defer span.End()
 
-	tenants, err := repo.queryTenantsWithPublishedBefore(ctx, before, keepEventTypes)
+	tenants, err := repo.queryTenantsAgedBefore(ctx, rows, before, keepEventTypes)
 	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "failed to list tenants with published events", err)
+		libOpentelemetry.HandleSpanError(span, "failed to list tenants with "+label+" events", err)
 
-		return nil, fmt.Errorf("listing tenants with published events: %w", err)
+		return nil, fmt.Errorf("listing tenants with %s events: %w", label, err)
 	}
 
 	return tenants, nil
 }
 
-func (repo *Repository) queryTenantsWithPublishedBefore(
+func (repo *Repository) queryTenantsAgedBefore(
 	ctx context.Context,
+	rows agedRows,
 	before time.Time,
 	keepEventTypes []string,
 ) ([]string, error) {
@@ -163,21 +225,21 @@ func (repo *Repository) queryTenantsWithPublishedBefore(
 	defer cancel()
 
 	column := quoteIdentifier(repo.tenantColumn)
-	where, args := publishedBeforeClause(before, keepEventTypes)
+	where, args := rows.clause(before, keepEventTypes)
 
-	rows, err := db.QueryContext(queryCtx, "SELECT DISTINCT "+column+" FROM "+quoteIdentifierPath(repo.tableName)+where, args...) // #nosec G202 -- table/column names validated at construction; quote functions escape identifiers
+	result, err := db.QueryContext(queryCtx, "SELECT DISTINCT "+column+" FROM "+quoteIdentifierPath(repo.tableName)+where, args...) // #nosec G202 -- table/column names validated at construction; quote functions escape identifiers
 	if err != nil {
 		return nil, fmt.Errorf("querying tenant ids: %w", err)
 	}
 
-	return scanTenantIDs(rows)
+	return scanTenantIDs(result)
 }
 
-// publishedBeforeClause selects the rows retention may delete: PUBLISHED,
-// created before the cutoff, of a type not kept.
-func publishedBeforeClause(before time.Time, keepEventTypes []string) (string, []any) {
-	where := " WHERE status = $1::outbox_event_status AND created_at < $2"
-	args := []any{outbox.OutboxStatusPublished, before}
+// clause selects the rows a retention may delete: of its status, aged past the
+// cutoff, of a type not kept.
+func (rows agedRows) clause(before time.Time, keepEventTypes []string) (string, []any) {
+	where := " WHERE status = $1::outbox_event_status AND " + rows.since + " < $2"
+	args := []any{rows.status, before}
 
 	if keep := normalizeEventTypes(keepEventTypes); len(keep) > 0 {
 		args = append(args, keep)

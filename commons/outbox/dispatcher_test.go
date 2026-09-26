@@ -42,12 +42,14 @@ type fakeRepo struct {
 	resetForRetryCalls int32
 	listPendingTenants []string
 
-	deletePublishedCalls  []deletePublishedCall
+	deletePublishedCalls  []retentionCall
 	deletePublishedErr    error
 	deletePublishedResult int64
+	deleteInvalidCalls    []retentionCall
+	listInvalidCalls      int
 }
 
-type deletePublishedCall struct {
+type retentionCall struct {
 	tenantID string
 	scope    TenantDispatchScope
 	before   time.Time
@@ -242,17 +244,8 @@ func (repo *fakeRepo) DeletePublishedBefore(
 	keepEventTypes []string,
 	limit int,
 ) (int64, error) {
-	tenantID, _ := TenantIDFromContext(ctx)
-	scope, _ := ctx.Value(activityScopeContextKey{}).(TenantDispatchScope)
-
 	repo.mu.Lock()
-	repo.deletePublishedCalls = append(repo.deletePublishedCalls, deletePublishedCall{
-		tenantID: tenantID,
-		scope:    scope,
-		before:   before,
-		keep:     append([]string(nil), keepEventTypes...),
-		limit:    limit,
-	})
+	repo.deletePublishedCalls = append(repo.deletePublishedCalls, newRetentionCall(ctx, before, keepEventTypes, limit))
 	repo.mu.Unlock()
 
 	if repo.deletePublishedErr != nil {
@@ -262,11 +255,49 @@ func (repo *fakeRepo) DeletePublishedBefore(
 	return repo.deletePublishedResult, nil
 }
 
-func (repo *fakeRepo) deletePublishedCallLog() []deletePublishedCall {
+func (repo *fakeRepo) deletePublishedCallLog() []retentionCall {
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 
-	return append([]deletePublishedCall(nil), repo.deletePublishedCalls...)
+	return append([]retentionCall(nil), repo.deletePublishedCalls...)
+}
+
+func (repo *fakeRepo) DeleteInvalidBefore(ctx context.Context, before time.Time, keepEventTypes []string, limit int) (int64, error) {
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	repo.deleteInvalidCalls = append(repo.deleteInvalidCalls, newRetentionCall(ctx, before, keepEventTypes, limit))
+
+	return 0, nil
+}
+
+func (repo *fakeRepo) ListTenantsWithInvalidBefore(context.Context, time.Time, []string) ([]string, error) {
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	repo.listInvalidCalls++
+
+	return nil, nil
+}
+
+func (repo *fakeRepo) invalidRetentionLog() ([]retentionCall, int) {
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	return append([]retentionCall(nil), repo.deleteInvalidCalls...), repo.listInvalidCalls
+}
+
+func newRetentionCall(ctx context.Context, before time.Time, keepEventTypes []string, limit int) retentionCall {
+	tenantID, _ := TenantIDFromContext(ctx)
+	scope, _ := ctx.Value(activityScopeContextKey{}).(TenantDispatchScope)
+
+	return retentionCall{
+		tenantID: tenantID,
+		scope:    scope,
+		before:   before,
+		keep:     append([]string(nil), keepEventTypes...),
+		limit:    limit,
+	}
 }
 
 func (repo *fakeRepo) listPendingTenantOrder() []string {
