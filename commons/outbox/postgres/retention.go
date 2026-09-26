@@ -26,7 +26,7 @@ type agedRows struct {
 
 var (
 	agedPublished = agedRows{status: outbox.OutboxStatusPublished, since: "created_at"}
-	// INVALID is terminal and both transitions into it stamp updated_at, so
+	// INVALID is terminal and every write into it stamps updated_at, so
 	// updated_at is the time the row became INVALID; (status, updated_at) is indexed.
 	agedInvalid = agedRows{status: outbox.OutboxStatusInvalid, since: "updated_at"}
 )
