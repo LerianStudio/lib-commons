@@ -191,7 +191,8 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "invalid tenantId format",
 			core.ErrInvalidTenantClaims)
 
-		return m.refuse(c, unauthorizedRefusal(err, "INVALID_TENANT", "tenantId has invalid format"))
+		return m.refuse(c, unauthorizedRefusal(fmt.Errorf("%w: %w", core.ErrInvalidTenantClaims, err),
+			"INVALID_TENANT", "tenantId has invalid format"))
 	}
 
 	logger.Base().Log(ctx, obs.LevelDebug, "tenant context resolved",

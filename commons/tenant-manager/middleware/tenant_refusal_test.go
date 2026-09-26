@@ -39,7 +39,17 @@ type refusalCase struct {
 func refusalCases() []refusalCase {
 	tenantToken := func(t *testing.T) string { return makeTenantJWT(t, "tenant-refused") }
 	unusedPG := func(t *testing.T) *tmpostgres.Manager { pg, _ := newTestManagers(t); return pg }
-	is := func(target error) func(error) bool { return func(err error) bool { return errors.Is(err, target) } }
+	is := func(targets ...error) func(error) bool {
+		return func(err error) bool {
+			for _, target := range targets {
+				if !errors.Is(err, target) {
+					return false
+				}
+			}
+
+			return true
+		}
+	}
 
 	return []refusalCase{
 		{
@@ -61,7 +71,7 @@ func refusalCases() []refusalCase {
 			name:  "malformed tenantId claim",
 			token: func(t *testing.T) string { return makeTenantJWT(t, "tenant/../../etc") }, pg: unusedPG,
 			status: http.StatusUnauthorized, code: "INVALID_TENANT", title: "Unauthorized",
-			message: "tenantId has invalid format", cause: is(core.ErrInvalidTenantIDFormat),
+			message: "tenantId has invalid format", cause: is(core.ErrInvalidTenantClaims, core.ErrInvalidTenantIDFormat),
 		},
 		{
 			name: "tenant not found", token: tenantToken, pg: tenantManagerAnswering(http.StatusNotFound, ""),
@@ -225,5 +235,16 @@ func TestWithTenantDB_WithRefusalOption_HandsEveryRefusalToTheErrorHandler(t *te
 				assert.True(t, tc.cause(handled), "the domain error stays reachable: %v", handled)
 			}
 		})
+	}
+}
+
+func TestDomainRefusal_ServiceUnavailableCausesAnswer503(t *testing.T) {
+	t.Parallel()
+
+	for _, cause := range []error{core.ErrServiceNotConfigured, core.ErrCircuitBreakerOpen} {
+		refusal := domainRefusal(cause, "tenant-1")
+
+		assert.Equal(t, http.StatusServiceUnavailable, refusal.fiberErr.Code, cause.Error())
+		assert.Equal(t, "SERVICE_UNAVAILABLE", refusal.response.Code, cause.Error())
 	}
 }

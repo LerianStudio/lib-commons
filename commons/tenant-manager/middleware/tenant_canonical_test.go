@@ -126,14 +126,6 @@ func TestWithTenantDB_PassesNonUUIDClaimThrough(t *testing.T) {
 		"non-UUID tenant IDs remain supported and must pass through verbatim")
 }
 
-func TestWithTenantDB_RejectsInvalidClaimFormat(t *testing.T) {
-	cache := tenantcache.NewTenantCache()
-
-	_, _, status := runMiddlewareWithClaim(t, "tenant/../../etc", cache)
-
-	assert.Equal(t, http.StatusUnauthorized, status)
-}
-
 // TestDashedJWTAndDashlessEventShareOneKeyNamespace is the end-to-end proof for
 // the production symptom: the tenant arrives on the HTTP path as a dashed JWT
 // claim while the Tenant Manager publishes the lifecycle event with a dashless
