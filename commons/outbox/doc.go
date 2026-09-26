@@ -27,9 +27,12 @@
 // RetentionBatchSize PUBLISHED events older than the retention window, oldest
 // first, sparing the types listed in RetentionKeepEventTypes, so a large
 // backlog drains one batch per interval without a long transaction. PENDING,
-// PROCESSING, FAILED and INVALID events are not deleted at any age: an INVALID
-// event is the durable record that a fact was abandoned after the retry
-// budget. A failed sweep is logged and does not affect dispatch.
+// PROCESSING and FAILED events are not deleted at any age. INVALID events, the
+// record of a fact abandoned after the retry budget, are kept forever unless
+// WithRetentionInvalid(window) is set (postgres only, with or without the
+// published retention): the sweep then also deletes them, same batch size and
+// kept types, once their updated_at, stamped on the move to INVALID, is older
+// than window. A failed sweep is logged and does not affect dispatch.
 //
 // Pool-per-tenant and schema-per-tenant postgres repositories, and mongo
 // repositories with a tenant database resolver, discover every known tenant, so

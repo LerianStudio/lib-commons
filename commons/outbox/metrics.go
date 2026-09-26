@@ -64,7 +64,7 @@ func newDispatcherMetrics(provider metric.MeterProvider, logger obs.Logger) (dis
 
 	metrics.eventsPurged, err = factory.Counter(libMetrics.Metric{
 		Name:        "outbox.events.purged",
-		Description: "Number of published outbox events deleted by the retention sweep",
+		Description: "Number of outbox events deleted by the retention sweep",
 		Unit:        outboxMetricUnitEvent,
 	})
 	if err != nil {
