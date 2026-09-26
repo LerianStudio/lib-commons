@@ -124,6 +124,9 @@ func Run(t *testing.T, factory Factory, opts ...RunOption) {
 	run("DeletePublishedBeforeSparesSameIDInOtherTenant", func(t *testing.T) {
 		testDeletePublishedBeforeSparesSameIDInOtherTenant(t, factory, cfg.notFound)
 	})
+	run("ListTenantsWithPublishedBeforeListsOnlyTenantsWithDeletableEvents", func(t *testing.T) {
+		testListTenantsWithPublishedBefore(t, factory)
+	})
 }
 
 func testCreateThenGetRoundtrip(t *testing.T, factory Factory) {
@@ -1025,4 +1028,37 @@ func testDeletePublishedBeforeSparesSameIDInOtherTenant(t *testing.T, factory Fa
 
 	requireEventGone(t, repo, tenantA, notFound, eventA.ID)
 	requireEventStatus(t, repo, tenantB, eventB.ID, outbox.OutboxStatusPending)
+}
+
+// testListTenantsWithPublishedBefore pins the retention tenant listing: a
+// tenant is listed only while it holds an event DeletePublishedBefore would
+// delete, so a tenant with nothing deletable is never swept.
+func testListTenantsWithPublishedBefore(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+
+	lister, ok := repo.(outbox.PublishedTenantLister)
+	if !ok {
+		t.Skip("repository does not implement outbox.PublishedTenantLister")
+	}
+
+	baseCtx := contractContext(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	aged := now.Add(-2 * time.Hour)
+	publish := func(tenantID, eventType string, createdAt time.Time) {
+		ctx := outbox.ContextWithTenantID(baseCtx, tenantID)
+		event := createEventAt(t, repo, ctx, eventType, createdAt)
+		claimSinglePending(t, repo, ctx, event.ID)
+		require.NoError(t, repo.MarkPublished(ctx, event.ID, now))
+	}
+
+	publish("tenant-aged", "payment.purge", aged)
+	publish("tenant-kept", "payment.keep", aged)
+	publish("tenant-recent", "payment.purge", now.Add(-30*time.Minute))
+	createEventAt(t, repo, outbox.ContextWithTenantID(baseCtx, "tenant-recent"), "payment.purge", aged)
+
+	tenants, err := lister.ListTenantsWithPublishedBefore(baseCtx, now.Add(-time.Hour), []string{"payment.keep"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"tenant-aged"}, tenants)
 }

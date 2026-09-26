@@ -228,6 +228,50 @@ func TestDispatcherRetention_RequiredTenantWithoutTenantsDoesNotSweep(t *testing
 	require.Empty(t, repo.deletePublishedCallLog())
 }
 
+type publishedListingRepo struct {
+	*tenantAwareFakeRepo
+	listed    []string
+	listCalls []time.Time
+}
+
+func (repo *publishedListingRepo) ListTenantsWithPublishedBefore(_ context.Context, before time.Time, _ []string) ([]string, error) {
+	repo.listCalls = append(repo.listCalls, before)
+
+	return repo.listed, nil
+}
+
+func TestDispatcherRetention_SweepsListedTenantsOncePerInterval(t *testing.T) {
+	t.Parallel()
+
+	repo := &publishedListingRepo{
+		tenantAwareFakeRepo: &tenantAwareFakeRepo{fakeRepo: &fakeRepo{tenants: []string{"tenant-busy"}}, requiresTenant: true},
+		listed:              []string{"tenant-busy", "tenant-idle"},
+	}
+	clock := retentionClock()
+	start := clock.Now()
+	dispatcher := newRetentionDispatcher(t, repo, clock, nil,
+		WithRetentionPublished(24*time.Hour),
+		WithRetentionSweepInterval(time.Hour),
+	)
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+	clock.Advance(59 * time.Minute)
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	require.Equal(t, []time.Time{start.Add(-24 * time.Hour)}, repo.listCalls)
+
+	calls := repo.deletePublishedCallLog()
+	require.Len(t, calls, 2, "a tenant both discoveries return is swept once")
+	require.Equal(t, "tenant-busy", calls[0].tenantID)
+	require.Equal(t, "tenant-idle", calls[1].tenantID)
+
+	clock.Advance(time.Minute)
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	require.Len(t, repo.listCalls, 2)
+	require.Len(t, repo.deletePublishedCallLog(), 4)
+}
+
 func TestNewDispatcher_RejectsInvalidRetentionConfig(t *testing.T) {
 	t.Parallel()
 

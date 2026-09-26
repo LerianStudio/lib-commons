@@ -6,13 +6,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	mongooptions "go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-var _ outbox.PublishedPurger = (*Repository)(nil)
+var (
+	_ outbox.PublishedPurger       = (*Repository)(nil)
+	_ outbox.PublishedTenantLister = (*Repository)(nil)
+)
 
 // DeletePublishedBefore deletes at most limit PUBLISHED events created before
 // the cutoff, oldest first, skipping event types listed in keepEventTypes, and
@@ -54,6 +58,48 @@ func (repo *Repository) DeletePublishedBefore(
 	}
 
 	return deleted, nil
+}
+
+// ListTenantsWithPublishedBefore lists the tenants DeletePublishedBefore would
+// delete from, for row-scoped repositories, whose dispatch discovery skips idle
+// tenants. With a tenant database resolver every tenant is discovered: none.
+func (repo *Repository) ListTenantsWithPublishedBefore(
+	ctx context.Context,
+	before time.Time,
+	keepEventTypes []string,
+) ([]string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if !repo.initialized() {
+		return nil, ErrRepositoryNotInitialized
+	}
+
+	if repo.tenantField == "" || !nilcheck.Interface(repo.tenantDatabaseResolver) {
+		return nil, nil
+	}
+
+	tracer := repo.tracking(ctx)
+
+	ctx, span := tracer.Start(ctx, "mongo.list_outbox_tenants_with_published")
+	defer span.End()
+
+	collection, err := repo.collection(ctx)
+	if err != nil {
+		libOpentelemetry.HandleSpanError(span, "failed to resolve mongo collection", err)
+
+		return nil, err
+	}
+
+	tenants, err := distinctTenants(ctx, collection, repo.tenantField, publishedBeforeFilter(before, keepEventTypes))
+	if err != nil {
+		libOpentelemetry.HandleSpanError(span, "failed to list tenants with published events", err)
+
+		return nil, err
+	}
+
+	return tenants, nil
 }
 
 func (repo *Repository) deletePublishedBefore(

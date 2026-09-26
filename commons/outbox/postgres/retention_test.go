@@ -57,6 +57,25 @@ func TestDeletePublishedBefore_NonPositiveLimitNeverTouchesTheDatabase(t *testin
 	}
 }
 
+func TestListTenantsWithPublishedBefore_WithoutTenantColumnNeverTouchesTheDatabase(t *testing.T) {
+	t.Parallel()
+
+	repo := &Repository{
+		client:           newTestClient(t),
+		tenantResolver:   noopTenantResolver{},
+		tenantDiscoverer: noopTenantDiscoverer{},
+		tableName:        "outbox_events",
+		primaryDBLookup: func(context.Context) (*sql.DB, error) {
+			t.Fatal("schema and pool modes discover every tenant and must not query")
+			return nil, nil
+		},
+	}
+
+	tenants, err := repo.ListTenantsWithPublishedBefore(context.Background(), time.Now().UTC(), nil)
+	require.NoError(t, err)
+	require.Empty(t, tenants)
+}
+
 func TestDeletePublishedBefore_SkipsWhenTenantTableMissing(t *testing.T) {
 	t.Parallel()
 

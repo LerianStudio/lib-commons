@@ -31,15 +31,14 @@
 // event is the durable record that a fact was abandoned after the retry
 // budget. A failed sweep is logged and does not affect dispatch.
 //
-// A scope is swept only in a pass where it is dispatched. Pool-per-tenant and
-// schema-per-tenant postgres repositories, and mongo repositories with a tenant
-// database resolver, discover every known tenant, so each of them is swept.
-// Column-per-tenant postgres and row-scoped mongo (tenant field, no database
-// resolver) discover only tenants with PENDING, PROCESSING or FAILED rows, so a
-// tenant whose rows are all PUBLISHED or INVALID is not swept until it has work
-// again. A retention-specific discovery listing tenants with PUBLISHED rows is
-// the follow-up if a column-per-tenant or row-scoped mongo consumer needs idle
-// tenants swept.
+// Pool-per-tenant and schema-per-tenant postgres repositories, and mongo
+// repositories with a tenant database resolver, discover every known tenant, so
+// each is swept in a pass that dispatches it. Column-per-tenant postgres and
+// row-scoped mongo (tenant field, no database resolver) discover only tenants
+// with PENDING, PROCESSING or FAILED rows, so they also implement
+// PublishedTenantLister: once per RetentionSweepInterval the dispatcher lists
+// every tenant holding a PUBLISHED event older than the retention window and
+// sweeps each one, idle or not, every sweep scoped to its own tenant.
 //
 // The interval is kept per dispatcher instance, in memory: N replicas produce
 // up to N batches per scope per interval. Deletes are idempotent, so replicas

@@ -168,6 +168,20 @@ func (resolver *ColumnResolver) queryTenants(ctx context.Context) ([]string, err
 	if err != nil {
 		return nil, fmt.Errorf("querying distinct tenant ids: %w", err)
 	}
+
+	tenants, err := scanTenantIDs(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	resolver.storeCachedTenants(tenants, time.Now().UTC())
+
+	return tenants, nil
+}
+
+// scanTenantIDs reads one tenant id per row, trimmed and deduplicated, skipping
+// blanks and failing on an id tenant-manager would reject. It closes rows.
+func scanTenantIDs(rows *sql.Rows) ([]string, error) {
 	defer rows.Close()
 
 	tenants := make([]string, 0)
@@ -201,8 +215,6 @@ func (resolver *ColumnResolver) queryTenants(ctx context.Context) ([]string, err
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating tenant ids: %w", err)
 	}
-
-	resolver.storeCachedTenants(tenants, time.Now().UTC())
 
 	return tenants, nil
 }
