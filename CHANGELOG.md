@@ -1,5 +1,18 @@
 # Lib-commons Changelog
 
+## [7.11.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.11.0)
+
+Features:
+- Added an opt-in retention feature for invalid events in the outbox. This allows users to specify a retention period for events deemed invalid. (@fredcamaral)
+
+Improvements:
+- Updated the documentation to clarify that every write into invalid stamps updates the `updated_at` attribute. (@fredcamaral)
+- Refactored the outbox to trim retention documents and set the deleted attribute once, improving the efficiency of the retention process. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.10.0...v7.11.0)
+
+---
+
 ## [7.10.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.10.0)
 
 Features:
