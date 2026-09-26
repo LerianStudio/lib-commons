@@ -32,8 +32,7 @@ type tenantRequirementReporter interface {
 	RequiresTenant() bool
 }
 
-// retentionTarget is one status the retention sweep deletes: its window, its
-// bounded delete and, when the repository offers one, its tenant listing.
+// retentionTarget is one status the retention sweep deletes: window, delete, optional listing.
 type retentionTarget struct {
 	window time.Duration
 	delete func(ctx context.Context, before time.Time, keepEventTypes []string, limit int) (int64, error)
@@ -726,8 +725,7 @@ func (dispatcher *Dispatcher) sweepRetention(
 	defer span.End()
 
 	logger := dispatcher.resolvedLogger()
-
-	var total int64
+	total := int64(0)
 
 	for _, target := range dispatcher.retention {
 		deleted, err := target.delete(ctx, now.Add(-target.window), dispatcher.cfg.RetentionKeepEventTypes, dispatcher.cfg.RetentionBatchSize)
@@ -739,16 +737,16 @@ func (dispatcher *Dispatcher) sweepRetention(
 		}
 
 		total += deleted
-		span.SetAttributes(attribute.Int64("outbox.retention.deleted", total))
 		dispatcher.addPurgedEvents(ctx, tenantKeyFromContext(ctx), deleted)
 		logger.Log(ctx, obs.LevelDebug, "outbox retention sweep completed", "deleted", deleted)
 	}
+
+	span.SetAttributes(attribute.Int64("outbox.retention.deleted", total))
 }
 
 // sweepListedTenants sweeps, once per RetentionSweepInterval, each tenant the
 // repository lists with events an enabled retention would delete. A tenant
-// already swept this interval, by the dispatch pass or an earlier listing, is
-// skipped by its own claim.
+// already swept this interval is skipped by its own claim.
 func (dispatcher *Dispatcher) sweepListedTenants(ctx context.Context, tracer trace.Tracer) {
 	if len(dispatcher.retention) == 0 || ctx.Err() != nil {
 		return
