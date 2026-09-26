@@ -47,6 +47,15 @@ type PublishedPurger interface {
 	DeletePublishedBefore(ctx context.Context, before time.Time, keepEventTypes []string, limit int) (int64, error)
 }
 
+// PublishedTenantLister lets retention reach tenants that dispatch discovery
+// skips for lack of work: the dispatcher calls it once per
+// RetentionSweepInterval and sweeps every tenant it returns.
+type PublishedTenantLister interface {
+	// ListTenantsWithPublishedBefore returns the tenants holding a PUBLISHED
+	// event created before the cutoff whose type is not in keepEventTypes.
+	ListTenantsWithPublishedBefore(ctx context.Context, before time.Time, keepEventTypes []string) ([]string, error)
+}
+
 // IdempotentWriter is a narrow, opt-in contract for content-addressed idempotent
 // outbox writes. It is deliberately kept separate from OutboxRepository so that
 // only callers that need replay-safe upserts depend on it, and existing
