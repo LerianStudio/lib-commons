@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -348,43 +347,14 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 
-	distinctResult := collection.Distinct(ctx, repo.tenantField, bson.M{
+	tenants, err := distinctTenants(ctx, collection, repo.tenantField, bson.M{
 		mongoFieldStatus: bson.M{mongoOperatorIn: bson.A{outbox.OutboxStatusPending, outbox.OutboxStatusFailed, outbox.OutboxStatusProcessing}},
-		repo.tenantField: bson.M{"$ne": defaultScopeTenantID},
 	})
-	if err := distinctResult.Err(); err != nil {
+	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list tenants", err)
 
-		return nil, fmt.Errorf("listing tenants: %w", err)
+		return nil, err
 	}
-
-	var values []any
-	if err := distinctResult.Decode(&values); err != nil {
-		libOpentelemetry.HandleSpanError(span, "failed to decode tenants", err)
-
-		return nil, fmt.Errorf("listing tenants: %w", err)
-	}
-
-	tenants := make([]string, 0, len(values))
-	for _, value := range values {
-		tenantID, ok := value.(string)
-		if !ok {
-			continue
-		}
-
-		tenantID = strings.TrimSpace(tenantID)
-		if tenantID == "" {
-			continue
-		}
-
-		if !tmcore.IsValidTenantID(tenantID) {
-			return nil, fmt.Errorf("%w: %q", outbox.ErrInvalidTenantID, tenantID)
-		}
-
-		tenants = append(tenants, tenantID)
-	}
-
-	sort.Strings(tenants)
 
 	return tenants, nil
 }

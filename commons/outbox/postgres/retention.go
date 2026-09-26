@@ -10,7 +10,10 @@ import (
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 )
 
-var _ outbox.PublishedPurger = (*Repository)(nil)
+var (
+	_ outbox.PublishedPurger       = (*Repository)(nil)
+	_ outbox.PublishedTenantLister = (*Repository)(nil)
+)
 
 // DeletePublishedBefore deletes at most limit PUBLISHED events created before
 // the cutoff, oldest first, skipping event types listed in keepEventTypes, and
@@ -59,13 +62,8 @@ func (repo *Repository) DeletePublishedBefore(
 		}
 
 		table := quoteIdentifierPath(repo.tableName)
-		selection := "SELECT id FROM " + table + " WHERE status = $1::outbox_event_status AND created_at < $2"
-		args := []any{outbox.OutboxStatusPublished, before}
-
-		if keep := normalizeEventTypes(keepEventTypes); len(keep) > 0 {
-			args = append(args, keep)
-			selection += fmt.Sprintf(" AND NOT (event_type = ANY($%d::text[]))", len(args))
-		}
+		where, args := publishedBeforeClause(before, keepEventTypes)
+		selection := "SELECT id FROM " + table + where
 
 		filter, filterArgs, filterErr := repo.tenantFilterClause(len(args)+1, tenantID)
 		if filterErr != nil {
@@ -114,4 +112,77 @@ func (repo *Repository) DeletePublishedBefore(
 	}
 
 	return deleted, nil
+}
+
+// ListTenantsWithPublishedBefore lists the tenants DeletePublishedBefore would
+// delete from, for column-per-tenant repositories, whose dispatch discovery
+// skips idle tenants. Other modes discover every tenant and return none.
+func (repo *Repository) ListTenantsWithPublishedBefore(
+	ctx context.Context,
+	before time.Time,
+	keepEventTypes []string,
+) ([]string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if !repo.initialized() {
+		return nil, ErrRepositoryNotInitialized
+	}
+
+	if repo.tenantColumn == "" {
+		return nil, nil
+	}
+
+	tracer := tracerFromContext(ctx)
+
+	ctx, span := tracer.Start(ctx, "postgres.list_outbox_tenants_with_published")
+	defer span.End()
+
+	tenants, err := repo.queryTenantsWithPublishedBefore(ctx, before, keepEventTypes)
+	if err != nil {
+		libOpentelemetry.HandleSpanError(span, "failed to list tenants with published events", err)
+
+		return nil, fmt.Errorf("listing tenants with published events: %w", err)
+	}
+
+	return tenants, nil
+}
+
+func (repo *Repository) queryTenantsWithPublishedBefore(
+	ctx context.Context,
+	before time.Time,
+	keepEventTypes []string,
+) ([]string, error) {
+	db, err := repo.primaryDB(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	queryCtx, cancel := context.WithTimeout(ctx, repo.transactionTimeout)
+	defer cancel()
+
+	column := quoteIdentifier(repo.tenantColumn)
+	where, args := publishedBeforeClause(before, keepEventTypes)
+
+	rows, err := db.QueryContext(queryCtx, "SELECT DISTINCT "+column+" FROM "+quoteIdentifierPath(repo.tableName)+where, args...) // #nosec G202 -- table/column names validated at construction; quote functions escape identifiers
+	if err != nil {
+		return nil, fmt.Errorf("querying tenant ids: %w", err)
+	}
+
+	return scanTenantIDs(rows)
+}
+
+// publishedBeforeClause selects the rows retention may delete: PUBLISHED,
+// created before the cutoff, of a type not kept.
+func publishedBeforeClause(before time.Time, keepEventTypes []string) (string, []any) {
+	where := " WHERE status = $1::outbox_event_status AND created_at < $2"
+	args := []any{outbox.OutboxStatusPublished, before}
+
+	if keep := normalizeEventTypes(keepEventTypes); len(keep) > 0 {
+		args = append(args, keep)
+		where += fmt.Sprintf(" AND NOT (event_type = ANY($%d::text[]))", len(args))
+	}
+
+	return where, args
 }
