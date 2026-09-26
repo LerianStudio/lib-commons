@@ -32,6 +32,13 @@ type tenantRequirementReporter interface {
 	RequiresTenant() bool
 }
 
+// retentionTarget is one status the retention sweep deletes: window, delete, optional listing.
+type retentionTarget struct {
+	window time.Duration
+	delete func(ctx context.Context, before time.Time, keepEventTypes []string, limit int) (int64, error)
+	list   func(ctx context.Context, before time.Time, keepEventTypes []string) ([]string, error)
+}
+
 type dispatchScopeActivity struct {
 	lastWorkAt time.Time
 	nextPollAt time.Time
@@ -40,7 +47,7 @@ type dispatchScopeActivity struct {
 // Dispatcher handles publishing outbox events through registered handlers.
 type Dispatcher struct {
 	repo            OutboxRepository
-	purger          PublishedPurger
+	retention       []retentionTarget
 	handlers        *HandlerRegistry
 	retryClassifier RetryClassifier
 	logger          obs.Logger
@@ -129,13 +136,8 @@ func NewDispatcher(
 		return nil, err
 	}
 
-	if dispatcher.cfg.retentionEnabled() {
-		purger, ok := repo.(PublishedPurger)
-		if !ok {
-			return nil, ErrOutboxRetentionUnsupported
-		}
-
-		dispatcher.purger = purger
+	if err := dispatcher.bindRetention(repo); err != nil {
+		return nil, err
 	}
 
 	dispatcher.cfg.normalize()
@@ -161,6 +163,38 @@ func NewDispatcher(
 	dispatcher.metrics = metrics
 
 	return dispatcher, nil
+}
+
+// bindRetention resolves the repository capability each enabled retention needs.
+func (dispatcher *Dispatcher) bindRetention(repo OutboxRepository) error {
+	if window := dispatcher.cfg.RetentionPublished; window > 0 {
+		purger, ok := repo.(PublishedPurger)
+		if !ok {
+			return ErrOutboxRetentionUnsupported
+		}
+
+		target := retentionTarget{window: window, delete: purger.DeletePublishedBefore}
+		if lister, ok := repo.(PublishedTenantLister); ok {
+			target.list = lister.ListTenantsWithPublishedBefore
+		}
+
+		dispatcher.retention = append(dispatcher.retention, target)
+	}
+
+	if window := dispatcher.cfg.RetentionInvalid; window > 0 {
+		purger, ok := repo.(InvalidPurger)
+		if !ok {
+			return ErrOutboxRetentionUnsupported
+		}
+
+		dispatcher.retention = append(dispatcher.retention, retentionTarget{
+			window: window,
+			delete: purger.DeleteInvalidBefore,
+			list:   purger.ListTenantsWithInvalidBefore,
+		})
+	}
+
+	return nil
 }
 
 // Run starts the dispatcher loop until Stop is called.
@@ -668,8 +702,8 @@ func (dispatcher *Dispatcher) reconcileScopeActivity(scopes []TenantDispatchScop
 	}
 }
 
-// sweepRetention deletes one bounded batch of aged PUBLISHED events for the
-// scope when retention is enabled and the scope's last sweep is at least
+// sweepRetention deletes one bounded batch per enabled retention (aged PUBLISHED,
+// aged INVALID) for the scope when the scope's last sweep is at least
 // RetentionSweepInterval old. A failure is logged and never fails dispatch; the
 // scope waits for the next interval either way, so a persistent error warns
 // once per interval rather than once per tick.
@@ -679,7 +713,7 @@ func (dispatcher *Dispatcher) sweepRetention(
 	scope TenantDispatchScope,
 	now time.Time,
 ) {
-	if dispatcher.purger == nil || ctx.Err() != nil || !dispatcher.claimRetentionSweep(scope, now) {
+	if len(dispatcher.retention) == 0 || ctx.Err() != nil || !dispatcher.claimRetentionSweep(scope, now) {
 		return
 	}
 
@@ -691,31 +725,30 @@ func (dispatcher *Dispatcher) sweepRetention(
 	defer span.End()
 
 	logger := dispatcher.resolvedLogger()
+	total := int64(0)
 
-	deleted, err := dispatcher.purger.DeletePublishedBefore(
-		ctx,
-		now.Add(-dispatcher.cfg.RetentionPublished),
-		dispatcher.cfg.RetentionKeepEventTypes,
-		dispatcher.cfg.RetentionBatchSize,
-	)
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "outbox retention sweep failed", err)
-		logger.Log(ctx, obs.LevelWarn, "outbox retention sweep failed", "error", sanitizeErrorForStorage(err))
+	for _, target := range dispatcher.retention {
+		deleted, err := target.delete(ctx, now.Add(-target.window), dispatcher.cfg.RetentionKeepEventTypes, dispatcher.cfg.RetentionBatchSize)
+		if err != nil {
+			libOpentelemetry.HandleSpanError(span, "outbox retention sweep failed", err)
+			logger.Log(ctx, obs.LevelWarn, "outbox retention sweep failed", "error", sanitizeErrorForStorage(err))
 
-		return
+			continue
+		}
+
+		total += deleted
+		dispatcher.addPurgedEvents(ctx, tenantKeyFromContext(ctx), deleted)
+		logger.Log(ctx, obs.LevelDebug, "outbox retention sweep completed", "deleted", deleted)
 	}
 
-	span.SetAttributes(attribute.Int64("outbox.retention.deleted", deleted))
-	dispatcher.addPurgedEvents(ctx, tenantKeyFromContext(ctx), deleted)
-	logger.Log(ctx, obs.LevelDebug, "outbox retention sweep completed", "deleted", deleted)
+	span.SetAttributes(attribute.Int64("outbox.retention.deleted", total))
 }
 
 // sweepListedTenants sweeps, once per RetentionSweepInterval, each tenant the
-// repository lists with aged PUBLISHED events. A tenant already swept this
-// interval by the dispatch pass is skipped by its own claim.
+// repository lists with events an enabled retention would delete. A tenant
+// already swept this interval is skipped by its own claim.
 func (dispatcher *Dispatcher) sweepListedTenants(ctx context.Context, tracer trace.Tracer) {
-	lister, ok := dispatcher.repo.(PublishedTenantLister)
-	if !ok || dispatcher.purger == nil || ctx.Err() != nil {
+	if len(dispatcher.retention) == 0 || ctx.Err() != nil {
 		return
 	}
 
@@ -734,19 +767,21 @@ func (dispatcher *Dispatcher) sweepListedTenants(ctx context.Context, tracer tra
 		return
 	}
 
-	tenants, err := lister.ListTenantsWithPublishedBefore(
-		ctx,
-		now.Add(-dispatcher.cfg.RetentionPublished),
-		dispatcher.cfg.RetentionKeepEventTypes,
-	)
-	if err != nil {
-		dispatcher.resolvedLogger().Log(ctx, obs.LevelWarn, "outbox retention tenant listing failed", "error", sanitizeErrorForStorage(err))
+	for _, target := range dispatcher.retention {
+		if target.list == nil {
+			continue
+		}
 
-		return
-	}
+		tenants, err := target.list(ctx, now.Add(-target.window), dispatcher.cfg.RetentionKeepEventTypes)
+		if err != nil {
+			dispatcher.resolvedLogger().Log(ctx, obs.LevelWarn, "outbox retention tenant listing failed", "error", sanitizeErrorForStorage(err))
 
-	for _, tenantID := range tenants {
-		dispatcher.sweepRetention(ContextWithTenantID(ctx, tenantID), tracer, TenantDispatchScope{TenantID: tenantID}, now)
+			continue
+		}
+
+		for _, tenantID := range tenants {
+			dispatcher.sweepRetention(ContextWithTenantID(ctx, tenantID), tracer, TenantDispatchScope{TenantID: tenantID}, now)
+		}
 	}
 }
 

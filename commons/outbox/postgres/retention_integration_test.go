@@ -88,8 +88,8 @@ func TestIntegration_Retention_ColumnModeSweepsIdleTenant(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 	now := time.Now().UTC()
 	agedID, recentID := uuid.New(), uuid.New()
-	insertTenantEvent(t, fx, "tenant-idle", agedID, now.Add(-2*time.Hour))
-	insertTenantEvent(t, fx, "tenant-idle", recentID, now.Add(-30*time.Minute))
+	insertTenantEvent(t, fx, "tenant-idle", agedID, outbox.OutboxStatusPublished, now.Add(-2*time.Hour), now.Add(-2*time.Hour))
+	insertTenantEvent(t, fx, "tenant-idle", recentID, outbox.OutboxStatusPublished, now.Add(-30*time.Minute), now.Add(-30*time.Minute))
 
 	dispatcher, err := outbox.NewDispatcher(fx.repo, outbox.NewHandlerRegistry(), nil, noop.NewTracerProvider().Tracer("test"),
 		outbox.WithRetentionPublished(time.Hour))
@@ -100,14 +100,73 @@ func TestIntegration_Retention_ColumnModeSweepsIdleTenant(t *testing.T) {
 	require.True(t, tenantRowExists(t, fx, "tenant-idle", recentID), "a PUBLISHED row younger than the window stays")
 }
 
-// insertTenantEvent writes one PUBLISHED column-mode row, bypassing the repository.
-func insertTenantEvent(t *testing.T, fx *integrationRepoFixture, tenantID string, id uuid.UUID, createdAt time.Time) {
+// TestIntegration_Retention_ColumnModeSweepsInvalidOnlyTenant runs the real
+// dispatcher with only INVALID retention over a tenant whose rows are all
+// INVALID, so neither dispatch discovery nor the published listing names it.
+func TestIntegration_Retention_ColumnModeSweepsInvalidOnlyTenant(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+	now := time.Now().UTC()
+	agedID, recentID := uuid.New(), uuid.New()
+	insertTenantEvent(t, fx, "tenant-abandoned", agedID, outbox.OutboxStatusInvalid, now.Add(-3*time.Hour), now.Add(-2*time.Hour))
+	// Created as long ago as the aged row but abandoned recently: age runs from abandonment.
+	insertTenantEvent(t, fx, "tenant-abandoned", recentID, outbox.OutboxStatusInvalid, now.Add(-3*time.Hour), now.Add(-30*time.Minute))
+
+	dispatcher, err := outbox.NewDispatcher(fx.repo, outbox.NewHandlerRegistry(), nil, noop.NewTracerProvider().Tracer("test"),
+		outbox.WithRetentionInvalid(time.Hour))
+	require.NoError(t, err)
+
+	runDispatcherUntil(t, dispatcher, func() bool { return !tenantRowExists(t, fx, "tenant-abandoned", agedID) })
+
+	require.True(t, tenantRowExists(t, fx, "tenant-abandoned", recentID), "an event INVALID for less than the window stays")
+}
+
+func TestIntegration_DeleteInvalidBefore_SparesOtherStatuses(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+	aged := time.Now().UTC().Add(-2 * time.Hour)
+	invalidID := uuid.New()
+	insertTenantEvent(t, fx, "tenant-a", invalidID, outbox.OutboxStatusInvalid, aged, aged)
+
+	spared := map[string]uuid.UUID{}
+	for _, status := range []string{
+		outbox.OutboxStatusPending, outbox.OutboxStatusProcessing, outbox.OutboxStatusFailed, outbox.OutboxStatusPublished,
+	} {
+		spared[status] = uuid.New()
+		insertTenantEvent(t, fx, "tenant-a", spared[status], status, aged, aged)
+	}
+
+	deleted, err := fx.repo.DeleteInvalidBefore(fx.tenantCtx, time.Now().UTC().Add(-time.Hour), nil, 100)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), deleted)
+	require.False(t, tenantRowExists(t, fx, "tenant-a", invalidID))
+
+	for status, id := range spared {
+		require.True(t, tenantRowExists(t, fx, "tenant-a", id), "an aged %s row stays", status)
+	}
+}
+
+func TestIntegration_DeleteInvalidBefore_SparesOtherTenants(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+	aged := time.Now().UTC().Add(-2 * time.Hour)
+	// One id in both tenants: the column-mode key is (tenant_id, id).
+	id := uuid.New()
+	insertTenantEvent(t, fx, "tenant-a", id, outbox.OutboxStatusInvalid, aged, aged)
+	insertTenantEvent(t, fx, "tenant-b", id, outbox.OutboxStatusInvalid, aged, aged)
+
+	deleted, err := fx.repo.DeleteInvalidBefore(fx.tenantCtx, time.Now().UTC().Add(-time.Hour), nil, 100)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), deleted)
+	require.False(t, tenantRowExists(t, fx, "tenant-a", id))
+	require.True(t, tenantRowExists(t, fx, "tenant-b", id), "tenant B's aged INVALID row stays")
+}
+
+// insertTenantEvent writes one column-mode row, bypassing the repository.
+func insertTenantEvent(t *testing.T, fx *integrationRepoFixture, tenantID string, id uuid.UUID, status string, createdAt, updatedAt time.Time) {
 	t.Helper()
 
 	_, err := fx.primaryDB.ExecContext(context.Background(), fmt.Sprintf(`
 INSERT INTO %s (id, event_type, aggregate_id, payload, status, attempts, created_at, updated_at, tenant_id)
-VALUES ($1, 'payment.purge', $2, '{}', 'PUBLISHED', 1, $3, $3, $4)`, quoteIdentifier(fx.tableName)), // #nosec G201 -- test-owned identifiers
-		id, uuid.New(), createdAt, tenantID)
+VALUES ($1, 'payment.purge', $2, '{}', $3::outbox_event_status, 1, $4, $5, $6)`, quoteIdentifier(fx.tableName)), // #nosec G201 -- test-owned identifiers
+		id, uuid.New(), status, createdAt, updatedAt, tenantID)
 	require.NoError(t, err)
 }
 

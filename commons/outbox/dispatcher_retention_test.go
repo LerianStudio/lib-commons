@@ -70,6 +70,52 @@ func TestDispatcherRetention_DisabledByDefault(t *testing.T) {
 	require.Empty(t, repo.deletePublishedCallLog())
 }
 
+func TestDispatcherRetention_InvalidEventsStayWithoutTheirOption(t *testing.T) {
+	t.Parallel()
+
+	repo := newActivityCountingRepo(TenantDispatchScope{TenantID: "tenant-a"})
+	clock := retentionClock()
+	dispatcher := newRetentionDispatcher(t, repo, clock, nil, WithRetentionPublished(time.Hour))
+
+	for range 3 {
+		dispatcher.dispatchAcrossTenants(context.Background())
+		clock.Advance(2 * time.Hour)
+	}
+
+	deletes, listings := repo.invalidRetentionLog()
+	require.Len(t, repo.deletePublishedCallLog(), 3, "the published sweep runs")
+	require.Empty(t, deletes)
+	require.Zero(t, listings)
+}
+
+func TestDispatcherRetention_SweepsInvalidWithItsOwnWindow(t *testing.T) {
+	t.Parallel()
+
+	scope := TenantDispatchScope{TenantID: "tenant-a"}
+	repo := newActivityCountingRepo(scope)
+	clock := retentionClock()
+	start := clock.Now()
+	dispatcher := newRetentionDispatcher(t, repo, clock, nil,
+		WithRetentionPublished(24*time.Hour),
+		WithRetentionInvalid(7*24*time.Hour),
+		WithRetentionBatchSize(250),
+		WithRetentionKeepEventTypes("margem.solicitada"),
+	)
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	deletes, listings := repo.invalidRetentionLog()
+	require.Equal(t, []retentionCall{{
+		tenantID: "tenant-a",
+		scope:    scope,
+		before:   start.Add(-7 * 24 * time.Hour),
+		keep:     []string{"margem.solicitada"},
+		limit:    250,
+	}}, deletes)
+	require.Equal(t, 1, listings)
+	require.Equal(t, start.Add(-24*time.Hour), repo.deletePublishedCallLog()[0].before)
+}
+
 func TestDispatcherRetention_SweepsEachScopeOncePerInterval(t *testing.T) {
 	t.Parallel()
 
@@ -281,6 +327,12 @@ func TestNewDispatcher_RejectsInvalidRetentionConfig(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "negative retention", opts: []DispatcherOption{WithRetentionPublished(-time.Hour)}, wantErr: true},
+		{name: "negative invalid retention", opts: []DispatcherOption{WithRetentionInvalid(-time.Hour)}, wantErr: true},
+		{
+			name:    "negative batch size with invalid retention",
+			opts:    []DispatcherOption{WithRetentionInvalid(time.Hour), WithRetentionBatchSize(-1)},
+			wantErr: true,
+		},
 		{
 			name:    "negative batch size with retention",
 			opts:    []DispatcherOption{WithRetentionPublished(time.Hour), WithRetentionBatchSize(-1)},
@@ -321,6 +373,11 @@ func TestDispatcherConfigNormalize_RetentionDefaults(t *testing.T) {
 	require.Equal(t, time.Minute, custom.RetentionSweepInterval)
 	require.Equal(t, 7, custom.RetentionBatchSize)
 
+	invalidOnly := DispatcherConfig{RetentionInvalid: time.Hour}
+	invalidOnly.normalize()
+	require.Equal(t, time.Hour, invalidOnly.RetentionSweepInterval)
+	require.Equal(t, 500, invalidOnly.RetentionBatchSize)
+
 	disabled := DispatcherConfig{}
 	disabled.normalize()
 	require.Zero(t, disabled.RetentionPublished)
@@ -329,7 +386,7 @@ func TestDispatcherConfigNormalize_RetentionDefaults(t *testing.T) {
 }
 
 // nonPurgingRepo exposes only OutboxRepository: the embedded interface does
-// not promote the PublishedPurger capability of the value it wraps.
+// not promote the PublishedPurger or InvalidPurger capability it wraps.
 type nonPurgingRepo struct {
 	OutboxRepository
 }
@@ -340,6 +397,10 @@ func TestNewDispatcher_RetentionRequiresPurgerCapability(t *testing.T) {
 	repo := nonPurgingRepo{OutboxRepository: &fakeRepo{}}
 
 	dispatcher, err := NewDispatcher(repo, NewHandlerRegistry(), nil, nil, WithRetentionPublished(time.Hour))
+	require.ErrorIs(t, err, ErrOutboxRetentionUnsupported)
+	require.Nil(t, dispatcher)
+
+	dispatcher, err = NewDispatcher(repo, NewHandlerRegistry(), nil, nil, WithRetentionInvalid(time.Hour))
 	require.ErrorIs(t, err, ErrOutboxRetentionUnsupported)
 	require.Nil(t, dispatcher)
 

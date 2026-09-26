@@ -56,6 +56,18 @@ type PublishedTenantLister interface {
 	ListTenantsWithPublishedBefore(ctx context.Context, before time.Time, keepEventTypes []string) ([]string, error)
 }
 
+// InvalidPurger is the capability WithRetentionInvalid needs: the INVALID
+// counterpart of PublishedPurger and PublishedTenantLister, with the same
+// keep-type, limit and tenant semantics.
+type InvalidPurger interface {
+	// DeleteInvalidBefore deletes at most limit INVALID events that became
+	// INVALID before the cutoff, oldest first, and returns how many it deleted.
+	DeleteInvalidBefore(ctx context.Context, before time.Time, keepEventTypes []string, limit int) (int64, error)
+	// ListTenantsWithInvalidBefore returns the tenants DeleteInvalidBefore would
+	// delete from; a repository whose discovery lists every tenant returns none.
+	ListTenantsWithInvalidBefore(ctx context.Context, before time.Time, keepEventTypes []string) ([]string, error)
+}
+
 // IdempotentWriter is a narrow, opt-in contract for content-addressed idempotent
 // outbox writes. It is deliberately kept separate from OutboxRepository so that
 // only callers that need replay-safe upserts depend on it, and existing
