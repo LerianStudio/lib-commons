@@ -21,6 +21,10 @@ var (
 	ErrReplayConflict             = errors.New("outbox event replay conflict: same id with divergent content")
 )
 
+// ErrStuckAttemptsExhausted reaches OnInvalid for an event reclaimed from
+// PROCESSING with no attempts left: whether its last attempt published is unknown.
+var ErrStuckAttemptsExhausted = errors.New("outbox event exhausted its dispatch attempts stuck in processing; last attempt outcome unknown")
+
 // ErrOutboxRetentionConfigInvalid is returned by NewDispatcher for a negative
 // retention window or, while retention is enabled, a negative batch size.
 var ErrOutboxRetentionConfigInvalid = errors.New("invalid outbox retention config")

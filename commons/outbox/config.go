@@ -67,16 +67,16 @@ type DispatcherConfig struct {
 	MaxTrackedListPendingFailureTenants int
 	// MeterProvider overrides the default global meter provider when set.
 	MeterProvider metric.MeterProvider
-	// OnInvalid is an optional best-effort callback invoked when an event
-	// transitions to INVALID (non-retryable error or max dispatch attempts
-	// exhausted). It must not panic; panics and errors are logged and swallowed.
+	// OnInvalid is an optional best-effort callback invoked when an event transitions
+	// to INVALID: a non-retryable error, attempts exhausted, or ErrStuckAttemptsExhausted.
+	// It must not panic; panics and errors are logged and swallowed.
 	OnInvalid func(ctx context.Context, event *OutboxEvent, err error)
 	// OnFailed is an optional best-effort callback invoked when an event fails
 	// a dispatch attempt but remains retryable (marked FAILED). It must not
 	// panic; panics and errors are logged and swallowed.
 	OnFailed func(ctx context.Context, event *OutboxEvent, err error)
 	// RetentionPublished, when positive, makes the sweep delete a PUBLISHED
-	// event created longer ago than this. While it and RetentionInvalid are both
+	// event published longer ago than this. While it and RetentionInvalid are both
 	// zero, retention is off and the other Retention fields are ignored.
 	RetentionPublished time.Duration
 	// RetentionInvalid, when positive, makes the sweep delete an event that became
@@ -412,7 +412,7 @@ func WithMeterProvider(provider metric.MeterProvider) DispatcherOption {
 	}
 }
 
-// WithRetentionPublished enables the retention sweep: PUBLISHED events created
+// WithRetentionPublished enables the retention sweep: PUBLISHED events published
 // longer ago than retention are deleted in bounded batches. Zero disables it;
 // a negative value makes NewDispatcher fail.
 func WithRetentionPublished(retention time.Duration) DispatcherOption {

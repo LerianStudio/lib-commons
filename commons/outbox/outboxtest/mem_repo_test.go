@@ -376,14 +376,14 @@ func (m *memOutboxRepo) DeletePublishedBefore(
 			continue
 		}
 
-		if _, kept := keep[e.EventType]; kept || e.Status != outbox.OutboxStatusPublished || !e.CreatedAt.Before(before) {
+		if _, kept := keep[e.EventType]; kept || e.Status != outbox.OutboxStatusPublished || !e.UpdatedAt.Before(before) {
 			continue
 		}
 
 		eligible = append(eligible, e)
 	}
 
-	sort.Slice(eligible, func(i, j int) bool { return eligible[i].CreatedAt.Before(eligible[j].CreatedAt) })
+	sort.Slice(eligible, func(i, j int) bool { return eligible[i].UpdatedAt.Before(eligible[j].UpdatedAt) })
 
 	if len(eligible) > limit {
 		eligible = eligible[:limit]

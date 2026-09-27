@@ -906,9 +906,9 @@ func (repo *Repository) markStuckEventsInvalid(
 	return nil
 }
 
-func splitStuckEvents(events []*outbox.OutboxEvent, maxAttempts int) ([]*outbox.OutboxEvent, []uuid.UUID) {
+func splitStuckEvents(events []*outbox.OutboxEvent, maxAttempts int) ([]*outbox.OutboxEvent, []*outbox.OutboxEvent) {
 	retryEvents := make([]*outbox.OutboxEvent, 0, len(events))
-	exhaustedIDs := make([]uuid.UUID, 0)
+	exhaustedEvents := make([]*outbox.OutboxEvent, 0)
 
 	for _, event := range events {
 		if event == nil || event.ID == uuid.Nil {
@@ -916,7 +916,7 @@ func splitStuckEvents(events []*outbox.OutboxEvent, maxAttempts int) ([]*outbox.
 		}
 
 		if event.Attempts+1 >= maxAttempts {
-			exhaustedIDs = append(exhaustedIDs, event.ID)
+			exhaustedEvents = append(exhaustedEvents, event)
 
 			continue
 		}
@@ -924,7 +924,7 @@ func splitStuckEvents(events []*outbox.OutboxEvent, maxAttempts int) ([]*outbox.
 		retryEvents = append(retryEvents, event)
 	}
 
-	return retryEvents, exhaustedIDs
+	return retryEvents, exhaustedEvents
 }
 
 func applyStuckReprocessingState(events []*outbox.OutboxEvent, now time.Time) {
@@ -935,6 +935,16 @@ func applyStuckReprocessingState(events []*outbox.OutboxEvent, now time.Time) {
 
 		event.Attempts++
 		event.Status = outbox.OutboxStatusProcessing
+		event.UpdatedAt = now
+	}
+}
+
+// applyStuckInvalidState mirrors markStuckEventsInvalid in memory.
+func applyStuckInvalidState(events []*outbox.OutboxEvent, now time.Time) {
+	for _, event := range events {
+		event.Attempts++
+		event.Status = outbox.OutboxStatusInvalid
+		event.LastError = outbox.AppendErrorCause(event.LastError, outbox.StuckInProcessingCause)
 		event.UpdatedAt = now
 	}
 }

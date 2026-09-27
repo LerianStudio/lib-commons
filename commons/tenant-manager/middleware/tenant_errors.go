@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/LerianStudio/lib-commons/v7/commons"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/gofiber/fiber/v3"
 )
@@ -22,90 +23,96 @@ const (
 	errorMessageServiceUnavailable = "Service temporarily unavailable"
 )
 
-// mapDomainErrorToHTTP is a centralized error-to-HTTP mapping function used by
-// TenantMiddleware to ensure consistent status codes for domain errors.
-func mapDomainErrorToHTTP(c fiber.Ctx, err error, tenantID string) error {
+// refusalError is a refusal handed to the app's ErrorHandler. It unwraps to the
+// *fiber.Error (status, message), the commons.Response (code, title, message) and
+// the domain error that caused it.
+type refusalError struct {
+	fiberErr *fiber.Error
+	response commons.Response
+	cause    error
+}
+
+func (e refusalError) Error() string { return e.fiberErr.Error() }
+
+func (e refusalError) Unwrap() []error { return []error{e.fiberErr, e.response, e.cause} }
+
+func newRefusal(cause error, status int, code, title, message string) refusalError {
+	return refusalError{
+		fiberErr: fiber.NewError(status, message),
+		response: commons.Response{Code: code, Title: title, Message: message},
+		cause:    cause,
+	}
+}
+
+// refuse ends the chain: it writes the refusal body, or returns the refusal
+// untouched when WithRefusalsToErrorHandler hands rendering to the app.
+func (m *TenantMiddleware) refuse(c fiber.Ctx, r refusalError) error {
+	if m.refusalsToErrorHandler {
+		return r
+	}
+
+	return c.Status(r.fiberErr.Code).JSON(fiber.Map{
+		errorFieldCode:    r.response.Code,
+		errorFieldTitle:   r.response.Title,
+		errorFieldMessage: r.response.Message,
+	})
+}
+
+// domainRefusal maps a tenant resolution error to the refusal TenantMiddleware
+// answers it with, keeping status codes consistent for domain errors.
+func domainRefusal(err error, tenantID string) refusalError {
 	// Missing token or JWT errors -> 401
 	if errors.Is(err, core.ErrAuthorizationTokenRequired) ||
 		errors.Is(err, core.ErrInvalidAuthorizationToken) ||
 		errors.Is(err, core.ErrInvalidTenantClaims) ||
 		errors.Is(err, core.ErrMissingTenantIDClaim) {
-		return unauthorizedError(c, "UNAUTHORIZED", "Unauthorized")
+		return unauthorizedRefusal(err, "UNAUTHORIZED", "Unauthorized")
 	}
 
 	// Tenant not found -> 404
 	if errors.Is(err, core.ErrTenantNotFound) {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{
-			errorFieldCode:    "TENANT_NOT_FOUND",
-			errorFieldTitle:   "Tenant Not Found",
-			errorFieldMessage: "tenant not found: " + tenantID,
-		})
+		return newRefusal(err, http.StatusNotFound, "TENANT_NOT_FOUND", "Tenant Not Found",
+			"tenant not found: "+tenantID)
 	}
 
 	// Tenant suspended/purged -> 403
 	var suspErr *core.TenantSuspendedError
 	if errors.As(err, &suspErr) {
-		return forbiddenError(c, "0131", "Service Suspended",
+		return newRefusal(err, http.StatusForbidden, "0131", "Service Suspended",
 			"tenant service is "+suspErr.Status)
 	}
 
 	// Generic access denied (403 without parsed status) -> 403
 	if errors.Is(err, core.ErrTenantServiceAccessDenied) {
-		return forbiddenError(c, "0131", "Access Denied",
+		return newRefusal(err, http.StatusForbidden, "0131", "Access Denied",
 			"tenant service access denied")
 	}
 
 	// Manager closed or service not configured -> 503
 	if errors.Is(err, core.ErrManagerClosed) || errors.Is(err, core.ErrServiceNotConfigured) {
-		return serviceUnavailableError(c)
+		return serviceUnavailableRefusal(err)
 	}
 
 	// Circuit breaker open -> 503
 	if errors.Is(err, core.ErrCircuitBreakerOpen) {
-		return serviceUnavailableError(c)
+		return serviceUnavailableRefusal(err)
 	}
 
 	// Connection errors -> 503
 	if errors.Is(err, core.ErrConnectionFailed) {
-		return serviceUnavailableError(c)
+		return serviceUnavailableRefusal(err)
 	}
 
 	// Default -> 500
-	return internalServerError(c, "TENANT_DB_ERROR", "Failed to resolve tenant database")
+	return newRefusal(err, http.StatusInternalServerError, "TENANT_DB_ERROR",
+		"Failed to resolve tenant database", "Internal server error")
 }
 
-// forbiddenError sends an HTTP 403 Forbidden response.
-// Used when the tenant-service association exists but is not active (suspended or purged).
-func forbiddenError(c fiber.Ctx, code, title, message string) error {
-	return c.Status(http.StatusForbidden).JSON(fiber.Map{
-		errorFieldCode:    code,
-		errorFieldTitle:   title,
-		errorFieldMessage: message,
-	})
+func serviceUnavailableRefusal(cause error) refusalError {
+	return newRefusal(cause, http.StatusServiceUnavailable, errorCodeServiceUnavailable,
+		errorTitleServiceUnavailable, errorMessageServiceUnavailable)
 }
 
-func serviceUnavailableError(c fiber.Ctx) error {
-	return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
-		errorFieldCode:    errorCodeServiceUnavailable,
-		errorFieldTitle:   errorTitleServiceUnavailable,
-		errorFieldMessage: errorMessageServiceUnavailable,
-	})
-}
-
-// internalServerError sends an HTTP 500 Internal Server Error response.
-func internalServerError(c fiber.Ctx, code, title string) error {
-	return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
-		errorFieldCode:    code,
-		errorFieldTitle:   title,
-		errorFieldMessage: "Internal server error",
-	})
-}
-
-// unauthorizedError sends an HTTP 401 Unauthorized response.
-func unauthorizedError(c fiber.Ctx, code, message string) error {
-	return c.Status(http.StatusUnauthorized).JSON(fiber.Map{
-		errorFieldCode:    code,
-		errorFieldTitle:   "Unauthorized",
-		errorFieldMessage: message,
-	})
+func unauthorizedRefusal(cause error, code, message string) refusalError {
+	return newRefusal(cause, http.StatusUnauthorized, code, "Unauthorized", message)
 }

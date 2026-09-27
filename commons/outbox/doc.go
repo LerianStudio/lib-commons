@@ -24,15 +24,16 @@
 // adapters do); NewDispatcher returns ErrOutboxRetentionUnsupported otherwise.
 // When enabled, a dispatch scope is swept at most once per
 // RetentionSweepInterval: one call to DeletePublishedBefore removes up to
-// RetentionBatchSize PUBLISHED events older than the retention window, oldest
-// first, sparing the types listed in RetentionKeepEventTypes, so a large
-// backlog drains one batch per interval without a long transaction. PENDING,
-// PROCESSING and FAILED events are not deleted at any age. INVALID events, the
-// record of a fact abandoned after the retry budget, are kept forever unless
-// WithRetentionInvalid(window) is set (postgres only, with or without the
-// published retention): the sweep then also deletes them, same batch size and
-// kept types, once their updated_at, stamped on the move to INVALID, is older
-// than window. A failed sweep is logged and does not affect dispatch.
+// RetentionBatchSize PUBLISHED events published longer ago than the retention
+// window, oldest first, sparing the types listed in RetentionKeepEventTypes, so
+// a large backlog drains one batch per interval without a long transaction.
+// PENDING, PROCESSING and FAILED events are not deleted at any age. INVALID
+// events, the record of a fact abandoned after the retry budget, are kept
+// forever unless WithRetentionInvalid(window) is set (postgres only, with or
+// without the published retention): the sweep then also deletes them, same
+// batch size and kept types, once they have been INVALID longer than window.
+// Both ages read updated_at, stamped by the move into the terminal status. A
+// failed sweep is logged and does not affect dispatch.
 //
 // Pool-per-tenant and schema-per-tenant postgres repositories, and mongo
 // repositories with a tenant database resolver, discover every known tenant, so

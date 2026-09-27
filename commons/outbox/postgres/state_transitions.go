@@ -312,20 +312,34 @@ func (repo *Repository) ResetStuckProcessing(
 	processingBefore time.Time,
 	maxAttempts int,
 ) ([]*outbox.OutboxEvent, error) {
+	retry, _, err := repo.ReclaimStuckProcessing(ctx, limit, processingBefore, maxAttempts)
+
+	return retry, err
+}
+
+var _ outbox.StuckReclaimer = (*Repository)(nil)
+
+// ReclaimStuckProcessing implements outbox.StuckReclaimer.
+func (repo *Repository) ReclaimStuckProcessing(
+	ctx context.Context,
+	limit int,
+	processingBefore time.Time,
+	maxAttempts int,
+) ([]*outbox.OutboxEvent, []*outbox.OutboxEvent, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	if !repo.initialized() {
-		return nil, ErrRepositoryNotInitialized
+		return nil, nil, ErrRepositoryNotInitialized
 	}
 
 	if limit <= 0 {
-		return nil, ErrLimitMustBePositive
+		return nil, nil, ErrLimitMustBePositive
 	}
 
 	if maxAttempts <= 0 {
-		return nil, ErrMaxAttemptsMustBePositive
+		return nil, nil, ErrMaxAttemptsMustBePositive
 	}
 
 	tracer := tracerFromContext(ctx)
@@ -336,19 +350,17 @@ func (repo *Repository) ResetStuckProcessing(
 	if missing, err := repo.tenantOutboxTableMissing(ctx); err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to check outbox table presence", err)
 
-		return nil, fmt.Errorf("reset stuck events: %w", err)
+		return nil, nil, fmt.Errorf("reset stuck events: %w", err)
 	} else if missing {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	result, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) ([]*outbox.OutboxEvent, error) {
+	var invalid []*outbox.OutboxEvent
+
+	retry, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) ([]*outbox.OutboxEvent, error) {
 		events, err := repo.listStuckProcessingRows(ctx, tx, limit, processingBefore)
 		if err != nil {
 			return nil, err
-		}
-
-		if len(events) == 0 {
-			return events, nil
 		}
 
 		tenantID, tenantErr := repo.tenantIDFromContext(ctx)
@@ -356,7 +368,7 @@ func (repo *Repository) ResetStuckProcessing(
 			return nil, tenantErr
 		}
 
-		retryEvents, exhaustedIDs := splitStuckEvents(events, maxAttempts)
+		retryEvents, exhaustedEvents := splitStuckEvents(events, maxAttempts)
 		now := time.Now().UTC()
 
 		retryIDs := collectEventIDs(retryEvents)
@@ -368,21 +380,25 @@ func (repo *Repository) ResetStuckProcessing(
 			applyStuckReprocessingState(retryEvents, now)
 		}
 
-		if len(exhaustedIDs) > 0 {
+		if exhaustedIDs := collectEventIDs(exhaustedEvents); len(exhaustedIDs) > 0 {
 			if err := repo.markStuckEventsInvalid(ctx, tx, now, exhaustedIDs, tenantID); err != nil {
 				return nil, err
 			}
+
+			applyStuckInvalidState(exhaustedEvents, now)
 		}
+
+		invalid = exhaustedEvents
 
 		return retryEvents, nil
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to reset stuck events", err)
 
-		return nil, fmt.Errorf("reset stuck events: %w", err)
+		return nil, nil, fmt.Errorf("reset stuck events: %w", err)
 	}
 
-	return result, nil
+	return retry, invalid, nil
 }
 
 // MarkInvalid marks an outbox event as invalid.

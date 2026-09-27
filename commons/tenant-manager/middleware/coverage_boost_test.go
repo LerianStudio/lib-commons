@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	tmmongo "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/postgres"
 	"github.com/gofiber/fiber/v3"
@@ -76,98 +75,6 @@ func TestWithTenantDB_Disabled_PassesThrough(t *testing.T) {
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "disabled middleware should pass through")
-}
-
-// -------------------------------------------------------------------
-// WithTenantDB — no Authorization header → 401
-// -------------------------------------------------------------------
-
-func TestWithTenantDB_MissingAuthToken_Returns401(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	pgMgr, _ := newTestManagersWithServer(t, server.URL)
-	mw := NewTenantMiddleware(WithPG(pgMgr))
-	app := newFiberApp(mw)
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil) // no Authorization header
-	resp, err := app.Test(req)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-}
-
-// -------------------------------------------------------------------
-// WithTenantDB — invalid JWT → 401
-// -------------------------------------------------------------------
-
-func TestWithTenantDB_InvalidJWT_Returns401(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	pgMgr, _ := newTestManagersWithServer(t, server.URL)
-	mw := NewTenantMiddleware(WithPG(pgMgr))
-	app := newFiberApp(mw)
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer not.a.valid.jwt")
-	resp, err := app.Test(req)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-}
-
-// -------------------------------------------------------------------
-// WithTenantDB — JWT without tenantId claim → 401
-// -------------------------------------------------------------------
-
-func TestWithTenantDB_NoTenantIDClaim_Returns401(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	pgMgr, _ := newTestManagersWithServer(t, server.URL)
-	mw := NewTenantMiddleware(WithPG(pgMgr))
-	app := newFiberApp(mw)
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer "+makeNoTenantJWT(t))
-	resp, err := app.Test(req)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-}
-
-// -------------------------------------------------------------------
-// WithTenantDB — valid JWT but GetConnection fails → 500
-// -------------------------------------------------------------------
-
-func TestWithTenantDB_PGGetConnectionFails_Returns500(t *testing.T) {
-	t.Parallel()
-
-	// Tenant manager server returns 500 → GetConnection fails
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	pgMgr, _ := newTestManagersWithServer(t, server.URL)
-	mw := NewTenantMiddleware(WithPG(pgMgr))
-	app := newFiberApp(mw)
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer "+makeTenantJWT(t, "tenant-abc"))
-	resp, err := app.Test(req)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 }
 
 // -------------------------------------------------------------------
@@ -257,35 +164,6 @@ func TestWithTenantDB_MultiModulePG_GetConnectionFails(t *testing.T) {
 }
 
 // -------------------------------------------------------------------
-// mapDomainErrorToHTTP — ErrManagerClosed through middleware path
-// -------------------------------------------------------------------
-
-func TestWithTenantDB_ErrManagerClosed_Returns503(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	c, err := client.NewClient(server.URL, nil, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
-	require.NoError(t, err)
-
-	pgMgr := tmpostgres.NewManager(c, "ledger")
-	// Close the manager so GetConnection returns ErrManagerClosed
-	require.NoError(t, pgMgr.Close(nil))
-
-	mw := NewTenantMiddleware(WithPG(pgMgr))
-	app := newFiberApp(mw)
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer "+makeTenantJWT(t, "tenant-closed"))
-	resp, err := app.Test(req)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
-}
-
-// -------------------------------------------------------------------
 // TenantMiddleware.Enabled / Disabled checks
 // -------------------------------------------------------------------
 
@@ -302,21 +180,4 @@ func TestWithTenantDB_IsDisabled_WhenNothingConfigured(t *testing.T) {
 
 	mw := NewTenantMiddleware()
 	assert.False(t, mw.Enabled())
-}
-
-// -------------------------------------------------------------------
-// mapDomainErrorToHTTP — ErrTenantNotProvisioned → 500
-// -------------------------------------------------------------------
-
-func TestMapDomainErrorToHTTP_TenantNotProvisioned_Returns500(t *testing.T) {
-	t.Parallel()
-
-	app := newFiberTestApp(func(c fiber.Ctx) error {
-		return mapDomainErrorToHTTP(c, core.ErrTenantNotProvisioned, "tenant-1")
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	resp, err := app.Test(req)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 }

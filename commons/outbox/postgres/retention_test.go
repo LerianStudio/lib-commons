@@ -117,23 +117,23 @@ func TestDeletePublishedBefore_BoundedOldestFirstDelete(t *testing.T) {
 			name: "no keep list, no tenant column",
 			keep: []string{" ", ""},
 			query: `DELETE FROM "outbox_events" WHERE id IN (SELECT id FROM "outbox_events" ` +
-				`WHERE status = $1::outbox_event_status AND created_at < $2 ORDER BY created_at ASC, id ASC LIMIT $3)`,
+				`WHERE status = $1::outbox_event_status AND updated_at < $2 ORDER BY updated_at ASC, id ASC LIMIT $3)`,
 			args: []driver.Value{"PUBLISHED", before, 500},
 		},
 		{
 			name: "keep list excluded",
 			keep: []string{"leilao.solicitado", " margem.solicitada "},
 			query: `DELETE FROM "outbox_events" WHERE id IN (SELECT id FROM "outbox_events" ` +
-				`WHERE status = $1::outbox_event_status AND created_at < $2 AND NOT (event_type = ANY($3::text[])) ` +
-				`ORDER BY created_at ASC, id ASC LIMIT $4)`,
+				`WHERE status = $1::outbox_event_status AND updated_at < $2 AND NOT (event_type = ANY($3::text[])) ` +
+				`ORDER BY updated_at ASC, id ASC LIMIT $4)`,
 			args: []driver.Value{"PUBLISHED", before, "leilao.solicitado,margem.solicitada", 500},
 		},
 		{
 			name:         "tenant column scopes both the selection and the delete",
 			tenantColumn: "tenant_id",
 			query: `DELETE FROM "outbox_events" WHERE id IN (SELECT id FROM "outbox_events" ` +
-				`WHERE status = $1::outbox_event_status AND created_at < $2 AND "tenant_id" = $3 ` +
-				`ORDER BY created_at ASC, id ASC LIMIT $4) AND "tenant_id" = $3`,
+				`WHERE status = $1::outbox_event_status AND updated_at < $2 AND "tenant_id" = $3 ` +
+				`ORDER BY updated_at ASC, id ASC LIMIT $4) AND "tenant_id" = $3`,
 			args: []driver.Value{"PUBLISHED", before, "22222222-2222-2222-2222-222222222222", 500},
 		},
 	}
@@ -188,7 +188,7 @@ func TestDeletePublishedBefore_BoundsTheStatementByTheTransactionTimeout(t *test
 	// timeout has to end the wait.
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM "outbox_events" WHERE id IN (SELECT id FROM "outbox_events" `+
-		`WHERE status = $1::outbox_event_status AND created_at < $2 ORDER BY created_at ASC, id ASC LIMIT $3)`)).
+		`WHERE status = $1::outbox_event_status AND updated_at < $2 ORDER BY updated_at ASC, id ASC LIMIT $3)`)).
 		WithArgs("PUBLISHED", before, 500).
 		WillDelayFor(2 * time.Second).
 		WillReturnResult(sqlmock.NewResult(0, 500))
