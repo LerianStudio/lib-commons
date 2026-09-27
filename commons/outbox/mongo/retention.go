@@ -18,15 +18,11 @@ var (
 	_ outbox.PublishedTenantLister = (*Repository)(nil)
 )
 
-// DeletePublishedBefore deletes at most limit PUBLISHED events created before
-// the cutoff, oldest first, skipping event types listed in keepEventTypes, and
-// returns how many documents were deleted.
-//
-// The age bound reads created_at rather than published_at: the status and
-// created_at index serves it, and a PUBLISHED event's published_at is never
-// earlier than its created_at, so the bound only ever keeps an event longer.
-// PENDING, PROCESSING, FAILED and INVALID events are never selected. A
-// limit <= 0 deletes nothing, so a sweep is always bounded.
+// DeletePublishedBefore deletes at most limit PUBLISHED events published
+// (updated_at, stamped by MarkPublished) before the cutoff, oldest first,
+// skipping event types listed in keepEventTypes, and returns how many documents
+// were deleted. PENDING, PROCESSING, FAILED and INVALID events are never
+// selected. A limit <= 0 deletes nothing, so a sweep is always bounded.
 func (repo *Repository) DeletePublishedBefore(
 	ctx context.Context,
 	before time.Time,
@@ -121,7 +117,7 @@ func (repo *Repository) deletePublishedBefore(
 	filter := mergeFilters(publishedBeforeFilter(before, keepEventTypes), repo.tenantMatchFilter(tenantID))
 
 	cursor, err := collection.Find(ctx, filter, mongooptions.Find().
-		SetSort(bson.D{{Key: mongoFieldCreatedAt, Value: 1}, {Key: "id", Value: 1}}).
+		SetSort(bson.D{{Key: mongoFieldUpdatedAt, Value: 1}, {Key: "id", Value: 1}}).
 		SetLimit(int64(limit)).
 		SetProjection(bson.M{"id": 1}))
 	if err != nil {
@@ -158,7 +154,7 @@ func (repo *Repository) deletePublishedBefore(
 func publishedBeforeFilter(before time.Time, keepEventTypes []string) bson.M {
 	filter := bson.M{
 		mongoFieldStatus:    outbox.OutboxStatusPublished,
-		mongoFieldCreatedAt: bson.M{mongoOperatorLT: before},
+		mongoFieldUpdatedAt: bson.M{mongoOperatorLT: before},
 	}
 
 	keep := make([]string, 0, len(keepEventTypes))

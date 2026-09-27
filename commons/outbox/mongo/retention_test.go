@@ -38,12 +38,12 @@ func TestMongoPublishedBeforeFilter(t *testing.T) {
 
 	require.Equal(t, bson.M{
 		mongoFieldStatus:    outbox.OutboxStatusPublished,
-		mongoFieldCreatedAt: bson.M{mongoOperatorLT: before},
+		mongoFieldUpdatedAt: bson.M{mongoOperatorLT: before},
 	}, publishedBeforeFilter(before, []string{"", "  "}))
 
 	require.Equal(t, bson.M{
 		mongoFieldStatus:    outbox.OutboxStatusPublished,
-		mongoFieldCreatedAt: bson.M{mongoOperatorLT: before},
+		mongoFieldUpdatedAt: bson.M{mongoOperatorLT: before},
 		"event_type":        bson.M{"$nin": []string{"leilao.solicitado", "margem.solicitada"}},
 	}, publishedBeforeFilter(before, []string{"leilao.solicitado", " margem.solicitada "}))
 }

@@ -37,13 +37,12 @@ type OutboxRepository interface {
 // are not forced to grow a method; NewDispatcher refuses to enable retention
 // on a repository that lacks it.
 type PublishedPurger interface {
-	// DeletePublishedBefore deletes at most limit PUBLISHED events created
+	// DeletePublishedBefore deletes at most limit PUBLISHED events published
 	// before the cutoff, oldest first, skipping every event whose type is in
 	// keepEventTypes, and returns how many were deleted. The age bound uses
-	// created_at: a PUBLISHED event's published_at is never earlier than its
-	// created_at, so the bound is conservative and served by the
-	// (status, created_at) index. PENDING, PROCESSING, FAILED and INVALID
-	// events are never deleted. A limit <= 0 deletes nothing and returns 0.
+	// updated_at, which MarkPublished stamps and nothing writes afterwards.
+	// PENDING, PROCESSING, FAILED and INVALID events are never deleted. A
+	// limit <= 0 deletes nothing and returns 0.
 	DeletePublishedBefore(ctx context.Context, before time.Time, keepEventTypes []string, limit int) (int64, error)
 }
 
@@ -52,7 +51,7 @@ type PublishedPurger interface {
 // RetentionSweepInterval and sweeps every tenant it returns.
 type PublishedTenantLister interface {
 	// ListTenantsWithPublishedBefore returns the tenants holding a PUBLISHED
-	// event created before the cutoff whose type is not in keepEventTypes.
+	// event published before the cutoff whose type is not in keepEventTypes.
 	ListTenantsWithPublishedBefore(ctx context.Context, before time.Time, keepEventTypes []string) ([]string, error)
 }
 

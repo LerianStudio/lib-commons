@@ -17,36 +17,18 @@ var (
 	_ outbox.InvalidPurger         = (*Repository)(nil)
 )
 
-// agedRows names the rows one retention deletes: a terminal status and the
-// column its age is read from.
-type agedRows struct {
-	status string
-	since  string
-}
-
-var (
-	agedPublished = agedRows{status: outbox.OutboxStatusPublished, since: "created_at"}
-	// INVALID is terminal and every write into it stamps updated_at, so
-	// updated_at is the time the row became INVALID; (status, updated_at) is indexed.
-	agedInvalid = agedRows{status: outbox.OutboxStatusInvalid, since: "updated_at"}
-)
-
-// DeletePublishedBefore deletes at most limit PUBLISHED events created before
-// the cutoff, oldest first, skipping event types listed in keepEventTypes, and
-// returns how many rows were deleted.
-//
-// The age bound reads created_at rather than published_at: the
-// (status, created_at) index serves it, and a PUBLISHED row's published_at is
-// never earlier than its created_at, so the bound only ever keeps a row longer.
-// PENDING, PROCESSING, FAILED and INVALID rows are never selected. A limit <= 0
-// deletes nothing, so the statement is always bounded.
+// DeletePublishedBefore deletes at most limit PUBLISHED events published
+// (updated_at) before the cutoff, oldest first, skipping event types listed in
+// keepEventTypes, and returns how many rows were deleted. PENDING, PROCESSING,
+// FAILED and INVALID rows are never selected. A limit <= 0 deletes nothing, so
+// the statement is always bounded.
 func (repo *Repository) DeletePublishedBefore(
 	ctx context.Context,
 	before time.Time,
 	keepEventTypes []string,
 	limit int,
 ) (int64, error) {
-	return repo.deleteAgedBefore(ctx, agedPublished, before, keepEventTypes, limit)
+	return repo.deleteAgedBefore(ctx, outbox.OutboxStatusPublished, before, keepEventTypes, limit)
 }
 
 // DeleteInvalidBefore deletes at most limit INVALID events that became INVALID
@@ -58,12 +40,12 @@ func (repo *Repository) DeleteInvalidBefore(
 	keepEventTypes []string,
 	limit int,
 ) (int64, error) {
-	return repo.deleteAgedBefore(ctx, agedInvalid, before, keepEventTypes, limit)
+	return repo.deleteAgedBefore(ctx, outbox.OutboxStatusInvalid, before, keepEventTypes, limit)
 }
 
 func (repo *Repository) deleteAgedBefore(
 	ctx context.Context,
-	rows agedRows,
+	status string,
 	before time.Time,
 	keepEventTypes []string,
 	limit int,
@@ -82,7 +64,7 @@ func (repo *Repository) deleteAgedBefore(
 
 	tracer := tracerFromContext(ctx)
 
-	label := strings.ToLower(rows.status)
+	label := strings.ToLower(status)
 
 	ctx, span := tracer.Start(ctx, "postgres.delete_"+label+"_outbox_events")
 	defer span.End()
@@ -102,7 +84,7 @@ func (repo *Repository) deleteAgedBefore(
 		}
 
 		table := quoteIdentifierPath(repo.tableName)
-		where, args := rows.clause(before, keepEventTypes)
+		where, args := agedClause(status, before, keepEventTypes)
 		selection := "SELECT id FROM " + table + where
 
 		filter, filterArgs, filterErr := repo.tenantFilterClause(len(args)+1, tenantID)
@@ -111,7 +93,7 @@ func (repo *Repository) deleteAgedBefore(
 		}
 
 		args = append(args, filterArgs...)
-		selection += filter + fmt.Sprintf(" ORDER BY %s ASC, id ASC LIMIT $%d", rows.since, len(args)+1)
+		selection += filter + fmt.Sprintf(" ORDER BY updated_at ASC, id ASC LIMIT $%d", len(args)+1)
 		args = append(args, limit)
 
 		// The outer tenant filter reuses the inner placeholder: in column-per-tenant
@@ -162,7 +144,7 @@ func (repo *Repository) ListTenantsWithPublishedBefore(
 	before time.Time,
 	keepEventTypes []string,
 ) ([]string, error) {
-	return repo.listTenantsAgedBefore(ctx, agedPublished, before, keepEventTypes)
+	return repo.listTenantsAgedBefore(ctx, outbox.OutboxStatusPublished, before, keepEventTypes)
 }
 
 // ListTenantsWithInvalidBefore lists the tenants DeleteInvalidBefore would
@@ -172,12 +154,12 @@ func (repo *Repository) ListTenantsWithInvalidBefore(
 	before time.Time,
 	keepEventTypes []string,
 ) ([]string, error) {
-	return repo.listTenantsAgedBefore(ctx, agedInvalid, before, keepEventTypes)
+	return repo.listTenantsAgedBefore(ctx, outbox.OutboxStatusInvalid, before, keepEventTypes)
 }
 
 func (repo *Repository) listTenantsAgedBefore(
 	ctx context.Context,
-	rows agedRows,
+	status string,
 	before time.Time,
 	keepEventTypes []string,
 ) ([]string, error) {
@@ -195,12 +177,12 @@ func (repo *Repository) listTenantsAgedBefore(
 
 	tracer := tracerFromContext(ctx)
 
-	label := strings.ToLower(rows.status)
+	label := strings.ToLower(status)
 
 	ctx, span := tracer.Start(ctx, "postgres.list_outbox_tenants_with_"+label)
 	defer span.End()
 
-	tenants, err := repo.queryTenantsAgedBefore(ctx, rows, before, keepEventTypes)
+	tenants, err := repo.queryTenantsAgedBefore(ctx, status, before, keepEventTypes)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list tenants with "+label+" events", err)
 
@@ -212,7 +194,7 @@ func (repo *Repository) listTenantsAgedBefore(
 
 func (repo *Repository) queryTenantsAgedBefore(
 	ctx context.Context,
-	rows agedRows,
+	status string,
 	before time.Time,
 	keepEventTypes []string,
 ) ([]string, error) {
@@ -225,7 +207,7 @@ func (repo *Repository) queryTenantsAgedBefore(
 	defer cancel()
 
 	column := quoteIdentifier(repo.tenantColumn)
-	where, args := rows.clause(before, keepEventTypes)
+	where, args := agedClause(status, before, keepEventTypes)
 
 	result, err := db.QueryContext(queryCtx, "SELECT DISTINCT "+column+" FROM "+quoteIdentifierPath(repo.tableName)+where, args...) // #nosec G202 -- table/column names validated at construction; quote functions escape identifiers
 	if err != nil {
@@ -235,11 +217,12 @@ func (repo *Repository) queryTenantsAgedBefore(
 	return scanTenantIDs(result)
 }
 
-// clause selects the rows a retention may delete: of its status, aged past the
-// cutoff, of a type not kept.
-func (rows agedRows) clause(before time.Time, keepEventTypes []string) (string, []any) {
-	where := " WHERE status = $1::outbox_event_status AND " + rows.since + " < $2"
-	args := []any{rows.status, before}
+// agedClause selects the rows a retention may delete: of its status, reached
+// before the cutoff, of a type not kept. PUBLISHED and INVALID are terminal and
+// the move into either stamps updated_at; (status, updated_at) is indexed.
+func agedClause(status string, before time.Time, keepEventTypes []string) (string, []any) {
+	where := " WHERE status = $1::outbox_event_status AND updated_at < $2"
+	args := []any{status, before}
 
 	if keep := normalizeEventTypes(keepEventTypes); len(keep) > 0 {
 		args = append(args, keep)
