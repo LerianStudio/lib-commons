@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	cn "github.com/LerianStudio/lib-commons/v7/commons/constants"
+	"github.com/LerianStudio/lib-commons/v7/commons/safe"
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v3"
 	"github.com/shopspring/decimal"
@@ -76,7 +77,7 @@ func initValidators() (*validator.Validate, error) {
 			return false
 		}
 
-		return value.IsPositive()
+		return safe.CheckDecimal(value) == nil && value.IsPositive()
 	}); err != nil {
 		return nil, fmt.Errorf("%w: failed to register 'positive_decimal': %w", ErrValidatorInit, err)
 	}
@@ -88,7 +89,7 @@ func initValidators() (*validator.Validate, error) {
 			return true // Let required tag handle empty strings
 		}
 
-		d, parseErr := decimal.NewFromString(str)
+		d, parseErr := safe.ParseDecimal(str)
 		if parseErr != nil {
 			return false
 		}
@@ -105,7 +106,7 @@ func initValidators() (*validator.Validate, error) {
 			return true // Let required tag handle empty strings
 		}
 
-		d, parseErr := decimal.NewFromString(str)
+		d, parseErr := safe.ParseDecimal(str)
 		if parseErr != nil {
 			return false
 		}
