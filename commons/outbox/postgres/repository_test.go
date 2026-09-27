@@ -112,10 +112,10 @@ func TestSplitStuckEventsAndApplyState(t *testing.T) {
 		nil,
 	}
 
-	retryEvents, exhaustedIDs := splitStuckEvents(events, 3)
+	retryEvents, exhaustedEvents := splitStuckEvents(events, 3)
 	require.Len(t, retryEvents, 1)
 	require.Equal(t, retryID, retryEvents[0].ID)
-	require.Equal(t, []uuid.UUID{exhaustedID}, exhaustedIDs)
+	require.Equal(t, []uuid.UUID{exhaustedID}, collectEventIDs(exhaustedEvents))
 
 	now := time.Now().UTC()
 	applyStuckReprocessingState(retryEvents, now)

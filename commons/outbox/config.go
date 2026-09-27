@@ -67,9 +67,9 @@ type DispatcherConfig struct {
 	MaxTrackedListPendingFailureTenants int
 	// MeterProvider overrides the default global meter provider when set.
 	MeterProvider metric.MeterProvider
-	// OnInvalid is an optional best-effort callback invoked when an event
-	// transitions to INVALID (non-retryable error or max dispatch attempts
-	// exhausted). It must not panic; panics and errors are logged and swallowed.
+	// OnInvalid is an optional best-effort callback invoked when an event transitions
+	// to INVALID: a non-retryable error, attempts exhausted, or ErrStuckAttemptsExhausted.
+	// It must not panic; panics and errors are logged and swallowed.
 	OnInvalid func(ctx context.Context, event *OutboxEvent, err error)
 	// OnFailed is an optional best-effort callback invoked when an event fails
 	// a dispatch attempt but remains retryable (marked FAILED). It must not
