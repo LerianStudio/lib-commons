@@ -363,10 +363,6 @@ func (repo *Repository) ReclaimStuckProcessing(
 			return nil, err
 		}
 
-		if len(events) == 0 {
-			return events, nil
-		}
-
 		tenantID, tenantErr := repo.tenantIDFromContext(ctx)
 		if tenantErr != nil {
 			return nil, tenantErr

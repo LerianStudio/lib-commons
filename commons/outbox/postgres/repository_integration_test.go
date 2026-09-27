@@ -810,6 +810,39 @@ func TestIntegration_Dispatcher_StuckRowOnLastAttemptFiresOnInvalid(t *testing.T
 	require.Equal(t, outbox.OutboxStatusPublished, retriedStored.Status)
 }
 
+// OnInvalid reports a committed INVALID write only: a reclaim whose write rolls
+// back must fire nothing and leave the row PROCESSING for the next reclaim.
+func TestIntegration_Dispatcher_RolledBackStuckInvalidationFiresNothing(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+
+	stuck := createFixtureEvent(t, fx, "payment.stuck")
+	updateFixtureEventState(t, fx, stuck.ID, outbox.OutboxStatusProcessing, 2, time.Now().UTC().Add(-time.Hour))
+
+	refuse := quoteIdentifier(fx.tableName + "_refuse_invalid")
+	_, err := fx.primaryDB.ExecContext(fx.ctx, "CREATE FUNCTION "+refuse+"() RETURNS trigger LANGUAGE plpgsql AS $$ "+
+		"BEGIN IF NEW.status = 'INVALID' THEN RAISE EXCEPTION 'INVALID write refused'; END IF; RETURN NEW; END $$")
+	require.NoError(t, err)
+	_, err = fx.primaryDB.ExecContext(fx.ctx, "CREATE TRIGGER "+refuse+" BEFORE UPDATE ON "+quoteIdentifier(fx.tableName)+
+		" FOR EACH ROW EXECUTE FUNCTION "+refuse+"()")
+	require.NoError(t, err)
+
+	var fired atomic.Int32
+
+	dispatcher, err := outbox.NewDispatcher(fx.repo, outbox.NewHandlerRegistry(), nil, noop.NewTracerProvider().Tracer("test"),
+		outbox.WithMaxDispatchAttempts(3),
+		outbox.WithOnInvalid(func(context.Context, *outbox.OutboxEvent, error) { fired.Add(1) }),
+	)
+	require.NoError(t, err)
+
+	dispatcher.DispatchOnceResult(fx.tenantCtx)
+	require.Zero(t, fired.Load())
+
+	stored, err := fx.repo.GetByID(fx.tenantCtx, stuck.ID)
+	require.NoError(t, err)
+	require.Equal(t, outbox.OutboxStatusProcessing, stored.Status)
+	require.Equal(t, 2, stored.Attempts)
+}
+
 func TestIntegration_ColumnResolver_DiscoverTenants(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
