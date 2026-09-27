@@ -1,5 +1,24 @@
 # Lib-commons Changelog
 
+## [7.12.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.12.0)
+
+Features:
+- Wrap malformed tenant claims in their class sentinel. (@fredcamaral)
+- Hand tenant middleware refusals to the app error handler. (@fredcamaral)
+
+Fixes:
+- Fire `OnInvalid` for stuck events that exhaust attempts in the outbox. (@fredcamaral)
+- Reverse every previous page in `PaginateRecords`. (@fredcamaral)
+- Age published retention from publication, not creation, in the outbox. (@fredcamaral)
+
+Improvements:
+- Pin that a rolled-back stuck invalidation in the outbox fires nothing. (@fredcamaral)
+- Drop the Postgres index from the `PublishedPurger` contract in the outbox documentation. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.11.0...v7.12.0)
+
+---
+
 ## [7.11.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.11.0)
 
 Features:
