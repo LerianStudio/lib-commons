@@ -97,23 +97,22 @@ func SortCursorDirection(requestedDir string, pointsNext bool) (actualDir, opera
 	return cn.SortDirASC, ">"
 }
 
-// CalculateSortCursorPagination computes Next/Prev cursor strings for composite keyset pagination.
+// CalculateSortCursorPagination computes Next/Prev cursor strings for composite keyset pagination,
+// with the same page-boundary rules as CalculateCursor.
 func CalculateSortCursorPagination(
 	isFirstPage, hasPagination, pointsNext bool,
 	sortColumn string,
 	firstSortValue, firstID string,
 	lastSortValue, lastID string,
 ) (next, prev string, err error) {
-	hasNext := (pointsNext && hasPagination) || (!pointsNext && (hasPagination || isFirstPage))
-
-	if hasNext {
+	if !pointsNext || hasPagination {
 		next, err = EncodeSortCursor(sortColumn, lastSortValue, lastID, true)
 		if err != nil {
 			return "", "", err
 		}
 	}
 
-	if !isFirstPage {
+	if !isFirstPage && (pointsNext || hasPagination) {
 		prev, err = EncodeSortCursor(sortColumn, firstSortValue, firstID, false)
 		if err != nil {
 			return "", "", err
