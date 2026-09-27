@@ -4,15 +4,29 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/LerianStudio/lib-commons/v7/commons/safe"
 	"github.com/shopspring/decimal"
 )
 
 var oneHundred = decimal.NewFromInt(100)
 
+// checkBounds refuses a value outside safe.CheckDecimal with ErrorInvalidInput.
+func checkBounds(value decimal.Decimal, field string) error {
+	if safe.CheckDecimal(value) != nil {
+		return NewDomainError(ErrorInvalidInput, field, "value is outside the supported decimal range")
+	}
+
+	return nil
+}
+
 // BuildIntentPlan validates input allocations and builds a normalized intent plan.
 func BuildIntentPlan(input TransactionIntentInput, status TransactionStatus) (IntentPlan, error) {
 	if strings.TrimSpace(input.Asset) == "" {
 		return IntentPlan{}, NewDomainError(ErrorInvalidInput, "asset", "asset is required")
+	}
+
+	if err := checkBounds(input.Total, "total"); err != nil {
+		return IntentPlan{}, err
 	}
 
 	if !input.Total.IsPositive() {
@@ -123,6 +137,10 @@ func validateSourcePosting(plan IntentPlan, posting Posting, balances map[string
 
 	if !balance.AllowSending {
 		return NewDomainError(ErrorAccountStatusTransactionRestriction, "sources", "source balance is not allowed to send")
+	}
+
+	if err := checkBounds(posting.Amount, "sources"); err != nil {
+		return err
 	}
 
 	// Amount sufficiency check: source must have enough available funds
@@ -249,6 +267,10 @@ func validatePostingAgainstBalance(balance Balance, posting Posting) error {
 
 	if balance.Asset != posting.Asset {
 		return NewDomainError(ErrorAssetCodeNotFound, "posting.asset", "posting asset does not match balance asset")
+	}
+
+	if err := checkBounds(posting.Amount, "posting.amount"); err != nil {
+		return err
 	}
 
 	if !posting.Amount.IsPositive() {
@@ -510,6 +532,10 @@ func validateAllocationStrategy(allocation Allocation, field string) error {
 
 func resolveAllocationAmount(total decimal.Decimal, allocation Allocation, field string) (decimal.Decimal, bool, error) {
 	if allocation.Amount != nil {
+		if err := checkBounds(*allocation.Amount, field+".amount"); err != nil {
+			return decimal.Zero, false, err
+		}
+
 		if !allocation.Amount.IsPositive() {
 			return decimal.Zero, false, NewDomainError(ErrorInvalidInput, field+".amount", "amount must be greater than zero")
 		}
@@ -519,6 +545,10 @@ func resolveAllocationAmount(total decimal.Decimal, allocation Allocation, field
 
 	if allocation.Share != nil {
 		share := *allocation.Share
+		if err := checkBounds(share, field+".share"); err != nil {
+			return decimal.Zero, false, err
+		}
+
 		if !share.IsPositive() || share.GreaterThan(oneHundred) {
 			return decimal.Zero, false, NewDomainError(ErrorInvalidInput, field+".share", "share must be greater than 0 and at most 100")
 		}
