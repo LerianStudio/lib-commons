@@ -306,13 +306,27 @@ func TestPaginateRecords_PrevDirection_NotFirstPage(t *testing.T) {
 	assert.Equal(t, []int{1, 2, 3, 4, 5}, items)
 }
 
-func TestPaginateRecords_PrevDirection_FirstPage(t *testing.T) {
+// prevReachingStart is a prev request that reaches the start of the list:
+// natural order a..e, limit 2, prev cursor at "c". The query runs flipped
+// (id < c ORDER BY id DESC) and gets fewer than limit+1 rows, so consumers
+// compute isFirstPage = cursor == "" || (!hasPagination && prev) = true.
+func prevReachingStart() (fetched []string, limit int, hasPagination, isFirstPage bool) {
+	fetched = []string{"b", "a"}
+	limit = 2
+	hasPagination = len(fetched) > limit
+
+	return fetched, limit, hasPagination, !hasPagination
+}
+
+func TestPaginateRecords_PrevReachingStart_RestoresNaturalOrder(t *testing.T) {
 	t.Parallel()
 
-	items := []int{1, 2, 3, 4, 5}
-	// When isFirstPage=true, prev direction should NOT reverse.
-	result := PaginateRecords(true, true, CursorDirectionPrev, items, 3)
-	assert.Equal(t, []int{1, 2, 3}, result)
+	fetched, limit, hasPagination, isFirstPage := prevReachingStart()
+
+	page := PaginateRecords(isFirstPage, hasPagination, CursorDirectionPrev, fetched, limit)
+
+	assert.Equal(t, []string{"a", "b"}, page)
+	assert.Equal(t, []string{"b", "a"}, fetched, "input must not be mutated")
 }
 
 func TestPaginateRecords_EmptySlice(t *testing.T) {
@@ -511,6 +525,21 @@ func TestCalculateCursor_PrevDirection_FirstPage_NoPagination(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, pagination.Next)
 	assert.Empty(t, pagination.Prev, "first page should not have prev")
+}
+
+func TestCalculateCursor_PrevReachingStart_NextStartsAfterLastRow(t *testing.T) {
+	t.Parallel()
+
+	fetched, limit, hasPagination, isFirstPage := prevReachingStart()
+	page := PaginateRecords(isFirstPage, hasPagination, CursorDirectionPrev, fetched, limit)
+
+	pagination, err := CalculateCursor(isFirstPage, hasPagination, CursorDirectionPrev, page[0], page[len(page)-1])
+	require.NoError(t, err)
+	assert.Empty(t, pagination.Prev, "the start of the list has no prev page")
+
+	next, err := DecodeCursor(pagination.Next)
+	require.NoError(t, err)
+	assert.Equal(t, Cursor{ID: "b", Direction: CursorDirectionNext}, next)
 }
 
 func TestCalculateCursor_InvalidDirection(t *testing.T) {

@@ -105,16 +105,17 @@ func CursorDirectionRules(requestedSortDirection, cursorDirection string) (opera
 	}
 }
 
-// PaginateRecords slices records to the requested page and normalizes prev direction order.
+// PaginateRecords returns a copy of the requested page in natural order. A prev page is always
+// fetched flipped and is always reversed; the unused first argument keeps the signature stable.
 func PaginateRecords[T any](
-	isFirstPage bool,
+	_ bool,
 	hasPagination bool,
 	cursorDirection string,
 	items []T,
 	limit int,
 ) []T {
 	if !hasPagination {
-		return items
+		limit = len(items)
 	}
 
 	if limit < 0 {
@@ -128,7 +129,7 @@ func PaginateRecords[T any](
 	paginated := make([]T, limit)
 	copy(paginated, items[:limit])
 
-	if !isFirstPage && cursorDirection == CursorDirectionPrev {
+	if cursorDirection == CursorDirectionPrev {
 		return commons.Reverse(paginated)
 	}
 
