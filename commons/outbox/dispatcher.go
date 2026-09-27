@@ -993,12 +993,7 @@ func (dispatcher *Dispatcher) collectEvents(ctx context.Context, span trace.Span
 		return deduplicateEvents(priorityEvents)
 	}
 
-	stuckEvents, err := dispatcher.repo.ResetStuckProcessing(
-		ctx,
-		stuckLimit,
-		processingBefore,
-		dispatcher.cfg.MaxDispatchAttempts,
-	)
+	stuckEvents, err := dispatcher.resetStuckProcessing(ctx, stuckLimit, processingBefore)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to reset stuck events", err)
 		libLog.SafeError(logger, ctx, "failed to reset stuck events", err, false)
@@ -1047,6 +1042,25 @@ func (dispatcher *Dispatcher) collectEvents(ctx context.Context, span trace.Span
 	all = append(all, pendingEvents...)
 
 	return deduplicateEvents(all)
+}
+
+// resetStuckProcessing reclaims stuck events and, when the repository is a
+// StuckReclaimer, fires OnInvalid for each one the reclaim marked INVALID.
+func (dispatcher *Dispatcher) resetStuckProcessing(ctx context.Context, limit int, processingBefore time.Time) ([]*OutboxEvent, error) {
+	maxAttempts := dispatcher.cfg.MaxDispatchAttempts
+
+	reclaimer, ok := dispatcher.repo.(StuckReclaimer)
+	if !ok {
+		return dispatcher.repo.ResetStuckProcessing(ctx, limit, processingBefore, maxAttempts)
+	}
+
+	retry, invalid, err := reclaimer.ReclaimStuckProcessing(ctx, limit, processingBefore, maxAttempts)
+
+	for _, event := range invalid {
+		dispatcher.invokeOnInvalid(ctx, event, ErrStuckAttemptsExhausted)
+	}
+
+	return retry, err
 }
 
 func deduplicateEvents(events []*OutboxEvent) []*OutboxEvent {

@@ -754,6 +754,62 @@ func TestIntegration_Repository_DispatcherLifecyclePersistsPublishedState(t *tes
 	require.True(t, stored.UpdatedAt.After(created.UpdatedAt) || stored.UpdatedAt.Equal(created.UpdatedAt))
 }
 
+// A worker that dies mid-publish on the event's last attempt leaves it stuck in
+// PROCESSING; the reclaim marks it INVALID, and OnInvalid must hear about it.
+func TestIntegration_Dispatcher_StuckRowOnLastAttemptFiresOnInvalid(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+
+	exhausted := createFixtureEvent(t, fx, "payment.stuck")
+	retried := createFixtureEvent(t, fx, "payment.stuck")
+
+	stale := time.Now().UTC().Add(-time.Hour)
+	updateFixtureEventState(t, fx, exhausted.ID, outbox.OutboxStatusProcessing, 2, stale)
+	updateFixtureEventState(t, fx, retried.ID, outbox.OutboxStatusProcessing, 1, stale)
+
+	handlers := outbox.NewHandlerRegistry()
+	require.NoError(t, handlers.Register("payment.stuck", func(context.Context, *outbox.OutboxEvent) error { return nil }))
+
+	var (
+		mu      sync.Mutex
+		invalid []uuid.UUID
+		causes  []error
+	)
+
+	dispatcher, err := outbox.NewDispatcher(
+		fx.repo,
+		handlers,
+		nil,
+		noop.NewTracerProvider().Tracer("test"),
+		outbox.WithMaxDispatchAttempts(3),
+		outbox.WithPublishMaxAttempts(1),
+		outbox.WithOnInvalid(func(_ context.Context, event *outbox.OutboxEvent, err error) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			invalid = append(invalid, event.ID)
+			causes = append(causes, err)
+		}),
+	)
+	require.NoError(t, err)
+
+	result := dispatcher.DispatchOnceResult(fx.tenantCtx)
+	require.Equal(t, 1, result.Published)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.Equal(t, []uuid.UUID{exhausted.ID}, invalid)
+	require.ErrorIs(t, causes[0], outbox.ErrStuckAttemptsExhausted)
+
+	exhaustedStored, err := fx.repo.GetByID(fx.tenantCtx, exhausted.ID)
+	require.NoError(t, err)
+	require.Equal(t, outbox.OutboxStatusInvalid, exhaustedStored.Status)
+
+	retriedStored, err := fx.repo.GetByID(fx.tenantCtx, retried.ID)
+	require.NoError(t, err)
+	require.Equal(t, outbox.OutboxStatusPublished, retriedStored.Status)
+}
+
 func TestIntegration_ColumnResolver_DiscoverTenants(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 

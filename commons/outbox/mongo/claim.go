@@ -71,7 +71,7 @@ func (repo *Repository) claimMatching(
 			break
 		}
 
-		batch, modified, claimToken, err := repo.claimDocuments(ctx, candidates, fromStatus, returnStatus, sortSpec, setForCandidate)
+		batch, modified, claimToken, err := repo.claimDocuments(ctx, candidates, fromStatus, sortSpec, setForCandidate)
 		if err != nil {
 			return nil, err
 		}
@@ -138,7 +138,6 @@ func (repo *Repository) claimDocuments(
 	ctx context.Context,
 	candidates []document,
 	fromStatus string,
-	returnStatus string,
 	sortSpec bson.D,
 	setForCandidate func(document) bson.M,
 ) ([]document, int64, string, error) {
@@ -155,14 +154,14 @@ func (repo *Repository) claimDocuments(
 
 	models := make([]mongodriver.WriteModel, 0, len(candidates))
 
+	// Every write carries the token, including a stuck reclaim's INVALID one,
+	// so the read-back returns exactly the documents this call transitioned.
 	claimedIDs := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		set := setForCandidate(candidate)
-		if set[mongoFieldStatus] == returnStatus {
-			set[mongoFieldClaimToken] = claimToken
+		set[mongoFieldClaimToken] = claimToken
 
-			claimedIDs = append(claimedIDs, candidate.ID)
-		}
+		claimedIDs = append(claimedIDs, candidate.ID)
 
 		models = append(models, mongodriver.NewUpdateOneModel().
 			SetFilter(mergeFilters(bson.M{"id": candidate.ID}, repo.tenantMatchFilter(candidate.TenantID), bson.M{
@@ -182,15 +181,10 @@ func (repo *Repository) claimDocuments(
 		return []document{}, 0, claimToken, nil
 	}
 
-	if len(claimedIDs) == 0 {
-		return []document{}, result.ModifiedCount, claimToken, nil
-	}
-
 	claimedFilter := mergeFilters(
 		bson.M{mongoFieldClaimToken: claimToken, "id": bson.M{mongoOperatorIn: claimedIDs}},
 		repo.tenantMatchFilter(candidates[0].TenantID),
 	)
-	claimedFilter[mongoFieldStatus] = returnStatus
 
 	cursor, err := collection.Find(ctx, claimedFilter, mongooptions.Find().SetSort(sortSpec))
 	if err != nil {

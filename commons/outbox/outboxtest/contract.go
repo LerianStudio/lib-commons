@@ -115,6 +115,7 @@ func Run(t *testing.T, factory Factory, opts ...RunOption) {
 	run("RetryScansSkipRowsAtMaxAttempts", func(t *testing.T) { testRetryScansSkipRowsAtMaxAttempts(t, factory) })
 	run("ResetForRetryMovesFailedToProcessing", func(t *testing.T) { testResetForRetryMovesFailedToProcessing(t, factory) })
 	run("ResetStuckProcessingReprocessesAndInvalidates", func(t *testing.T) { testResetStuckProcessingReprocessesAndInvalidates(t, factory) })
+	run("ReclaimStuckProcessingReturnsInvalidated", func(t *testing.T) { testReclaimStuckProcessingReturnsInvalidated(t, factory) })
 	run("TenantIsolationAndDiscovery", func(t *testing.T) { testTenantIsolationAndDiscovery(t, factory) })
 	run("WrongTenantMutationsRejected", func(t *testing.T) { testWrongTenantMutationsRejected(t, factory) })
 	run("DispatcherLifecyclePersistsPublishedState", func(t *testing.T) { testDispatcherLifecyclePersistsPublishedState(t, factory) })
@@ -490,11 +491,11 @@ func testResetForRetryMovesFailedToProcessing(t *testing.T, factory Factory) {
 	require.Equal(t, 1, stored.Attempts)
 }
 
-func testResetStuckProcessingReprocessesAndInvalidates(t *testing.T, factory Factory) {
+// seedStuckPair leaves two events in PROCESSING, one at attempts=1 and one at
+// attempts=2, so a reclaim with maxAttempts=3 retries the first and invalidates the second.
+func seedStuckPair(t *testing.T, repo outbox.OutboxRepository, ctx context.Context) (*outbox.OutboxEvent, *outbox.OutboxEvent) {
 	t.Helper()
 
-	repo := factory(t)
-	ctx := outbox.ContextWithTenantID(contractContext(t), "tenant-a")
 	retryEvent := createEvent(t, repo, ctx, "payment.stuck.retry")
 	exhaustedEvent := createEvent(t, repo, ctx, "payment.stuck.exhausted")
 
@@ -512,6 +513,16 @@ func testResetStuckProcessingReprocessesAndInvalidates(t *testing.T, factory Fac
 	require.NoError(t, repo.MarkFailed(ctx, exhaustedEvent.ID, "second failure", 10))
 	_, err = repo.ResetForRetry(ctx, 10, time.Now().UTC(), 10)
 	require.NoError(t, err)
+
+	return retryEvent, exhaustedEvent
+}
+
+func testResetStuckProcessingReprocessesAndInvalidates(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+	ctx := outbox.ContextWithTenantID(contractContext(t), "tenant-a")
+	retryEvent, exhaustedEvent := seedStuckPair(t, repo, ctx)
 
 	reset, err := repo.ResetStuckProcessing(ctx, 10, time.Now().UTC(), 3)
 	require.NoError(t, err)
@@ -536,6 +547,32 @@ func testResetStuckProcessingReprocessesAndInvalidates(t *testing.T, factory Fac
 	// already earned from its earlier attempts.
 	require.Contains(t, exhaustedStored.LastError, outbox.StuckInProcessingCause)
 	require.NotContains(t, exhaustedStored.LastError, "max dispatch attempts exceeded")
+}
+
+// The dispatcher fires OnInvalid for what ReclaimStuckProcessing returns as
+// invalid, so the row it marked INVALID must come back, as stored.
+func testReclaimStuckProcessingReturnsInvalidated(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+
+	reclaimer, ok := repo.(outbox.StuckReclaimer)
+	if !ok {
+		t.Skip("repository does not implement outbox.StuckReclaimer")
+	}
+
+	ctx := outbox.ContextWithTenantID(contractContext(t), "tenant-a")
+	retryEvent, exhaustedEvent := seedStuckPair(t, repo, ctx)
+
+	retry, invalid, err := reclaimer.ReclaimStuckProcessing(ctx, 10, time.Now().UTC(), 3)
+	require.NoError(t, err)
+	require.Len(t, retry, 1)
+	require.Equal(t, retryEvent.ID, retry[0].ID)
+	require.Len(t, invalid, 1)
+	require.Equal(t, exhaustedEvent.ID, invalid[0].ID)
+	require.Equal(t, outbox.OutboxStatusInvalid, invalid[0].Status)
+	require.Equal(t, 3, invalid[0].Attempts)
+	require.Contains(t, invalid[0].LastError, outbox.StuckInProcessingCause)
 }
 
 // testMarkFailedAccumulatesDistinctCauses is the guard against the two

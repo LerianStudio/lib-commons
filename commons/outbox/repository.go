@@ -67,6 +67,15 @@ type InvalidPurger interface {
 	ListTenantsWithInvalidBefore(ctx context.Context, before time.Time, keepEventTypes []string) ([]string, error)
 }
 
+// StuckReclaimer is an additive capability that lets the dispatcher fire
+// OnInvalid for the stuck events a reclaim marks INVALID. It is separate from
+// OutboxRepository so ResetStuckProcessing keeps returning only retry events.
+type StuckReclaimer interface {
+	// ReclaimStuckProcessing is ResetStuckProcessing that also returns the
+	// events it marked INVALID for exhausting maxAttempts, after they commit.
+	ReclaimStuckProcessing(ctx context.Context, limit int, processingBefore time.Time, maxAttempts int) (retry, invalid []*OutboxEvent, err error)
+}
+
 // IdempotentWriter is a narrow, opt-in contract for content-addressed idempotent
 // outbox writes. It is deliberately kept separate from OutboxRepository so that
 // only callers that need replay-safe upserts depend on it, and existing
