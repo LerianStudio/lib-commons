@@ -841,11 +841,12 @@ func claimAllPending(t *testing.T, repo outbox.OutboxRepository, ctx context.Con
 // testDeletePublishedBeforePurgesOnlyAgedPublished pins the retention purge
 // for repositories that implement outbox.PublishedPurger; others skip it.
 //
-// Only PUBLISHED rows older than the cutoff may go. An INVALID row is the only
-// proof that a money fact was destroyed after the retry budget, a FAILED row is
-// still owed a retry, and PENDING/PROCESSING rows have not been delivered, so
-// none of them may be deleted at any age. The purge is bounded (limit, oldest
-// first) so a large backlog drains in batches instead of one long transaction.
+// Only rows PUBLISHED before the cutoff may go: a row created long ago but
+// published after it stays. An INVALID row is the only proof that a money fact
+// was destroyed after the retry budget, a FAILED row is still owed a retry, and
+// PENDING/PROCESSING rows have not been delivered, so none of them may be
+// deleted at any age. The purge is bounded (limit, oldest first) so a large
+// backlog drains in batches instead of one long transaction.
 func testDeletePublishedBeforePurgesOnlyAgedPublished(t *testing.T, factory Factory, notFound error) {
 	t.Helper()
 
@@ -860,9 +861,9 @@ func testDeletePublishedBeforePurgesOnlyAgedPublished(t *testing.T, factory Fact
 	ctx := outbox.ContextWithTenantID(baseCtx, "tenant-a")
 	otherTenant := outbox.ContextWithTenantID(baseCtx, "tenant-b")
 
-	// Millisecond precision keeps Mongo's stored timestamps exact.
+	// Every row is created two hours ago; only the order of publication, which
+	// stamps updated_at with the current time, separates aged from recent.
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	cutoff := now.Add(-time.Hour)
 	aged := func(offset time.Duration) time.Time { return now.Add(-2 * time.Hour).Add(offset) }
 
 	publishedOldest := createEventAt(t, repo, ctx, "payment.purge", aged(0))
@@ -872,28 +873,30 @@ func testDeletePublishedBeforePurgesOnlyAgedPublished(t *testing.T, factory Fact
 	invalidOld := createEventAt(t, repo, ctx, "payment.purge", aged(4*time.Second))
 	failedOld := createEventAt(t, repo, ctx, "payment.purge", aged(5*time.Second))
 	processingOld := createEventAt(t, repo, ctx, "payment.purge", aged(6*time.Second))
-	publishedRecent := createEventAt(t, repo, ctx, "payment.purge", now.Add(-30*time.Minute))
-	// created_at equal to the cutoff is not older than it and survives.
-	publishedAtCutoff := createEventAt(t, repo, ctx, "payment.purge", cutoff)
+	publishedRecent := createEventAt(t, repo, ctx, "payment.purge", aged(7*time.Second))
+	publishedAtCutoff := createEventAt(t, repo, ctx, "payment.purge", aged(8*time.Second))
 
 	claimed := mustListPending(t, repo, ctx, 20)
 	require.Len(t, claimed, 9)
 
-	for _, event := range []*outbox.OutboxEvent{
-		publishedOldest, publishedOlder, publishedOld, publishedKeptType, publishedRecent, publishedAtCutoff,
-	} {
-		require.NoError(t, repo.MarkPublished(ctx, event.ID, now))
-	}
-
-	require.NoError(t, repo.MarkInvalid(ctx, invalidOld.ID, "destroyed after retry budget"))
-	require.NoError(t, repo.MarkFailed(ctx, failedOld.ID, "broker unavailable", 100))
-
-	pendingOld := createEventAt(t, repo, ctx, "payment.purge", aged(7*time.Second))
-
 	otherPublished := createEventAt(t, repo, otherTenant, "payment.purge", aged(0))
 	otherClaimed := mustListPending(t, repo, otherTenant, 10)
 	require.Len(t, otherClaimed, 1)
-	require.NoError(t, repo.MarkPublished(otherTenant, otherPublished.ID, now))
+
+	for _, event := range []*outbox.OutboxEvent{publishedOldest, publishedOlder, publishedOld, publishedKeptType} {
+		publishNextMillisecond(t, repo, ctx, event.ID)
+	}
+
+	publishNextMillisecond(t, repo, otherTenant, otherPublished.ID)
+	require.NoError(t, repo.MarkInvalid(ctx, invalidOld.ID, "destroyed after retry budget"))
+	require.NoError(t, repo.MarkFailed(ctx, failedOld.ID, "broker unavailable", 100))
+
+	// A row published exactly at the cutoff is not older than it and survives.
+	publishNextMillisecond(t, repo, ctx, publishedAtCutoff.ID)
+	cutoff := mustGetEvent(t, repo, ctx, publishedAtCutoff.ID).UpdatedAt
+	publishNextMillisecond(t, repo, ctx, publishedRecent.ID)
+
+	pendingOld := createEventAt(t, repo, ctx, "payment.purge", aged(9*time.Second))
 
 	keep := []string{"payment.keep"}
 
@@ -953,13 +956,37 @@ func createEventAt(
 	return created
 }
 
-func requireEventStatus(t *testing.T, repo outbox.OutboxRepository, ctx context.Context, id uuid.UUID, status string) {
+// nextMillisecond waits past the current millisecond, the coarsest precision a
+// store keeps, and returns the time, so the stamps on either side of it order.
+func nextMillisecond() time.Time {
+	time.Sleep(2 * time.Millisecond)
+
+	return time.Now().UTC()
+}
+
+// publishNextMillisecond publishes a claimed event strictly after every earlier
+// stamp: MarkPublished stamps updated_at with the current time.
+func publishNextMillisecond(t *testing.T, repo outbox.OutboxRepository, ctx context.Context, id uuid.UUID) {
+	t.Helper()
+
+	nextMillisecond()
+	require.NoError(t, repo.MarkPublished(ctx, id, time.Now().UTC()))
+}
+
+func mustGetEvent(t *testing.T, repo outbox.OutboxRepository, ctx context.Context, id uuid.UUID) *outbox.OutboxEvent {
 	t.Helper()
 
 	stored, err := repo.GetByID(ctx, id)
 	require.NoError(t, err)
 	require.NotNil(t, stored)
-	require.Equal(t, status, stored.Status)
+
+	return stored
+}
+
+func requireEventStatus(t *testing.T, repo outbox.OutboxRepository, ctx context.Context, id uuid.UUID, status string) {
+	t.Helper()
+
+	require.Equal(t, status, mustGetEvent(t, repo, ctx, id).Status)
 }
 
 func requireEventGone(
@@ -1020,9 +1047,9 @@ func testDeletePublishedBeforeSparesSameIDInOtherTenant(t *testing.T, factory Fa
 
 	claimed := mustListPending(t, repo, tenantA, 10)
 	require.Len(t, claimed, 1)
-	require.NoError(t, repo.MarkPublished(tenantA, eventA.ID, now))
+	publishNextMillisecond(t, repo, tenantA, eventA.ID)
 
-	deleted, err := purger.DeletePublishedBefore(tenantA, now.Add(-time.Hour), nil, 100)
+	deleted, err := purger.DeletePublishedBefore(tenantA, nextMillisecond(), nil, 100)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), deleted)
 
@@ -1044,21 +1071,23 @@ func testListTenantsWithPublishedBefore(t *testing.T, factory Factory) {
 	}
 
 	baseCtx := contractContext(t)
-	now := time.Now().UTC().Truncate(time.Millisecond)
-	aged := now.Add(-2 * time.Hour)
-	publish := func(tenantID, eventType string, createdAt time.Time) {
+	aged := time.Now().UTC().Truncate(time.Millisecond).Add(-2 * time.Hour)
+	publish := func(tenantID, eventType string) {
 		ctx := outbox.ContextWithTenantID(baseCtx, tenantID)
-		event := createEventAt(t, repo, ctx, eventType, createdAt)
+		event := createEventAt(t, repo, ctx, eventType, aged)
 		claimSinglePending(t, repo, ctx, event.ID)
-		require.NoError(t, repo.MarkPublished(ctx, event.ID, now))
+		publishNextMillisecond(t, repo, ctx, event.ID)
 	}
 
-	publish("tenant-aged", "payment.purge", aged)
-	publish("tenant-kept", "payment.keep", aged)
-	publish("tenant-recent", "payment.purge", now.Add(-30*time.Minute))
+	publish("tenant-aged", "payment.purge")
+	publish("tenant-kept", "payment.keep")
+
+	cutoff := nextMillisecond()
+
+	publish("tenant-recent", "payment.purge")
 	createEventAt(t, repo, outbox.ContextWithTenantID(baseCtx, "tenant-recent"), "payment.purge", aged)
 
-	tenants, err := lister.ListTenantsWithPublishedBefore(baseCtx, now.Add(-time.Hour), []string{"payment.keep"})
+	tenants, err := lister.ListTenantsWithPublishedBefore(baseCtx, cutoff, []string{"payment.keep"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"tenant-aged"}, tenants)
 }
