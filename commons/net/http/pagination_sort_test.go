@@ -232,6 +232,14 @@ func TestCalculateSortCursorPagination(t *testing.T) {
 			expectNext:    true,
 			expectPrev:    false,
 		},
+		{
+			name:          "backward navigation reaching start through a cursor",
+			isFirstPage:   false,
+			hasPagination: false,
+			pointsNext:    false,
+			expectNext:    true,
+			expectPrev:    false,
+		},
 	}
 
 	for _, tc := range tests {

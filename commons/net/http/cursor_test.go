@@ -5,6 +5,7 @@ package http
 import (
 	"encoding/base64"
 	"encoding/json"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -500,33 +501,6 @@ func TestCalculateCursor_SinglePage(t *testing.T) {
 	assert.Empty(t, pagination.Prev)
 }
 
-func TestCalculateCursor_PrevDirection_NotFirstPage_WithPagination(t *testing.T) {
-	t.Parallel()
-
-	firstID := uuid.NewString()
-	lastID := uuid.NewString()
-
-	pagination, err := CalculateCursor(false, true, CursorDirectionPrev, firstID, lastID)
-	require.NoError(t, err)
-	// For prev direction: (cursorDirection == CursorDirectionPrev && (hasPagination || isFirstPage))
-	assert.NotEmpty(t, pagination.Next)
-	assert.NotEmpty(t, pagination.Prev)
-}
-
-func TestCalculateCursor_PrevDirection_FirstPage_NoPagination(t *testing.T) {
-	t.Parallel()
-
-	firstID := uuid.NewString()
-	lastID := uuid.NewString()
-
-	// isFirstPage=true, hasPagination=false, direction=prev
-	// hasNext = (prev && (false || true)) = true
-	pagination, err := CalculateCursor(true, false, CursorDirectionPrev, firstID, lastID)
-	require.NoError(t, err)
-	assert.NotEmpty(t, pagination.Next)
-	assert.Empty(t, pagination.Prev, "first page should not have prev")
-}
-
 func TestCalculateCursor_PrevReachingStart_NextStartsAfterLastRow(t *testing.T) {
 	t.Parallel()
 
@@ -540,6 +514,127 @@ func TestCalculateCursor_PrevReachingStart_NextStartsAfterLastRow(t *testing.T) 
 	next, err := DecodeCursor(pagination.Next)
 	require.NoError(t, err)
 	assert.Equal(t, Cursor{ID: "b", Direction: CursorDirectionNext}, next)
+}
+
+// listPage serves one keyset request over ids (stored ascending) the way Midaz does: limit+1 rows
+// past the cursor in the effective order, isFirstPage = no cursor supplied.
+func listPage(t *testing.T, ids []string, sortOrder string, limit int, cursor string) ([]string, CursorPagination) {
+	t.Helper()
+
+	cur := Cursor{Direction: CursorDirectionNext}
+
+	if cursor != "" {
+		var err error
+
+		cur, err = DecodeCursor(cursor)
+		require.NoError(t, err)
+	}
+
+	operator, order, err := CursorDirectionRules(sortOrder, cur.Direction)
+	require.NoError(t, err)
+
+	var fetched []string
+
+	for _, id := range ids {
+		if cursor == "" || (operator == ">" && id > cur.ID) || (operator == "<" && id < cur.ID) {
+			fetched = append(fetched, id)
+		}
+	}
+
+	if order == cn.SortDirDESC {
+		slices.Reverse(fetched)
+	}
+
+	fetched = fetched[:min(len(fetched), limit+1)]
+	hasPagination := len(fetched) > limit
+	isFirstPage := cursor == ""
+	page := PaginateRecords(isFirstPage, hasPagination, cur.Direction, fetched, limit)
+
+	if len(page) == 0 {
+		return page, CursorPagination{}
+	}
+
+	pagination, err := CalculateCursor(isFirstPage, hasPagination, cur.Direction, page[0], page[len(page)-1])
+	require.NoError(t, err)
+
+	return page, pagination
+}
+
+func TestCalculateCursor_ClientWalk(t *testing.T) {
+	t.Parallel()
+
+	type step struct {
+		follow     string // cursor of the previous response to follow: "", next or prev
+		page       []string
+		next, prev bool
+	}
+
+	fiveIDs := []string{"a", "b", "c", "d", "e"}
+
+	tests := []struct {
+		name  string
+		ids   []string
+		sort  string
+		steps []step
+	}{
+		{
+			name: "ascending: forward to the last page, back to the first, forward again",
+			ids:  fiveIDs,
+			sort: cn.SortDirASC,
+			steps: []step{
+				{"", []string{"a", "b"}, true, false},
+				{CursorDirectionNext, []string{"c", "d"}, true, true},
+				{CursorDirectionNext, []string{"e"}, false, true},
+				{CursorDirectionPrev, []string{"c", "d"}, true, true},
+				{CursorDirectionPrev, []string{"a", "b"}, true, false},
+				{CursorDirectionNext, []string{"c", "d"}, true, true},
+			},
+		},
+		{
+			name: "descending: forward to the last page, back to the first, forward again",
+			ids:  fiveIDs,
+			sort: cn.SortDirDESC,
+			steps: []step{
+				{"", []string{"e", "d"}, true, false},
+				{CursorDirectionNext, []string{"c", "b"}, true, true},
+				{CursorDirectionNext, []string{"a"}, false, true},
+				{CursorDirectionPrev, []string{"c", "b"}, true, true},
+				{CursorDirectionPrev, []string{"e", "d"}, true, false},
+				{CursorDirectionNext, []string{"c", "b"}, true, true},
+			},
+		},
+		{
+			name:  "single page",
+			ids:   []string{"a", "b"},
+			sort:  cn.SortDirASC,
+			steps: []step{{"", []string{"a", "b"}, false, false}},
+		},
+		{
+			name:  "empty list",
+			sort:  cn.SortDirDESC,
+			steps: []step{{"", []string{}, false, false}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var got CursorPagination
+
+			for i, s := range tc.steps {
+				cursor := map[string]string{CursorDirectionNext: got.Next, CursorDirectionPrev: got.Prev}[s.follow]
+				require.Equal(t, s.follow == "", cursor == "", "step %d: cursor to follow", i)
+
+				var page []string
+
+				page, got = listPage(t, tc.ids, tc.sort, 2, cursor)
+				assert.Equal(t, s.page, page, "step %d: page", i)
+				assert.Equal(t, s.next, got.Next != "", "step %d: next cursor present", i)
+				assert.Equal(t, s.prev, got.Prev != "", "step %d: prev cursor present", i)
+			}
+		})
+	}
 }
 
 func TestCalculateCursor_InvalidDirection(t *testing.T) {
