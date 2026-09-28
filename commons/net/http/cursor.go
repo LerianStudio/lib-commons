@@ -136,7 +136,8 @@ func PaginateRecords[T any](
 	return paginated
 }
 
-// CalculateCursor builds next/prev cursor tokens for a paged record set.
+// CalculateCursor builds next/prev cursor tokens for a paged record set. A prev page always has
+// rows after it and has rows before it only when hasPagination; isFirstPage always drops prev.
 func CalculateCursor(
 	isFirstPage, hasPagination bool,
 	cursorDirection string,
@@ -148,10 +149,9 @@ func CalculateCursor(
 		return CursorPagination{}, ErrInvalidCursorDirection
 	}
 
-	hasNext := (cursorDirection == CursorDirectionNext && hasPagination) ||
-		(cursorDirection == CursorDirectionPrev && (hasPagination || isFirstPage))
+	isPrev := cursorDirection == CursorDirectionPrev
 
-	if hasNext {
+	if isPrev || hasPagination {
 		next, err := EncodeCursor(Cursor{ID: lastItemID, Direction: CursorDirectionNext})
 		if err != nil {
 			return CursorPagination{}, err
@@ -160,7 +160,7 @@ func CalculateCursor(
 		pagination.Next = next
 	}
 
-	if !isFirstPage {
+	if !isFirstPage && (!isPrev || hasPagination) {
 		prev, err := EncodeCursor(Cursor{ID: firstItemID, Direction: CursorDirectionPrev})
 		if err != nil {
 			return CursorPagination{}, err

@@ -3,6 +3,7 @@
 package http
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -22,6 +23,9 @@ func TestPositiveDecimalValidator(t *testing.T) {
 		{name: "zero is invalid", amount: decimal.Zero, wantErr: true},
 		{name: "negative is invalid", amount: decimal.NewFromFloat(-50.00), wantErr: true},
 		{name: "small positive is valid", amount: decimal.NewFromFloat(0.01), wantErr: false},
+		{name: "17 integer digits at scale 8 is valid", amount: decimal.RequireFromString("12345678901234567.12345678"), wantErr: false},
+		{name: "positive with exponent far below bound is invalid", amount: decimal.New(1, -2000000000), wantErr: true},
+		{name: "positive with exponent far above bound is invalid", amount: decimal.New(1, 2000000000), wantErr: true},
 	}
 
 	for _, tc := range tests {
@@ -55,6 +59,11 @@ func TestPositiveAmountValidator(t *testing.T) {
 		{name: "empty string is valid (let required handle it)", amount: "", wantErr: false},
 		{name: "invalid decimal string", amount: "not-a-number", wantErr: true},
 		{name: "small positive is valid", amount: "0.01", wantErr: false},
+		{name: "17 integer digits at scale 8 is valid", amount: "12345678901234567.12345678", wantErr: false},
+		{name: "small positive exponent is valid", amount: "1e3", wantErr: false},
+		{name: "exponent far below bound is invalid", amount: "1e-2000000000", wantErr: true},
+		{name: "exponent far above bound is invalid", amount: "1e2000000000", wantErr: true},
+		{name: "text over length bound is invalid", amount: strings.Repeat("1", 2048), wantErr: true},
 	}
 
 	for _, tc := range tests {
@@ -86,6 +95,9 @@ func TestNonNegativeAmountValidator(t *testing.T) {
 		{name: "negative is invalid", amount: "-50.00", wantErr: true},
 		{name: "empty string is valid (let required handle it)", amount: "", wantErr: false},
 		{name: "invalid decimal string", amount: "not-a-number", wantErr: true},
+		{name: "zero with exponent far below bound is invalid", amount: "0e-2000000000", wantErr: true},
+		{name: "exponent far above bound is invalid", amount: "1e2000000000", wantErr: true},
+		{name: "text over length bound is invalid", amount: strings.Repeat("1", 2048), wantErr: true},
 	}
 
 	for _, tc := range tests {

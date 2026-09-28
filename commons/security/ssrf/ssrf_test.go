@@ -21,7 +21,7 @@ import (
 // export or carry a constant that is only meaningful for test assertions.
 // Update this value when adding or removing CIDR ranges in the production
 // blockedPrefixes variable (ssrf.go).
-const expectedPrefixCount = 10
+const expectedPrefixCount = 12
 
 func TestBlockedPrefixes_ReturnsExpectedCount(t *testing.T) {
 	t.Parallel()
@@ -57,6 +57,8 @@ func TestBlockedPrefixes_ContainsExpectedRanges(t *testing.T) {
 		"240.0.0.0/4",
 		"2001:db8::/32",
 		"100::/64",
+		"2001::/32",
+		"64:ff9b:1::/48",
 	}
 
 	prefixes := BlockedPrefixes()
@@ -148,6 +150,20 @@ func TestIsBlockedAddr(t *testing.T) {
 		{name: "IPv4-mapped private ::ffff:10.0.0.1", addr: "::ffff:10.0.0.1", blocked: true},
 		{name: "IPv4-mapped CGNAT ::ffff:100.64.0.1", addr: "::ffff:100.64.0.1", blocked: true},
 		{name: "IPv4-mapped TEST-NET-2 ::ffff:198.51.100.10", addr: "::ffff:198.51.100.10", blocked: true},
+
+		// --- IPv6 forms that reach an embedded IPv4 (judge the IPv4) ---
+		{name: "NAT64 metadata 64:ff9b::a9fe:a9fe", addr: "64:ff9b::a9fe:a9fe", blocked: true},
+		{name: "NAT64 private 64:ff9b::a00:1", addr: "64:ff9b::a00:1", blocked: true},
+		{name: "NAT64 local-use private 64:ff9b:1::a00:1", addr: "64:ff9b:1::a00:1", blocked: true},
+		{name: "NAT64 local-use /64 layout private", addr: "64:ff9b:1:0:a:0:100:0", blocked: true},
+		{name: "NAT64 local-use outside the first /96", addr: "64:ff9b:1:fffe::a00:1", blocked: true},
+		{name: "NAT64 outside the well-known /96", addr: "64:ff9b::1:a00:1", blocked: false},
+		{name: "NAT64 zoned metadata 64:ff9b::a9fe:a9fe%eth0", addr: "64:ff9b::a9fe:a9fe%eth0", blocked: true},
+		{name: "NAT64 public 64:ff9b::808:808", addr: "64:ff9b::808:808", blocked: false},
+		{name: "6to4 private 2002:a00:1::1", addr: "2002:a00:1::1", blocked: true},
+		{name: "6to4 private 192.168.1.1", addr: "2002:c0a8:101::1", blocked: true},
+		{name: "6to4 public 2002:808:808::1", addr: "2002:808:808::1", blocked: false},
+		{name: "Teredo 2001:0:4136:e378:8000:63bf:3fff:fdd2", addr: "2001:0:4136:e378:8000:63bf:3fff:fdd2", blocked: true},
 
 		// --- Public IPs — must NOT be blocked ---
 		{name: "Google DNS 8.8.8.8", addr: "8.8.8.8", blocked: false},
@@ -575,6 +591,7 @@ func TestResolveAndValidate_BlockedIP(t *testing.T) {
 		{name: "CGNAT", ip: "100.64.0.1"},
 		{name: "link-local", ip: "169.254.169.254"},
 		{name: "TEST-NET-1", ip: "192.0.2.1"},
+		{name: "NAT64 metadata", ip: "64:ff9b::a9fe:a9fe"},
 	}
 
 	for _, tt := range tests {
