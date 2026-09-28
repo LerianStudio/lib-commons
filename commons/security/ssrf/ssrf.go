@@ -41,17 +41,17 @@ var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("240.0.0.0/4"),     // reserved / future use (RFC 1112)
 
 	// IPv6 special-purpose ranges not covered by stdlib predicates.
-	netip.MustParsePrefix("2001:db8::/32"), // documentation (RFC 3849)
-	netip.MustParsePrefix("100::/64"),      // discard-only (RFC 6666)
-	netip.MustParsePrefix("2001::/32"),     // Teredo, obfuscated IPv4 client (RFC 4380)
+	netip.MustParsePrefix("2001:db8::/32"),  // documentation (RFC 3849)
+	netip.MustParsePrefix("100::/64"),       // discard-only (RFC 6666)
+	netip.MustParsePrefix("2001::/32"),      // Teredo, obfuscated IPv4 client (RFC 4380)
+	netip.MustParsePrefix("64:ff9b:1::/48"), // NAT64 local use, IPv4 position set by the translator (RFC 8215)
 }
 
 // IPv6 prefixes whose addresses carry the IPv4 address they reach. The
 // embedded IPv4 address is judged instead of the IPv6 one.
 var (
-	nat64WellKnown = netip.MustParsePrefix("64:ff9b::/96")   // NAT64, IPv4 in the last 32 bits (RFC 6052)
-	nat64LocalUse  = netip.MustParsePrefix("64:ff9b:1::/48") // NAT64 local use, /96 inside it (RFC 8215)
-	sixToFour      = netip.MustParsePrefix("2002::/16")      // 6to4, IPv4 in bits 16-47 (RFC 3056)
+	nat64WellKnown = netip.MustParsePrefix("64:ff9b::/96") // NAT64, IPv4 in the last 32 bits (RFC 6052)
+	sixToFour      = netip.MustParsePrefix("2002::/16")    // 6to4, IPv4 in bits 16-47 (RFC 3056)
 )
 
 // BlockedPrefixes returns a copy of the canonical CIDR blocklist. The returned
@@ -115,7 +115,7 @@ func embeddedIPv4(addr netip.Addr) (netip.Addr, bool) {
 	b := addr.As16()
 
 	switch {
-	case nat64WellKnown.Contains(addr), nat64LocalUse.Contains(addr):
+	case nat64WellKnown.Contains(addr):
 		return netip.AddrFrom4([4]byte(b[12:16])), true
 	case sixToFour.Contains(addr):
 		return netip.AddrFrom4([4]byte(b[2:6])), true

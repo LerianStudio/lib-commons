@@ -21,7 +21,7 @@ import (
 // export or carry a constant that is only meaningful for test assertions.
 // Update this value when adding or removing CIDR ranges in the production
 // blockedPrefixes variable (ssrf.go).
-const expectedPrefixCount = 11
+const expectedPrefixCount = 12
 
 func TestBlockedPrefixes_ReturnsExpectedCount(t *testing.T) {
 	t.Parallel()
@@ -58,6 +58,7 @@ func TestBlockedPrefixes_ContainsExpectedRanges(t *testing.T) {
 		"2001:db8::/32",
 		"100::/64",
 		"2001::/32",
+		"64:ff9b:1::/48",
 	}
 
 	prefixes := BlockedPrefixes()
@@ -154,9 +155,13 @@ func TestIsBlockedAddr(t *testing.T) {
 		{name: "NAT64 metadata 64:ff9b::a9fe:a9fe", addr: "64:ff9b::a9fe:a9fe", blocked: true},
 		{name: "NAT64 private 64:ff9b::a00:1", addr: "64:ff9b::a00:1", blocked: true},
 		{name: "NAT64 local-use private 64:ff9b:1::a00:1", addr: "64:ff9b:1::a00:1", blocked: true},
+		{name: "NAT64 local-use /64 layout private", addr: "64:ff9b:1:0:a:0:100:0", blocked: true},
+		{name: "NAT64 local-use outside the first /96", addr: "64:ff9b:1:fffe::a00:1", blocked: true},
+		{name: "NAT64 outside the well-known /96", addr: "64:ff9b::1:a00:1", blocked: false},
 		{name: "NAT64 zoned metadata 64:ff9b::a9fe:a9fe%eth0", addr: "64:ff9b::a9fe:a9fe%eth0", blocked: true},
 		{name: "NAT64 public 64:ff9b::808:808", addr: "64:ff9b::808:808", blocked: false},
 		{name: "6to4 private 2002:a00:1::1", addr: "2002:a00:1::1", blocked: true},
+		{name: "6to4 private 192.168.1.1", addr: "2002:c0a8:101::1", blocked: true},
 		{name: "6to4 public 2002:808:808::1", addr: "2002:808:808::1", blocked: false},
 		{name: "Teredo 2001:0:4136:e378:8000:63bf:3fff:fdd2", addr: "2001:0:4136:e378:8000:63bf:3fff:fdd2", blocked: true},
 
