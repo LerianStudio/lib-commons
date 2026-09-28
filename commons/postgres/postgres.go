@@ -92,6 +92,7 @@ var (
 		opts := []dbresolver.OptionFunc{
 			dbresolver.WithPrimaryDBs(primaryDB),
 			dbresolver.WithLoadBalancer(dbresolver.RoundRobinLB),
+			dbresolver.WithQueryTypeChecker(replicaReadChecker{}),
 		}
 
 		// A nil replica means "no replica": leave the replica set empty so
@@ -685,7 +686,9 @@ func (c *Client) newSQLDB(
 	return db, cleanup, nil
 }
 
-// Resolver returns the resolver, connecting lazily if needed.
+// Resolver returns the resolver, connecting lazily if needed. Its QueryContext and QueryRowContext
+// reach the replica only for a SELECT without a row lock; a SELECT whose functions write (nextval,
+// advisory locks, set_config) still does, so run it in a transaction or on Primary().
 // Unlike sync.Once, this uses double-checked locking so that a transient
 // failure on the first call does not permanently break the client --
 // subsequent calls will retry the connection.
