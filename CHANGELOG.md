@@ -1,5 +1,21 @@
 # Lib-commons Changelog
 
+## [7.13.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.13.0)
+
+Features:
+- Add bounded decimal parsing to enhance safety in numerical operations. (@fredcamaral)
+- Implement bounding of decimal input in amount validators to ensure input constraints. (@fredcamaral)
+- Introduce bounding of decimal input at validation entry points to improve transaction safety. (@fredcamaral)
+
+Fixes:
+- Block IPv6 addresses that embed a private IPv4 to enhance security measures. (@fredcamaral)
+- Refuse the entire NAT64 local-use prefix to prevent potential security vulnerabilities. (@fredcamaral)
+- Return a next cursor on the first page reached backwards to correct pagination behavior. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.12.0...v7.13.0)
+
+---
+
 ## [7.12.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.12.0)
 
 Features:
