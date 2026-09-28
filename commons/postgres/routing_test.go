@@ -36,6 +36,8 @@ func TestResolverRoutesOnlyPlainSelectsToReplica(t *testing.T) {
 		{name: "select set_config", query: "SELECT set_config('app.tenant', $1, false)"},
 		{name: "select try advisory xact lock", query: "select PG_TRY_ADVISORY_XACT_LOCK ($1)"},
 		{name: "select advisory unlock shared", query: "SELECT pg_advisory_unlock_shared(7)"},
+		{name: "select advisory unlock all", query: "SELECT pg_advisory_unlock_all()"},
+		{name: "select notify", query: "SELECT pg_notify('outbox', $1)"},
 	}
 
 	for _, tt := range tests {
