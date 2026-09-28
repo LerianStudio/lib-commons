@@ -41,9 +41,18 @@ var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("240.0.0.0/4"),     // reserved / future use (RFC 1112)
 
 	// IPv6 special-purpose ranges not covered by stdlib predicates.
-	netip.MustParsePrefix("2001:db8::/32"), // documentation (RFC 3849)
-	netip.MustParsePrefix("100::/64"),      // discard-only (RFC 6666)
+	netip.MustParsePrefix("2001:db8::/32"),  // documentation (RFC 3849)
+	netip.MustParsePrefix("100::/64"),       // discard-only (RFC 6666)
+	netip.MustParsePrefix("2001::/32"),      // Teredo, obfuscated IPv4 client (RFC 4380)
+	netip.MustParsePrefix("64:ff9b:1::/48"), // NAT64 local use, IPv4 position set by the translator (RFC 8215)
 }
+
+// IPv6 prefixes whose addresses carry the IPv4 address they reach. The
+// embedded IPv4 address is judged instead of the IPv6 one.
+var (
+	nat64WellKnown = netip.MustParsePrefix("64:ff9b::/96") // NAT64, IPv4 in the last 32 bits (RFC 6052)
+	sixToFour      = netip.MustParsePrefix("2002::/16")    // 6to4, IPv4 in bits 16-47 (RFC 3056)
+)
 
 // BlockedPrefixes returns a copy of the canonical CIDR blocklist. The returned
 // slice is safe to modify without affecting the package state.
@@ -59,7 +68,9 @@ func BlockedPrefixes() []netip.Prefix {
 // outbound HTTP requests.
 //
 // Check order:
-//  1. Unmap IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1 becomes 127.0.0.1).
+//  1. Unmap IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1 becomes 127.0.0.1),
+//     drop any zone, and judge the IPv4 address a NAT64 or 6to4 address
+//     embeds (e.g. 64:ff9b::a9fe:a9fe is judged as 169.254.169.254).
 //  2. Standard library predicates: IsLoopback, IsPrivate, IsLinkLocalUnicast,
 //     IsLinkLocalMulticast, IsMulticast, IsUnspecified.
 //  3. Custom blocklist ([BlockedPrefixes]).
@@ -71,8 +82,12 @@ func IsBlockedAddr(addr netip.Addr) bool {
 	}
 
 	// Step 1: unmap IPv4-mapped IPv6 so that ::ffff:10.0.0.1 is treated
-	// identically to 10.0.0.1.
-	addr = addr.Unmap()
+	// identically to 10.0.0.1. A zone never matches a prefix, so drop it.
+	addr = addr.Unmap().WithZone("")
+
+	if v4, ok := embeddedIPv4(addr); ok {
+		return IsBlockedAddr(v4)
+	}
 
 	// Step 2: standard library predicates.
 	if addr.IsLoopback() ||
@@ -93,6 +108,20 @@ func IsBlockedAddr(addr netip.Addr) bool {
 	}
 
 	return false
+}
+
+// embeddedIPv4 returns the IPv4 address a NAT64 or 6to4 address reaches.
+func embeddedIPv4(addr netip.Addr) (netip.Addr, bool) {
+	b := addr.As16()
+
+	switch {
+	case nat64WellKnown.Contains(addr):
+		return netip.AddrFrom4([4]byte(b[12:16])), true
+	case sixToFour.Contains(addr):
+		return netip.AddrFrom4([4]byte(b[2:6])), true
+	default:
+		return netip.Addr{}, false
+	}
 }
 
 // IsBlockedIP reports whether ip falls in a blocked range. This is a
