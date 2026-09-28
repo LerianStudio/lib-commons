@@ -1,5 +1,16 @@
 # Lib-commons Changelog
 
+## [7.13.1](https://github.com/LerianStudio/lib-commons/releases/tag/v7.13.1)
+
+Fixes:
+- Ensure that `pg_notify` and advisory unlock-all operations are executed on the primary database. (@fredcamaral)
+- Maintain select queries that call write functions on the primary database. (@fredcamaral)
+- Route only lock-free select queries to the replica database. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.13.0...v7.13.1)
+
+---
+
 ## [7.13.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.13.0)
 
 Features:
