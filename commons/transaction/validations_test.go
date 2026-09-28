@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/LerianStudio/lib-commons/v7/commons/safe"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1678,4 +1679,109 @@ func TestBalance_JSONRoundTrip(t *testing.T) {
 	assert.Equal(t, original.Version, restored.Version)
 	assert.Equal(t, original.AccountType, restored.AccountType)
 	assert.Equal(t, "value", restored.Metadata["key"])
+}
+
+// ---------------------------------------------------------------------------
+// Decimal bounds
+// ---------------------------------------------------------------------------
+
+// outOfBounds returns value v written with one fractional digit more than the
+// decimal bounds admit: numerically ordinary, outside the bounds by exponent.
+func outOfBounds(v string) decimal.Decimal {
+	return decimal.RequireFromString(v + "." + strings.Repeat("0", safe.MaxDecimalExponent+1))
+}
+
+func TestBuildIntentPlan_RefusesDecimalsOutsideBounds(t *testing.T) {
+	t.Parallel()
+
+	inside := decimal.NewFromInt(100)
+	outsideAmount := outOfBounds("100")
+	outsideShare := outOfBounds("50")
+	half := decimal.NewFromInt(50)
+
+	tests := []struct {
+		name  string
+		field string
+		input TransactionIntentInput
+	}{
+		{
+			name:  "total",
+			field: "total",
+			input: TransactionIntentInput{
+				Asset:        "USD",
+				Total:        outsideAmount,
+				Sources:      []Allocation{{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &inside}},
+				Destinations: []Allocation{{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &inside}},
+			},
+		},
+		{
+			name:  "allocation amount",
+			field: "sources[0].amount",
+			input: TransactionIntentInput{
+				Asset:        "USD",
+				Total:        inside,
+				Sources:      []Allocation{{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &outsideAmount}},
+				Destinations: []Allocation{{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &inside}},
+			},
+		},
+		{
+			name:  "allocation share",
+			field: "destinations[1].share",
+			input: TransactionIntentInput{
+				Asset:   "USD",
+				Total:   inside,
+				Sources: []Allocation{{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &inside}},
+				Destinations: []Allocation{
+					{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &half},
+					{Target: LedgerTarget{AccountID: "e", BalanceID: "f"}, Share: &outsideShare},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := BuildIntentPlan(tc.input, StatusCreated)
+			domainErr := assertDomainError(t, err, ErrorInvalidInput)
+			assert.Equal(t, tc.field, domainErr.Field)
+		})
+	}
+}
+
+func TestValidateBalanceEligibility_RefusesDecimalsOutsideBounds(t *testing.T) {
+	t.Parallel()
+
+	balances := map[string]Balance{
+		"src-bal": {ID: "src-bal", AccountID: "src-acc", Asset: "USD", Available: decimal.NewFromInt(300), AllowSending: true},
+		"dst-bal": {ID: "dst-bal", AccountID: "dst-acc", Asset: "USD", AllowReceiving: true},
+	}
+
+	plan := simplePlan("USD", outOfBounds("100"), StatusCreated)
+	err := ValidateBalanceEligibility(plan, balances)
+	domainErr := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Equal(t, "sources", domainErr.Field)
+}
+
+func TestApplyPosting_RefusesDecimalsOutsideBounds(t *testing.T) {
+	t.Parallel()
+
+	balance := Balance{
+		ID:        "balance-1",
+		AccountID: "account-1",
+		Asset:     "USD",
+		Available: decimal.NewFromInt(100),
+	}
+	posting := Posting{
+		Target:    LedgerTarget{AccountID: "account-1", BalanceID: "balance-1"},
+		Asset:     "USD",
+		Amount:    outOfBounds("10"),
+		Operation: OperationCredit,
+		Status:    StatusCreated,
+	}
+
+	_, err := ApplyPosting(balance, posting)
+	domainErr := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Equal(t, "posting.amount", domainErr.Field)
 }

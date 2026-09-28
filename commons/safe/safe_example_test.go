@@ -3,6 +3,7 @@
 package safe_test
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/safe"
@@ -18,4 +19,18 @@ func ExampleDivide() {
 	// Output:
 	// true
 	// 5
+}
+
+func ExampleParseDecimal() {
+	amount, err := safe.ParseDecimal("12500.50")
+
+	fmt.Println(amount.StringFixed(2), err)
+
+	_, err = safe.ParseDecimal("1e-1001")
+
+	fmt.Println(errors.Is(err, safe.ErrDecimalOutOfBounds))
+
+	// Output:
+	// 12500.50 <nil>
+	// true
 }
