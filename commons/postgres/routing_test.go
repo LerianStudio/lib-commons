@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestResolverRoutesOnlyLockFreeSelectsToReplica drives each statement through
+// TestResolverRoutesOnlyPlainSelectsToReplica drives each statement through
 // the resolver's QueryContext and QueryRowContext over two sqlmock pools; a
 // statement landing on the pool that did not expect it fails the test.
-func TestResolverRoutesOnlyLockFreeSelectsToReplica(t *testing.T) {
+func TestResolverRoutesOnlyPlainSelectsToReplica(t *testing.T) {
 	tests := []struct {
 		name      string
 		query     string
@@ -31,6 +31,11 @@ func TestResolverRoutesOnlyLockFreeSelectsToReplica(t *testing.T) {
 		{name: "select for key share", query: "SELECT id FROM t FOR KEY SHARE"},
 		{name: "read cte", query: "WITH x AS (SELECT 1) SELECT * FROM x"},
 		{name: "write behind a commented select", query: "-- SELECT\nDELETE FROM t WHERE id = 1"},
+		{name: "select nextval", query: "SELECT nextval('position_request_control_seq')"},
+		{name: "select setval", query: "SELECT setval('s', 42)"},
+		{name: "select set_config", query: "SELECT set_config('app.tenant', $1, false)"},
+		{name: "select try advisory xact lock", query: "select PG_TRY_ADVISORY_XACT_LOCK ($1)"},
+		{name: "select advisory unlock shared", query: "SELECT pg_advisory_unlock_shared(7)"},
 	}
 
 	for _, tt := range tests {

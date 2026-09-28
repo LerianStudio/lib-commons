@@ -687,8 +687,8 @@ func (c *Client) newSQLDB(
 }
 
 // Resolver returns the resolver, connecting lazily if needed. Its QueryContext and QueryRowContext
-// reach the replica only for a SELECT without a row lock; a SELECT whose functions write (nextval,
-// advisory locks, set_config) still does, so run it in a transaction or on Primary().
+// reach the replica only for a SELECT that takes no row lock and calls no sequence, set_config or
+// advisory-lock function; every other statement runs on the primary.
 // Unlike sync.Once, this uses double-checked locking so that a transient
 // failure on the first call does not permanently break the client --
 // subsequent calls will retry the connection.
