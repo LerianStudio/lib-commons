@@ -20,8 +20,11 @@ import (
 // in a *url.Error; match them with [errors.Is].
 var (
 	// ErrRedirectRefused is returned for a 3xx the policy does not follow: every
-	// redirect under [RedirectRefuse], and the hop past the limit under
-	// [RedirectRevalidate].
+	// 3xx under [RedirectRefuse]; under [RedirectRevalidate], the hop past the
+	// limit and any 3xx the client cannot follow (no Location, a status other
+	// than 301, 302, 303, 307 or 308, or a 307/308 whose request body cannot be
+	// replayed). A 304 answering a conditional request is not a redirect and
+	// passes.
 	ErrRedirectRefused = errors.New("outbound: redirect refused")
 
 	// ErrInsecureScheme is returned, before any resolution or dial, for a
@@ -57,10 +60,12 @@ const (
 type RedirectPolicy uint8
 
 const (
-	// RedirectRefuse fails every redirect with [ErrRedirectRefused]. Default.
+	// RedirectRefuse fails every 3xx response with [ErrRedirectRefused], except
+	// a 304 answering a conditional request. Default.
 	RedirectRefuse RedirectPolicy = iota
 	// RedirectRevalidate follows up to a hop limit. Every hop passes the same
-	// scheme, hostname and dial-time IP checks as the first request.
+	// scheme, hostname and dial-time IP checks as the first request. A 3xx the
+	// client cannot follow is still an [ErrRedirectRefused] error.
 	RedirectRevalidate
 )
 
@@ -172,11 +177,15 @@ func WithLogger(logger obs.Logger) Option {
 //     checked at connect time and DNS rebinding cannot reach a blocked range;
 //   - ignores HTTP_PROXY/HTTPS_PROXY (Proxy is nil), because behind a proxy
 //     the dial check would judge the proxy's IP instead of the target's;
-//   - verifies the certificate against the URL hostname, sent as SNI.
+//   - verifies the certificate against the URL hostname, sent as SNI;
+//   - answers a 3xx the redirect policy does not follow with
+//     [ErrRedirectRefused] instead of a response, so no client built around
+//     it can mistake an unfollowed redirect for success.
 //
 // The concrete type is deliberately hidden, so the safety fields cannot be
-// reassigned after construction. The transport follows no redirect itself;
-// the redirect policy lives in the client from [NewClient].
+// reassigned after construction. The transport follows no redirect itself:
+// under [RedirectRevalidate] the client follows, and the hop limit lives in
+// the client from [NewClient].
 func NewTransport(opts ...Option) (http.RoundTripper, error) {
 	cfg, err := buildConfig(opts)
 	if err != nil {
@@ -242,6 +251,7 @@ func buildConfig(opts []Option) (*config, error) {
 type guardedTransport struct {
 	base      *http.Transport
 	allowHTTP bool
+	redirects RedirectPolicy
 	ssrfOpts  []ssrf.Option
 }
 
@@ -282,6 +292,7 @@ func newGuardedTransport(cfg *config) (*guardedTransport, error) {
 			ExpectContinueTimeout: defaultExpectContinueTimeout,
 		},
 		allowHTTP: plaintextAllowed(ctx, cfg),
+		redirects: cfg.redirects,
 		ssrfOpts:  ssrfOpts,
 	}, nil
 }
@@ -333,8 +344,9 @@ func plaintextAllowed(ctx context.Context, cfg *config) bool {
 	return true
 }
 
-// RoundTrip admits req, then sends it. A refused request's body is closed, as
-// the RoundTripper contract requires.
+// RoundTrip admits req, sends it, and refuses a 3xx the redirect policy does
+// not follow. A refused request's body is closed, as the RoundTripper
+// contract requires, and so is a refused response's.
 func (g *guardedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil || req.URL == nil {
 		closeBody(req)
@@ -348,7 +360,46 @@ func (g *guardedTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, err
 	}
 
-	return g.base.RoundTrip(req)
+	resp, err := g.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if !isRedirectStatus(resp.StatusCode) || g.passes(req, resp) {
+		return resp, nil
+	}
+
+	_ = resp.Body.Close()
+
+	return nil, fmt.Errorf("%w: status %d from host %s", ErrRedirectRefused, resp.StatusCode, req.URL.Host)
+}
+
+func isRedirectStatus(code int) bool {
+	return code >= http.StatusMultipleChoices && code < http.StatusBadRequest
+}
+
+// passes reports whether a 3xx response may reach the client: a 304 answering
+// a conditional request, or, under RedirectRevalidate, a redirect the stdlib
+// client will follow (it then runs the hop through this transport again).
+// The follow rule mirrors net/http's: 301, 302 and 303 with a Location, and
+// 307 and 308 with a Location and a body that is absent or replayable.
+func (g *guardedTransport) passes(req *http.Request, resp *http.Response) bool {
+	if resp.StatusCode == http.StatusNotModified {
+		return req.Header.Get("If-None-Match") != "" || req.Header.Get("If-Modified-Since") != ""
+	}
+
+	if g.redirects != RedirectRevalidate || resp.Header.Get("Location") == "" {
+		return false
+	}
+
+	switch resp.StatusCode {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther:
+		return true
+	case http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return req.Body == nil || req.Body == http.NoBody || req.GetBody != nil
+	default:
+		return false
+	}
 }
 
 func (g *guardedTransport) admit(req *http.Request) error {

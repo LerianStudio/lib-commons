@@ -16,9 +16,13 @@
 //     check runs at dial time on the address actually connected to
 //     ([ssrf.DialContext]), so a DNS answer that changes between validation
 //     and connect (DNS rebinding) cannot reach a blocked range.
-//   - Every redirect by default ([ErrRedirectRefused]); a 3xx is an error, not
-//     a response that could pass for success. [RedirectRevalidate] follows a
-//     bounded number of hops, each through the same checks.
+//   - Every 3xx by default ([ErrRedirectRefused]); a 3xx is an error, not a
+//     response that could pass for success. The one exception is a 304
+//     answering a conditional request (If-None-Match or If-Modified-Since),
+//     which is not a redirect. [RedirectRevalidate] follows a bounded number of
+//     hops, each through the same checks; a 3xx the client cannot follow (no
+//     Location, 300, or a 307/308 whose request body cannot be replayed) is
+//     still [ErrRedirectRefused].
 //   - A TLS config with InsecureSkipVerify unless ALLOW_INSECURE_TLS is truthy
 //     ([ErrInsecureTLSConfig]); TLS below 1.2.
 //
@@ -52,6 +56,8 @@
 //	}
 //
 // [NewTransport] returns the same guarded transport for composition, for
-// example under commons/net/http/pacing. It does not follow redirects itself;
-// a client built around it must set its own CheckRedirect.
+// example under commons/net/http/pacing. It refuses the 3xx responses its
+// policy does not follow on its own, so a client built around it cannot take
+// one for success. It follows nothing itself: under [RedirectRevalidate] a
+// client built around it must set its own CheckRedirect for the hop limit.
 package outbound

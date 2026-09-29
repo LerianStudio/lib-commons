@@ -370,6 +370,144 @@ func TestNewClient_RevalidateEnforcesHopLimit(t *testing.T) {
 	require.ErrorIs(t, err, ErrRedirectRefused)
 }
 
+// unfollowableServer answers each path with a 3xx the stdlib client does not
+// follow on its own, and /b with "landed".
+func unfollowableServer(t *testing.T) (*httptest.Server, *tls.Config) {
+	t.Helper()
+
+	return tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/b":
+			_, _ = io.WriteString(w, "landed")
+		case "/302-no-location":
+			w.WriteHeader(http.StatusFound)
+		case "/300":
+			w.Header().Set("Location", "/b")
+			w.WriteHeader(http.StatusMultipleChoices)
+		case "/307":
+			w.Header().Set("Location", "/b")
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		case "/308":
+			w.Header().Set("Location", "/b")
+			w.WriteHeader(http.StatusPermanentRedirect)
+		case "/304":
+			w.WriteHeader(http.StatusNotModified)
+		}
+	}))
+}
+
+func doRequest(t *testing.T, client *http.Client, method, rawURL string, body io.Reader, header http.Header) (*http.Response, error) {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(context.Background(), method, rawURL, body)
+	require.NoError(t, err)
+
+	for key, values := range header {
+		req.Header[key] = values
+	}
+
+	resp, err := client.Do(req)
+	if resp != nil {
+		t.Cleanup(func() { _ = resp.Body.Close() })
+	}
+
+	return resp, err
+}
+
+func TestNewClient_UnfollowedRedirectIsAnError(t *testing.T) {
+	t.Parallel()
+
+	srv, tlsCfg := unfollowableServer(t)
+
+	// A body without GetBody cannot be replayed, so the stdlib client returns
+	// a 307 or 308 to the caller instead of following it.
+	oneShot := func() io.Reader { return io.NopCloser(strings.NewReader("payload")) }
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   func() io.Reader
+		header http.Header
+	}{
+		{name: "302 without Location", method: http.MethodGet, path: "/302-no-location"},
+		{name: "300 with Location", method: http.MethodGet, path: "/300"},
+		{name: "307 on a non-replayable POST", method: http.MethodPost, path: "/307", body: oneShot},
+		{name: "308 on a non-replayable POST", method: http.MethodPost, path: "/308", body: oneShot},
+		{name: "304 on an unconditional GET", method: http.MethodGet, path: "/304"},
+	}
+
+	policies := map[string][]Option{
+		"refuse":     nil,
+		"revalidate": {WithRedirects(RedirectRevalidate, 3)},
+	}
+
+	for policyName, policyOpts := range policies {
+		client, err := NewClient(append([]Option{WithTLSConfig(tlsCfg), WithAllowPrivateNetwork(),
+			WithLookupFunc(loopbackLookup(nil))}, policyOpts...)...)
+		require.NoError(t, err)
+
+		for _, tc := range cases {
+			var body io.Reader
+			if tc.body != nil {
+				body = tc.body()
+			}
+
+			resp, err := doRequest(t, client, tc.method, exampleURL(t, srv, tc.path), body, tc.header)
+			require.ErrorIs(t, err, ErrRedirectRefused, "%s: %s must not pass for success", policyName, tc.name)
+			assert.Nil(t, resp, "%s: %s", policyName, tc.name)
+		}
+
+		resp, err := doRequest(t, client, http.MethodGet, exampleURL(t, srv, "/304"), nil,
+			http.Header{"If-None-Match": {`"v1"`}})
+		require.NoError(t, err, "%s: a 304 answering a conditional request is not a redirect", policyName)
+		assert.Equal(t, http.StatusNotModified, resp.StatusCode)
+	}
+}
+
+func TestNewClient_RevalidateFollowsReplayable307(t *testing.T) {
+	t.Parallel()
+
+	srv, tlsCfg := unfollowableServer(t)
+
+	client, err := NewClient(WithTLSConfig(tlsCfg), WithRedirects(RedirectRevalidate, 3),
+		WithAllowPrivateNetwork(), WithLookupFunc(loopbackLookup(nil)))
+	require.NoError(t, err)
+
+	resp, err := doRequest(t, client, http.MethodPost, exampleURL(t, srv, "/307"), strings.NewReader("payload"), nil)
+	require.NoError(t, err, "a replayable body lets the client follow the 307")
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, "landed", string(body))
+}
+
+func TestCheckRedirect_RefuseStaysClosed(t *testing.T) {
+	t.Parallel()
+
+	// The transport refuses the 3xx first; the client's CheckRedirect still
+	// refuses on its own, so neither layer alone lets a redirect through.
+	next := &http.Request{URL: &url.URL{Scheme: "https", Host: "example.com"}}
+
+	require.ErrorIs(t, checkRedirect(RedirectRefuse, 0)(next, nil), ErrRedirectRefused)
+}
+
+func TestNewTransport_RefusesRedirectResponse(t *testing.T) {
+	t.Parallel()
+
+	srv, tlsCfg := redirectingServer(t, map[string]string{"/a": "/b"})
+
+	transport, err := NewTransport(WithTLSConfig(tlsCfg), WithAllowPrivateNetwork(), WithLookupFunc(loopbackLookup(nil)))
+	require.NoError(t, err)
+
+	// A client that would follow every redirect still gets the refusal: the
+	// transport enforces the default policy on its own.
+	client := &http.Client{Transport: transport}
+
+	_, err = doRequest(t, client, http.MethodGet, exampleURL(t, srv, "/a"), nil, nil)
+	require.ErrorIs(t, err, ErrRedirectRefused)
+}
+
 // ---------------------------------------------------------------------------
 // construction
 // ---------------------------------------------------------------------------
