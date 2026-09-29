@@ -104,7 +104,13 @@ func newTestRuntime(t *testing.T, policy QueuePolicy, pub *fakePublisher, w *rec
 	normalized, err := normalizeQueuePolicy(policy)
 	require.NoError(t, err)
 
-	return newDispositionRuntime("orders", normalized, pub, w.wait)
+	// A nil publisher stays an untyped nil: attemptConsumeConnection opens one.
+	var publisher dispositionPublisher
+	if pub != nil {
+		publisher = pub
+	}
+
+	return newDispositionRuntime("orders", normalized, publisher, w.wait)
 }
 
 func failing(err error) HandlerFunc {
@@ -130,7 +136,7 @@ func runDisposition(t *testing.T, rt *dispositionRuntime, handler HandlerFunc, m
 
 	c := &MultiTenantConsumer{}
 
-	return c.handleWithDisposition(context.Background(), "tenant-a", handler, rt, msg, logcompat.New(testutil.NewMockLogger()))
+	return c.handleWithDisposition(context.Background(), "tenant-a", handler, rt, msg, logcompat.New(testutil.NewMockLogger())) == nil
 }
 
 func TestFakeAcknowledger_RecordsRequeueArgument(t *testing.T) {
@@ -300,12 +306,15 @@ func TestDisposition_UnusablePublisherLeavesTheChannel(t *testing.T) {
 	for _, pubErr := range []error{rabbitmq.ErrPublisherClosed, rabbitmq.ErrConfirmTimeout, rabbitmq.ErrPublisherNotReady} {
 		ack := &fakeAcknowledger{}
 		pub := &fakePublisher{errs: []error{fmt.Errorf("publish: %w", pubErr)}}
-		rt := newTestRuntime(t, testPolicy(), pub, &recordingWait{})
+		w := &recordingWait{}
+		rt := newTestRuntime(t, testPolicy(), pub, w)
 
 		keep := runDisposition(t, rt, failing(DeadLetter(errors.New("forged"))), deliveryWith(ack, amqp.Table{}))
 
 		assert.False(t, keep, "an unusable publisher must force a reconnect: %v", pubErr)
 		assert.True(t, ack.requeue)
+		assert.Empty(t, w.delays, "the reconnect backoff is the wait: %v", pubErr)
+		assert.Equal(t, 1, rt.publishFailures, "the failure is counted for the reconnect: %v", pubErr)
 	}
 }
 
@@ -328,6 +337,8 @@ func TestDisposition_RetryExhaustedDeadLetters(t *testing.T) {
 	assert.Equal(t, DeadLetterClassRetryExhausted, call.msg.Headers[HeaderDeadLetterClass])
 	assert.Equal(t, int32(3), call.msg.Headers[HeaderDeadLetterAttempts])
 	assert.Equal(t, "orders", call.msg.Headers[HeaderDeadLetterQueue])
+	assert.NotContains(t, call.msg.Headers, HeaderRetryAttempt,
+		"a dead-letter drops the retry counter, so a redriven message gets its full retry budget")
 	assert.Empty(t, w.delays, "an exhausted message is not delayed")
 	assert.Equal(t, 1, ack.ackCalls)
 }
@@ -669,8 +680,7 @@ func TestAttemptConsume_TopologyRunsBeforeQosAndConsume(t *testing.T) {
 		return err
 	}
 
-	normalized, err := normalizeQueuePolicy(policy)
-	require.NoError(t, err)
+	rt := newTestRuntime(t, policy, nil, &recordingWait{})
 
 	ack := &fakeAcknowledger{}
 	ch.deliveries <- deliveryWith(ack, amqp.Table{})
@@ -679,7 +689,7 @@ func TestAttemptConsume_TopologyRunsBeforeQosAndConsume(t *testing.T) {
 
 	go func() {
 		done <- c.attemptConsumeConnection(context.Background(), "tenant-a", "orders",
-			failing(DeadLetter(errors.New("forged"))), &normalized, logcompat.New(testutil.NewMockLogger()))
+			failing(DeadLetter(errors.New("forged"))), rt, logcompat.New(testutil.NewMockLogger()))
 	}()
 
 	require.Eventually(t, func() bool { return len(pub.published()) == 1 }, time.Second, 5*time.Millisecond)
@@ -755,13 +765,12 @@ func TestAttemptConsume_SetupFailuresCloseAndBackOff(t *testing.T) {
 			policy := testPolicy()
 			tt.configure(ch, &policy)
 
-			normalized, err := normalizeQueuePolicy(policy)
-			require.NoError(t, err)
+			rt := newTestRuntime(t, policy, nil, &recordingWait{})
 
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 
-			reconnect := c.attemptConsumeConnection(ctx, "tenant-a", "orders", failing(nil), &normalized,
+			reconnect := c.attemptConsumeConnection(ctx, "tenant-a", "orders", failing(nil), rt,
 				logcompat.New(testutil.NewMockLogger()))
 
 			assert.False(t, reconnect, "a cancelled context ends the backoff instead of reconnecting")
@@ -948,16 +957,16 @@ func TestProcessMessages_UnusablePublisherEndsTheLoop(t *testing.T) {
 	msgs := make(chan amqp.Delivery, 1)
 	msgs <- deliveryWith(&fakeAcknowledger{}, amqp.Table{})
 
-	done := make(chan struct{})
+	done := make(chan error, 1)
 
 	go func() {
-		(&MultiTenantConsumer{}).processMessages(context.Background(), "tenant-a", "orders",
+		done <- (&MultiTenantConsumer{}).processMessages(context.Background(), "tenant-a", "orders",
 			failing(DeadLetter(errors.New("forged"))), rt, msgs, make(chan *amqp.Error), logcompat.New(testutil.NewMockLogger()))
-		close(done)
 	}()
 
 	select {
-	case <-done:
+	case err := <-done:
+		require.ErrorIs(t, err, rabbitmq.ErrPublisherClosed, "the cause reaches the reconnect backoff")
 	case <-time.After(time.Second):
 		t.Fatal("processMessages must return so the consumer reconnects with a fresh publisher")
 	}
@@ -1011,4 +1020,115 @@ func TestRestoreOriginRouting_WithoutOriginHeadersKeepsDelivery(t *testing.T) {
 
 	assert.Equal(t, "", msg.Exchange)
 	assert.Equal(t, "orders", msg.RoutingKey)
+}
+
+// reconnectRecorder records each reconnect backoff with the tenant's degraded
+// flag at that moment, without sleeping.
+type reconnectRecorder struct {
+	mu       sync.Mutex
+	delays   []time.Duration
+	degraded []bool
+}
+
+func TestConsumeTenantQueue_UnusablePublisherBacksOffAcrossReconnects(t *testing.T) {
+	t.Parallel()
+
+	const failures = 4
+
+	pubErrs := make([]error, failures)
+	for i := range pubErrs {
+		pubErrs[i] = fmt.Errorf("publish: %w", rabbitmq.ErrPublisherClosed)
+	}
+
+	pub := &fakePublisher{errs: pubErrs}
+	c := seamConsumer(newFakeConsumeChannel(), pub, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var (
+		chMu     sync.Mutex
+		connects int
+		acks     []*fakeAcknowledger
+	)
+
+	// Every connect redelivers the refused message, as the broker does after a
+	// requeue. Past a bound the opener blocks, so a regression cannot spin.
+	c.openConsumeChannelFn = func(ctx context.Context, _ string) (consumeChannel, error) {
+		chMu.Lock()
+		defer chMu.Unlock()
+
+		connects++
+		if connects > failures+1 {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+
+		ack := &fakeAcknowledger{}
+		acks = append(acks, ack)
+
+		ch := newFakeConsumeChannel()
+		ch.deliveries <- deliveryWith(ack, amqp.Table{})
+
+		return ch, nil
+	}
+
+	rec := &reconnectRecorder{}
+	c.reconnectWaitFn = func(_ context.Context, d time.Duration) error {
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+
+		rec.delays = append(rec.delays, d)
+		rec.degraded = append(rec.degraded, c.IsDegraded("tenant-a"))
+
+		return nil
+	}
+
+	policy, err := normalizeQueuePolicy(testPolicy())
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+
+	go func() {
+		c.consumeTenantQueue(ctx, "tenant-a", "orders", failing(DeadLetter(errors.New("forged"))), &policy,
+			logcompat.New(testutil.NewMockLogger()))
+		close(done)
+	}()
+
+	// The fifth dead-letter publish is confirmed.
+	require.Eventually(t, func() bool { return len(pub.published()) == failures+1 }, 2*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return !c.IsDegraded("tenant-a") }, time.Second, 5*time.Millisecond,
+		"a confirmed publish clears the degraded flag")
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("consumeTenantQueue did not stop after cancel")
+	}
+
+	rec.mu.Lock()
+	delays := append([]time.Duration(nil), rec.delays...)
+	degraded := append([]bool(nil), rec.degraded...)
+	rec.mu.Unlock()
+
+	require.Len(t, delays, failures, "every unusable-publisher exit backs off before reconnecting")
+
+	for i := 1; i < len(delays); i++ {
+		assert.Greater(t, delays[i], delays[i-1], "the reconnect backoff grows across reconnects: %v", delays)
+	}
+
+	assert.Equal(t, []bool{false, false, true, true}, degraded,
+		"the tenant is marked degraded after consecutive failed publishes")
+
+	chMu.Lock()
+	defer chMu.Unlock()
+
+	for i, ack := range acks[:failures] {
+		assert.Equal(t, 0, ack.ackCalls, "delivery %d must not be acked", i)
+		assert.True(t, ack.requeue, "delivery %d must be requeued, never dropped", i)
+	}
+
+	assert.Equal(t, 1, acks[failures].ackCalls, "the confirmed dead-letter acks the original")
 }

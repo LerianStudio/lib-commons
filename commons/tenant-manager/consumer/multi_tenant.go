@@ -216,11 +216,12 @@ type MultiTenantConsumer struct {
 	// tenant goroutines.
 	dispatcher *event.EventDispatcher
 
-	// Test seams for the disposition path; nil means the RabbitMQ manager and
+	// Test seams for the consume path; nil means the RabbitMQ manager and
 	// backoff.WaitContext.
 	openConsumeChannelFn func(ctx context.Context, tenantID string) (consumeChannel, error)
 	openPublisherFn      func(ctx context.Context, tenantID string) (dispositionPublisher, error)
 	dispositionWaitFn    waitFunc
+	reconnectWaitFn      waitFunc
 }
 
 // NewMultiTenantConsumerWithError creates a new MultiTenantConsumer.

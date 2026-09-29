@@ -16,6 +16,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
+	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/logcompat"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
@@ -141,6 +142,14 @@ func (c *MultiTenantConsumer) consumeTenantQueue(
 		return
 	}
 
+	// A RegisterQueue queue keeps its disposition state across reconnects, so
+	// consecutive publish failures keep growing the backoff.
+	var disposer *dispositionRuntime
+	if policy != nil {
+		disposer = newDispositionRuntime(queueName, *policy, nil, c.dispositionWaitFn)
+		disposer.onRecovered = func() { c.resetRetryState(tenantID) }
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -149,7 +158,7 @@ func (c *MultiTenantConsumer) consumeTenantQueue(
 		default:
 		}
 
-		shouldContinue := c.attemptConsumeConnection(ctx, tenantID, queueName, handler, policy, logger)
+		shouldContinue := c.attemptConsumeConnection(ctx, tenantID, queueName, handler, disposer, logger)
 		if !shouldContinue {
 			return
 		}
@@ -162,16 +171,19 @@ func (c *MultiTenantConsumer) consumeTenantQueue(
 // Returns true if the loop should continue (reconnect), false if it should stop.
 // Uses exponential backoff with per-tenant retry state for connection failures.
 //
-// A non-nil policy (a RegisterQueue queue) adds two setup steps: the policy's
+// A non-nil disposer (a RegisterQueue queue) adds two setup steps: the policy's
 // Topology runs on the consume channel before Qos and Consume, and a dedicated
 // confirm-mode publish channel is opened for retries and dead-letters. Both
-// fail through the same backoff and degraded-tenant path as a failed consume.
+// fail through the same backoff and degraded-tenant path as a failed consume,
+// and so does a publish channel that becomes unusable while processing. While
+// the queue carries unconfirmed publish failures a successful Consume does not
+// reset the tenant's retry state; the next confirmed publish does.
 func (c *MultiTenantConsumer) attemptConsumeConnection(
 	ctx context.Context,
 	tenantID string,
 	queueName string,
 	handler HandlerFunc,
-	policy *QueuePolicy,
+	disposer *dispositionRuntime,
 	logger *logcompat.Logger,
 ) bool {
 	_, tracer, _, _ := obsbridge.TrackingFromContext(ctx) //nolint:dogsled
@@ -192,12 +204,12 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 			what, tenantID, delay, retryCount, err)
 		libOpentelemetry.HandleSpanError(span, "failed to "+what, err)
 
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(delay):
-			return true
+		wait := c.reconnectWaitFn
+		if wait == nil {
+			wait = backoff.WaitContext
 		}
+
+		return wait(ctx, delay) == nil
 	}
 
 	// Get channel for this tenant's vhost
@@ -217,8 +229,8 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 	}
 
 	// Declare the tenant's topology before consuming from it.
-	if policy != nil && policy.Topology != nil {
-		if err := policy.Topology(connCtx, tenantID, queueName, ch); err != nil {
+	if disposer != nil && disposer.policy.Topology != nil {
+		if err := disposer.policy.Topology(connCtx, tenantID, queueName, ch); err != nil {
 			_ = ch.Close() // Close channel to prevent leak
 
 			return backOff("declare topology", err)
@@ -232,9 +244,7 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 		return backOff("set QoS", err)
 	}
 
-	var disposer *dispositionRuntime
-
-	if policy != nil {
+	if disposer != nil {
 		publisher, err := c.openDispositionPublisher(connCtx, tenantID)
 		if err != nil {
 			_ = ch.Close() // Close channel to prevent leak
@@ -242,9 +252,12 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 			return backOff("open disposition publisher", err)
 		}
 
-		defer func() { _ = publisher.Close() }()
+		disposer.publisher = publisher
 
-		disposer = newDispositionRuntime(queueName, *policy, publisher, c.dispositionWaitFn)
+		defer func() {
+			_ = publisher.Close()
+			disposer.publisher = nil
+		}()
 	}
 
 	// Start consuming
@@ -263,8 +276,11 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 		return backOff("start consuming", err)
 	}
 
-	// Connection succeeded: reset retry state
-	c.resetRetryState(tenantID)
+	// Connection succeeded: reset retry state, unless a publish failure is
+	// still unconfirmed and the reconnect backoff must keep growing.
+	if disposer == nil || disposer.publishFailures == 0 {
+		c.resetRetryState(tenantID)
+	}
 
 	logger.InfofCtx(ctx, "consuming started for tenant %s on queue %s", tenantID, queueName)
 
@@ -273,17 +289,22 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 	ch.NotifyClose(notifyClose)
 
 	// Process messages (blocks until channel closes or context is cancelled)
-	c.processMessages(ctx, tenantID, queueName, handler, disposer, msgs, notifyClose, logger)
+	disposeErr := c.processMessages(ctx, tenantID, queueName, handler, disposer, msgs, notifyClose, logger)
 
 	// Release the channel: unacked prefetched messages return to the queue
 	// instead of staying held by a consumer nobody reads.
 	_ = ch.Close()
+
+	if disposeErr != nil {
+		return backOff("dispose of a message", disposeErr)
+	}
 
 	return true
 }
 
 // processMessages processes messages from the channel until it closes.
 // Each message is processed with its own span to avoid accumulating events on a long-lived span.
+// It returns a non-nil error only when the disposition publisher became unusable.
 func (c *MultiTenantConsumer) processMessages(
 	ctx context.Context,
 	tenantID string,
@@ -293,24 +314,24 @@ func (c *MultiTenantConsumer) processMessages(
 	msgs <-chan amqp.Delivery,
 	notifyClose <-chan *amqp.Error,
 	_ *logcompat.Logger,
-) {
+) error {
 	baseLogger, _, _, _ := obsbridge.TrackingFromContext(ctx) //nolint:dogsled
 	logger := logcompat.New(baseLogger).WithFields("tenant_id", tenantID, "queue", queueName)
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case err := <-notifyClose:
 			if err != nil {
 				logger.WarnfCtx(ctx, "channel closed with error: %v", err)
 			}
 
-			return
+			return nil
 		case msg, ok := <-msgs:
 			if !ok {
 				logger.WarnCtx(ctx, "message channel closed")
-				return
+				return nil
 			}
 
 			if disposer == nil {
@@ -318,9 +339,9 @@ func (c *MultiTenantConsumer) processMessages(
 				continue
 			}
 
-			if !c.handleWithDisposition(ctx, tenantID, handler, disposer, msg, logger) {
+			if err := c.handleWithDisposition(ctx, tenantID, handler, disposer, msg, logger); err != nil {
 				logger.WarnCtx(ctx, "disposition publisher unusable, reconnecting")
-				return
+				return err
 			}
 		}
 	}

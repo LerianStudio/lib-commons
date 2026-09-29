@@ -186,16 +186,33 @@ type DeadLetterRoute struct {
 	// that the queue was declared with one and that it exists: RabbitMQ silently
 	// DISCARDS a message nacked from a queue without a working DLX, and the
 	// library cannot inspect the queue's arguments to check.
+	//
+	// The broker dead-letters under the routing key the message was last
+	// published with, and a message that went through the retry hop was last
+	// published to the default exchange with the queue name as its key. The
+	// DLQ's binding to the DLX must therefore match the queue name too, or
+	// RabbitMQ also discards the message: keep the catch-all "#" binding of
+	// rabbitmq.DeclareDLQTopology, or declare the queue with
+	// x-dead-letter-routing-key so every dead-letter uses one fixed key.
+	//
+	// The broker forwards the message as it is, x-lc-retry-attempt included,
+	// so a redrive from the DLQ back to the queue must drop that header to give
+	// the message a fresh retry budget. The explicit-publish route drops it.
 	ViaQueueDLX bool
 }
 
 // TopologyFunc declares a tenant's queue topology on the consume channel. It
 // runs on every connect and reconnect, before Qos and Consume, so a queue and
 // its dead-letter exchange exist in the tenant's vhost before consumption.
-// Declarations must be idempotent. A typical hook calls
+// Declarations must be idempotent. A typical hook for ViaQueueDLX calls
 // rabbitmq.DeclareDLQTopology(ch, rabbitmq.WithDLXExchangeName(dlx),
-// rabbitmq.WithDLQName(dlq)) and then declares the queue itself with
-// ch.QueueDeclare, passing rabbitmq.GetDLXArgs(dlx) as its arguments.
+// rabbitmq.WithDLQName(dlq)), whose default "#" binding matches any routing
+// key, and then declares the queue itself with ch.QueueDeclare, passing
+// rabbitmq.GetDLXArgs(dlx) as its arguments. A DLQ bound with a narrower key
+// (rabbitmq.WithDLQBindingKey) must receive a fixed key instead:
+//
+//	args := rabbitmq.GetDLXArgs(dlx)
+//	args["x-dead-letter-routing-key"] = bindingKey // then declare queueName with args
 type TopologyFunc func(ctx context.Context, tenantID, queueName string, ch rabbitmq.AMQPChannel) error
 
 // QueuePolicy opts a queue into dispositions. See RegisterQueue.
@@ -268,7 +285,13 @@ func normalizeQueuePolicy(policy QueuePolicy) (QueuePolicy, error) {
 //   - Ack: the message is acknowledged; the error is logged at WARN.
 //
 // A republish or dead-letter publish that fails leaves the message on the
-// queue: it is nacked with requeue after a backoff, never dropped. Delivery is
+// queue: it is nacked with requeue, never dropped. While the publish channel
+// stays usable (the broker nacked or returned the message) the requeue waits a
+// backoff that grows with each consecutive failure, up to MaxDelay. When the
+// publish closes the channel (a dead-letter exchange missing from the tenant's
+// vhost is the common cause) the consumer reconnects through the tenant
+// backoff, which keeps growing across those reconnects and marks the tenant
+// degraded; a later confirmed publish on that queue clears both. Delivery is
 // at least once: a crash between a confirmed republish and the ack of the
 // original delivers the message twice, so handlers must be idempotent.
 //
@@ -452,16 +475,20 @@ type dispositionPublisher interface {
 
 type waitFunc func(ctx context.Context, d time.Duration) error
 
-// dispositionRuntime is one tenant queue's disposition state. It is used by
-// that queue's single consumer goroutine only, so it needs no lock.
+// dispositionRuntime is one tenant queue's disposition state. It lives as long
+// as that queue's consumer loop, across reconnects, and is used by that loop's
+// goroutine only, so it needs no lock. publisher is replaced on every connect.
 type dispositionRuntime struct {
 	queue     string
 	policy    QueuePolicy
 	publisher dispositionPublisher
 	wait      waitFunc
-	// publishFailures counts consecutive failed publishes; it grows the backoff
-	// before a requeue so a broken dead-letter route cannot hot-loop.
+	// publishFailures counts consecutive failed publishes across reconnects;
+	// it grows the backoff so a broken dead-letter route cannot hot-loop, and
+	// only a confirmed publish resets it.
 	publishFailures int
+	// onRecovered runs when a publish is confirmed after failures.
+	onRecovered func()
 }
 
 func newDispositionRuntime(queue string, policy QueuePolicy, publisher dispositionPublisher, wait waitFunc) *dispositionRuntime {
@@ -478,8 +505,8 @@ func (rt *dispositionRuntime) delay(attempt int) time.Duration {
 }
 
 // handleWithDisposition runs the handler and disposes of the message by the
-// queue's policy. It returns false when the publish channel became unusable and
-// the caller must reconnect.
+// queue's policy. It returns a non-nil error when the publish channel became
+// unusable and the caller must back off and reconnect.
 func (c *MultiTenantConsumer) handleWithDisposition(
 	ctx context.Context,
 	tenantID string,
@@ -487,7 +514,7 @@ func (c *MultiTenantConsumer) handleWithDisposition(
 	rt *dispositionRuntime,
 	msg amqp.Delivery,
 	logger *logcompat.Logger,
-) bool {
+) error {
 	_, tracer, _, _ := obsbridge.TrackingFromContext(ctx) //nolint:dogsled
 
 	msgCtx := core.ContextWithTenantID(ctx, tenantID)
@@ -503,7 +530,7 @@ func (c *MultiTenantConsumer) handleWithDisposition(
 	err := handler(msgCtx, msg)
 	if err == nil {
 		ackDelivery(ctx, msg, logger)
-		return true
+		return nil
 	}
 
 	disposition := DispositionOf(err)
@@ -516,7 +543,7 @@ func (c *MultiTenantConsumer) handleWithDisposition(
 		logger.WarnfCtx(ctx, "acknowledging message on queue %s despite handler error", rt.queue)
 		ackDelivery(ctx, msg, logger)
 
-		return true
+		return nil
 	case DispositionDeadLetter:
 		return rt.deadLetter(ctx, msg, attempt+1, DeadLetterClassHandler, logger)
 	default:
@@ -530,10 +557,11 @@ func (c *MultiTenantConsumer) handleWithDisposition(
 
 // retry waits the backed-off delay, republishes the message to its queue with
 // the attempt incremented, and acks the original after the confirm.
-func (rt *dispositionRuntime) retry(ctx context.Context, msg amqp.Delivery, attempt int, logger *logcompat.Logger) bool {
+func (rt *dispositionRuntime) retry(ctx context.Context, msg amqp.Delivery, attempt int, logger *logcompat.Logger) error {
 	if err := rt.wait(ctx, rt.delay(attempt)); err != nil {
 		nackRequeue(ctx, msg, logger)
-		return true
+
+		return nil //nolint:nilerr // an interrupted delay requeues the message; the publisher is still usable
 	}
 
 	headers := cloneHeaders(msg.Headers)
@@ -545,15 +573,16 @@ func (rt *dispositionRuntime) retry(ctx context.Context, msg amqp.Delivery, atte
 		return rt.publishFailed(ctx, msg, "retry republish", err, logger)
 	}
 
-	rt.publishFailures = 0
-
+	rt.publishConfirmed()
 	ackDelivery(ctx, msg, logger)
 
-	return true
+	return nil
 }
 
-// deadLetter sends the message to the queue's dead-letter route.
-func (rt *dispositionRuntime) deadLetter(ctx context.Context, msg amqp.Delivery, attempts int, class string, logger *logcompat.Logger) bool {
+// deadLetter sends the message to the queue's dead-letter route. The explicit
+// publish drops x-lc-retry-attempt (x-lc-dead-letter-attempts keeps the count),
+// so a message redriven from the dead-letter queue starts a fresh retry budget.
+func (rt *dispositionRuntime) deadLetter(ctx context.Context, msg amqp.Delivery, attempts int, class string, logger *logcompat.Logger) error {
 	route := rt.policy.DeadLetter
 
 	if route.ViaQueueDLX {
@@ -563,10 +592,11 @@ func (rt *dispositionRuntime) deadLetter(ctx context.Context, msg amqp.Delivery,
 			logger.ErrorfCtx(ctx, "failed to nack message for dead-lettering: %v", err)
 		}
 
-		return true
+		return nil
 	}
 
 	headers := cloneHeaders(msg.Headers)
+	delete(headers, HeaderRetryAttempt)
 	headers[HeaderDeadLetterQueue] = rt.queue
 	headers[HeaderDeadLetterAttempts] = headerInt(attempts)
 	headers[HeaderDeadLetterClass] = class
@@ -575,28 +605,53 @@ func (rt *dispositionRuntime) deadLetter(ctx context.Context, msg amqp.Delivery,
 		return rt.publishFailed(ctx, msg, "dead-letter publish", err, logger)
 	}
 
-	rt.publishFailures = 0
-
+	rt.publishConfirmed()
 	logger.WarnfCtx(ctx, "dead-lettered message from queue %s to exchange %q routing key %q (class %s, attempts %d)",
 		rt.queue, route.Exchange, route.RoutingKey, class, attempts)
 	ackDelivery(ctx, msg, logger)
 
-	return true
+	return nil
 }
 
-// publishFailed leaves the message on its queue: it backs off, then nacks with
-// requeue. It returns false when the publisher cannot be used again.
-func (rt *dispositionRuntime) publishFailed(ctx context.Context, msg amqp.Delivery, what string, err error, logger *logcompat.Logger) bool {
-	logger.ErrorfCtx(ctx, "%s failed for queue %s, requeueing the message: %v", what, rt.queue, err)
-
-	delay := rt.delay(rt.publishFailures)
+// publishFailed leaves the message on its queue with a nack with requeue.
+// While the publisher is still usable it first waits a backoff that grows with
+// each consecutive failure. When the publisher cannot be used again it returns
+// the error at once: the caller then backs off through the tenant reconnect
+// path, whose delay keeps growing because publishFailures survives reconnects.
+func (rt *dispositionRuntime) publishFailed(ctx context.Context, msg amqp.Delivery, what string, err error, logger *logcompat.Logger) error {
+	failures := rt.publishFailures
 	rt.publishFailures++
 
-	_ = rt.wait(ctx, delay) // a cancelled wait only shortens the backoff; the message is requeued either way
+	if publisherUnusable(err) {
+		logger.ErrorfCtx(ctx, "%s failed for queue %s (%d consecutive), requeueing the message and reconnecting: %v",
+			what, rt.queue, rt.publishFailures, err)
+		nackRequeue(ctx, msg, logger)
+
+		return fmt.Errorf("%s: %w", what, err)
+	}
+
+	logger.ErrorfCtx(ctx, "%s failed for queue %s (%d consecutive), requeueing the message: %v",
+		what, rt.queue, rt.publishFailures, err)
+
+	_ = rt.wait(ctx, rt.delay(failures)) // a cancelled wait only shortens the backoff; the message is requeued either way
 
 	nackRequeue(ctx, msg, logger)
 
-	return !publisherUnusable(err)
+	return nil
+}
+
+// publishConfirmed resets the failure count after a confirmed publish and
+// reports the recovery when there were failures to recover from.
+func (rt *dispositionRuntime) publishConfirmed() {
+	if rt.publishFailures == 0 {
+		return
+	}
+
+	rt.publishFailures = 0
+
+	if rt.onRecovered != nil {
+		rt.onRecovered()
+	}
 }
 
 // publisherUnusable reports whether a publish error leaves the confirm channel
