@@ -3,6 +3,30 @@
 // that can be found in the LICENSE file.
 
 // Package consumer provides multi-tenant message queue consumption management.
+//
+// # Starting consumers
+//
+// Consumers are lazy: Run starts none. A tenant's consumer starts on its first
+// tenant-added lifecycle event or EnsureConsumerStarted call. A worker process
+// that must consume for every active tenant from boot calls StartActiveTenants
+// after Run.
+//
+// # Failed messages
+//
+// A queue registered with Register answers every handler error with
+// Nack(requeue=true), immediately. A queue registered with RegisterQueue lets
+// the handler's error choose the message's fate instead:
+//
+//   - an unmarked error or RetryLater(err): bounded, backed-off retry, then
+//     dead-letter with class retry-exhausted;
+//   - DeadLetter(err): dead-letter at once, for permanent refusals such as a
+//     forged signature or a divergent tenant claim;
+//   - Ack(err): acknowledge despite the error.
+//
+// Dead-letters go to an explicit exchange by a confirmed, mandatory publish
+// (recommended) or through the queue's own x-dead-letter-exchange. An optional
+// TopologyFunc declares the tenant's queue and dead-letter topology before
+// every consume. Delivery is at least once.
 package consumer
 
 import (
@@ -90,9 +114,13 @@ type MultiTenantConfig struct {
 	// Default: 12 hours.
 	TenantCacheTTL time.Duration
 
-	// Deprecated: EagerStart is ignored. Consumers are always started eagerly.
-	// This field is retained only for backward compatibility with existing configs;
-	// setting it has no effect. It will be removed in a future major version.
+	// Deprecated: EagerStart is ignored and has no effect. Consumers start
+	// lazily: Run starts none, and a tenant's consumer starts on its first
+	// tenant lifecycle event or EnsureConsumerStarted call. A process that must
+	// consume for every active tenant from boot (a worker) calls
+	// StartActiveTenants after Run. The field is retained only for backward
+	// compatibility with existing configs and will be removed in a future
+	// major version.
 	EagerStart bool
 }
 
@@ -147,6 +175,7 @@ type MultiTenantConsumer struct {
 	rabbitmq     *tmrabbitmq.Manager
 	pmClient     *client.Client // Tenant Manager HTTP API client (primary source of truth)
 	handlers     map[string]HandlerFunc
+	policies     map[string]*QueuePolicy       // Queues opted into dispositions via RegisterQueue
 	tenants      map[string]context.CancelFunc // Active tenant goroutines
 	knownTenants map[string]bool               // Discovered tenants (populated by events and lazy-load)
 	config       MultiTenantConfig
@@ -186,6 +215,12 @@ type MultiTenantConsumer struct {
 	// The consumer hooks into it via callbacks to manage knownTenants and
 	// tenant goroutines.
 	dispatcher *event.EventDispatcher
+
+	// Test seams for the disposition path; nil means the RabbitMQ manager and
+	// backoff.WaitContext.
+	openConsumeChannelFn func(ctx context.Context, tenantID string) (consumeChannel, error)
+	openPublisherFn      func(ctx context.Context, tenantID string) (dispositionPublisher, error)
+	dispositionWaitFn    waitFunc
 }
 
 // NewMultiTenantConsumerWithError creates a new MultiTenantConsumer.
@@ -322,6 +357,10 @@ func (c *MultiTenantConsumer) Cache() *tenantcache.TenantCache {
 // has been called will only take effect for tenants whose consumers are spawned after
 // the registration; already-running tenant consumers will NOT pick up the new handler.
 //
+// Every handler error is answered with Nack(requeue=true), whatever its
+// disposition; use RegisterQueue for bounded retry and dead-lettering. Register
+// on a queue previously registered with RegisterQueue drops its policy.
+//
 // Returns an error if handler is nil or if RabbitMQ manager is not set.
 // RabbitMQ is required for queue consumption; use WithRabbitMQ() option when creating
 // the consumer.
@@ -338,14 +377,22 @@ func (c *MultiTenantConsumer) Register(queueName string, handler HandlerFunc) er
 	defer c.mu.Unlock()
 
 	c.handlers[queueName] = handler
+	delete(c.policies, queueName)
 	c.logger.Infof("registered handler for queue: %s", queueName)
 
 	return nil
 }
 
-// Run starts the multi-tenant consumer in event-driven mode.
-// The event listener is managed externally; Run() stores the parent context
-// and makes the consumer ready to receive events and lazy-load tenants.
+// Run makes the multi-tenant consumer ready in event-driven mode: it stores the
+// parent context and starts no consumer. The event listener is managed
+// externally.
+//
+// Consumers start lazily: a tenant's consumer starts on its first tenant-added
+// lifecycle event or EnsureConsumerStarted call (typically made by the HTTP
+// tenant middleware). A process that serves no requests for its tenants, such
+// as a worker, consumes nothing after a restart until one of those happens;
+// it calls StartActiveTenants after Run to start a consumer for every active
+// tenant at boot.
 func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	baseLogger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)

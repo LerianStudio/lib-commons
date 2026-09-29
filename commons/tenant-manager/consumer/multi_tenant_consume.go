@@ -106,11 +106,14 @@ func (c *MultiTenantConsumer) superviseTenantQueues(ctx context.Context, tenantI
 	handlers := make(map[string]HandlerFunc, len(c.handlers))
 	maps.Copy(handlers, c.handlers)
 
+	policies := make(map[string]*QueuePolicy, len(c.policies))
+	maps.Copy(policies, c.policies)
+
 	c.mu.RUnlock()
 
-	// Consume from each registered queue
+	// Consume from each registered queue. A nil policy is a Register queue.
 	for queueName, handler := range handlers {
-		go c.consumeTenantQueue(ctx, tenantID, queueName, handler, logger)
+		go c.consumeTenantQueue(ctx, tenantID, queueName, handler, policies[queueName], logger)
 	}
 
 	// Wait for context cancellation
@@ -126,6 +129,7 @@ func (c *MultiTenantConsumer) consumeTenantQueue(
 	tenantID string,
 	queueName string,
 	handler HandlerFunc,
+	policy *QueuePolicy,
 	_ *logcompat.Logger,
 ) {
 	baseLogger, _, _, _ := obsbridge.TrackingFromContext(ctx) //nolint:dogsled
@@ -145,7 +149,7 @@ func (c *MultiTenantConsumer) consumeTenantQueue(
 		default:
 		}
 
-		shouldContinue := c.attemptConsumeConnection(ctx, tenantID, queueName, handler, logger)
+		shouldContinue := c.attemptConsumeConnection(ctx, tenantID, queueName, handler, policy, logger)
 		if !shouldContinue {
 			return
 		}
@@ -157,11 +161,17 @@ func (c *MultiTenantConsumer) consumeTenantQueue(
 // attemptConsumeConnection attempts to establish a channel and consume messages.
 // Returns true if the loop should continue (reconnect), false if it should stop.
 // Uses exponential backoff with per-tenant retry state for connection failures.
+//
+// A non-nil policy (a RegisterQueue queue) adds two setup steps: the policy's
+// Topology runs on the consume channel before Qos and Consume, and a dedicated
+// confirm-mode publish channel is opened for retries and dead-letters. Both
+// fail through the same backoff and degraded-tenant path as a failed consume.
 func (c *MultiTenantConsumer) attemptConsumeConnection(
 	ctx context.Context,
 	tenantID string,
 	queueName string,
 	handler HandlerFunc,
+	policy *QueuePolicy,
 	logger *logcompat.Logger,
 ) bool {
 	_, tracer, _, _ := obsbridge.TrackingFromContext(ctx) //nolint:dogsled
@@ -171,8 +181,27 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 
 	state := c.getRetryState(tenantID)
 
+	// backOff records a setup failure and waits before the next attempt.
+	backOff := func(what string, err error) bool {
+		delay, retryCount, justMarkedDegraded := state.incRetryAndMaybeMarkDegraded(maxRetryBeforeDegraded)
+		if justMarkedDegraded {
+			logger.WarnfCtx(ctx, "tenant %s marked as degraded after %d consecutive failures", tenantID, retryCount)
+		}
+
+		logger.WarnfCtx(ctx, "failed to %s for tenant %s, retrying in %s (attempt %d): %v",
+			what, tenantID, delay, retryCount, err)
+		libOpentelemetry.HandleSpanError(span, "failed to "+what, err)
+
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(delay):
+			return true
+		}
+	}
+
 	// Get channel for this tenant's vhost
-	ch, err := c.rabbitmq.GetChannel(connCtx, tenantID)
+	ch, err := c.openConsumeChannel(connCtx, tenantID)
 	if err != nil {
 		// If the tenant is suspended or purged, stop the consumer instead of retrying.
 		// Retrying a suspended/purged tenant would cause infinite reconnect loops.
@@ -184,20 +213,15 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 			return false
 		}
 
-		delay, retryCount, justMarkedDegraded := state.incRetryAndMaybeMarkDegraded(maxRetryBeforeDegraded)
-		if justMarkedDegraded {
-			logger.WarnfCtx(ctx, "tenant %s marked as degraded after %d consecutive failures", tenantID, retryCount)
-		}
+		return backOff("get channel", err)
+	}
 
-		logger.WarnfCtx(ctx, "failed to get channel for tenant %s, retrying in %s (attempt %d): %v",
-			tenantID, delay, retryCount, err)
-		libOpentelemetry.HandleSpanError(span, "failed to get channel", err)
+	// Declare the tenant's topology before consuming from it.
+	if policy != nil && policy.Topology != nil {
+		if err := policy.Topology(connCtx, tenantID, queueName, ch); err != nil {
+			_ = ch.Close() // Close channel to prevent leak
 
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(delay):
-			return true
+			return backOff("declare topology", err)
 		}
 	}
 
@@ -205,21 +229,22 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 	if err := ch.Qos(c.config.PrefetchCount, 0, false); err != nil {
 		_ = ch.Close() // Close channel to prevent leak
 
-		delay, retryCount, justMarkedDegraded := state.incRetryAndMaybeMarkDegraded(maxRetryBeforeDegraded)
-		if justMarkedDegraded {
-			logger.WarnfCtx(ctx, "tenant %s marked as degraded after %d consecutive failures", tenantID, retryCount)
+		return backOff("set QoS", err)
+	}
+
+	var disposer *dispositionRuntime
+
+	if policy != nil {
+		publisher, err := c.openDispositionPublisher(connCtx, tenantID)
+		if err != nil {
+			_ = ch.Close() // Close channel to prevent leak
+
+			return backOff("open disposition publisher", err)
 		}
 
-		logger.WarnfCtx(ctx, "failed to set QoS for tenant %s, retrying in %s (attempt %d): %v",
-			tenantID, delay, retryCount, err)
-		libOpentelemetry.HandleSpanError(span, "failed to set QoS", err)
+		defer func() { _ = publisher.Close() }()
 
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(delay):
-			return true
-		}
+		disposer = newDispositionRuntime(queueName, *policy, publisher, c.dispositionWaitFn)
 	}
 
 	// Start consuming
@@ -235,21 +260,7 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 	if err != nil {
 		_ = ch.Close() // Close channel to prevent leak
 
-		delay, retryCount, justMarkedDegraded := state.incRetryAndMaybeMarkDegraded(maxRetryBeforeDegraded)
-		if justMarkedDegraded {
-			logger.WarnfCtx(ctx, "tenant %s marked as degraded after %d consecutive failures", tenantID, retryCount)
-		}
-
-		logger.WarnfCtx(ctx, "failed to start consuming for tenant %s, retrying in %s (attempt %d): %v",
-			tenantID, delay, retryCount, err)
-		libOpentelemetry.HandleSpanError(span, "failed to start consuming", err)
-
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(delay):
-			return true
-		}
+		return backOff("start consuming", err)
 	}
 
 	// Connection succeeded: reset retry state
@@ -262,7 +273,11 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 	ch.NotifyClose(notifyClose)
 
 	// Process messages (blocks until channel closes or context is cancelled)
-	c.processMessages(ctx, tenantID, queueName, handler, msgs, notifyClose, logger)
+	c.processMessages(ctx, tenantID, queueName, handler, disposer, msgs, notifyClose, logger)
+
+	// Release the channel: unacked prefetched messages return to the queue
+	// instead of staying held by a consumer nobody reads.
+	_ = ch.Close()
 
 	return true
 }
@@ -274,6 +289,7 @@ func (c *MultiTenantConsumer) processMessages(
 	tenantID string,
 	queueName string,
 	handler HandlerFunc,
+	disposer *dispositionRuntime,
 	msgs <-chan amqp.Delivery,
 	notifyClose <-chan *amqp.Error,
 	_ *logcompat.Logger,
@@ -297,7 +313,15 @@ func (c *MultiTenantConsumer) processMessages(
 				return
 			}
 
-			c.handleMessage(ctx, tenantID, queueName, handler, msg, logger)
+			if disposer == nil {
+				c.handleMessage(ctx, tenantID, queueName, handler, msg, logger)
+				continue
+			}
+
+			if !c.handleWithDisposition(ctx, tenantID, handler, disposer, msg, logger) {
+				logger.WarnCtx(ctx, "disposition publisher unusable, reconnecting")
+				return
+			}
 		}
 	}
 }
