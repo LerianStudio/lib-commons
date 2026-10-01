@@ -77,7 +77,7 @@ var installMu sync.Mutex
 //   - status  < 500: msg is passed through and errs are folded into Errors[] in
 //     order (skip nil, honor huma.ErrorDetailer) — exactly like the stock
 //     huma.NewError, so native 422 validation errors keep their per-field
-//     errors[] list.
+//     errors[] list. A detail's Value survives only when echoable.
 //   - at ANY status, an *Upstream, an Extensions or a PublicDetail found in errs
 //     is lifted onto the body instead of being folded (see curated). They are
 //     the only exceptions to the >=500 scrub, and each is carried by its TYPE,
@@ -154,8 +154,9 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 	return pd
 }
 
-// fold renders errs as errors[] exactly like the stock huma.NewError: nil errs
-// are skipped and a huma.ErrorDetailer contributes its own detail.
+// fold renders errs as errors[] like the stock huma.NewError: nil errs are
+// skipped and a huma.ErrorDetailer contributes its own detail, minus any Value
+// that is not echoable.
 func fold(errs []error) []*huma.ErrorDetail {
 	details := make([]*huma.ErrorDetail, 0, len(errs))
 
@@ -168,6 +169,13 @@ func fold(errs []error) []*huma.ErrorDetail {
 			// ErrorDetail() may return a nil *huma.ErrorDetail; appending it
 			// would serialize a null entry into errors[]. Skip the nil one.
 			if d := converted.ErrorDetail(); d != nil {
+				// Copy, never mutate: an ErrorDetailer may return a shared detail.
+				if !echoable(d.Value) {
+					trimmed := *d
+					trimmed.Value = nil
+					d = &trimmed
+				}
+
 				details = append(details, d)
 			}
 
@@ -182,4 +190,22 @@ func fold(errs []error) []*huma.ErrorDetail {
 	}
 
 	return details
+}
+
+// maxEchoedValueLen bounds the value an errors[] entry echoes back. Huma sets
+// Value to the whole parent object per failing field and to the raw body on a
+// parse error, so only a scalar this small may reach the client.
+const maxEchoedValueLen = 256
+
+// echoable reports whether v may be echoed: nil, a bool, a number, or a string
+// of at most maxEchoedValueLen bytes. Objects and arrays never are.
+func echoable(v any) bool {
+	switch v := v.(type) {
+	case nil, bool, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return true
+	case string:
+		return len(v) <= maxEchoedValueLen
+	default:
+		return false
+	}
 }

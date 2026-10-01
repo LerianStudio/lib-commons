@@ -3,14 +3,17 @@
 package problem
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/humatest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -419,4 +422,61 @@ func TestInstall_ServerError_UpstreamReachesTheWire(t *testing.T) {
 	require.True(t, ok, "upstream member must reach the wire on a 5xx, got %s", raw)
 	assert.Equal(t, "E4001", up["code"])
 	assert.Equal(t, "CPF não encontrado na base", up["message"])
+}
+
+// TestInstall_ValidationErrorsDoNotEchoLargeValues proves a 4xx body is sized by
+// its errors, not by the request. Huma echoes the whole parent object once per
+// failing field and the raw body on a parse error; only small scalars survive.
+func TestInstall_ValidationErrorsDoNotEchoLargeValues(t *testing.T) {
+	// NOT parallel: mutates the process-global huma.NewError.
+	installForTest(t)
+
+	type input struct {
+		Body struct {
+			ContractID string `json:"contract_id"`
+			Status     string `json:"status" enum:"OPEN,CLOSED"`
+		}
+	}
+
+	// humatest's own api.Post logs every body, so requests go to the handler.
+	handler, api := humatest.New(t)
+	huma.Register(api, huma.Operation{Method: http.MethodPost, Path: "/echo", MaxBodyBytes: 8 << 20},
+		func(context.Context, *input) (*struct{}, error) { return nil, nil })
+
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		return rec
+	}
+
+	// camelCase keys where the schema wants snake_case, padded to size.
+	wrongKeys := func(padding int) *httptest.ResponseRecorder {
+		return post(fmt.Sprintf(`{"contractId":"c-1","status":"NOPE","blob":%q}`, strings.Repeat("a", padding)))
+	}
+
+	small, large := wrongKeys(1<<10), wrongKeys(4<<20)
+	require.Equal(t, http.StatusUnprocessableEntity, large.Code)
+	require.Equal(t, small.Body.Len(), large.Body.Len(), "the response must not grow with the request body")
+
+	var got Detail
+	require.NoError(t, json.Unmarshal(large.Body.Bytes(), &got))
+	require.NotEmpty(t, got.Errors)
+
+	for _, e := range got.Errors {
+		if e.Location == "body.status" {
+			assert.Equal(t, "NOPE", e.Value, "a small invalid scalar is still echoed")
+
+			continue
+		}
+
+		assert.Nil(t, e.Value, "%s must not echo the body", e.Location)
+	}
+
+	malformed := post("{" + strings.Repeat("a", 4<<20))
+	require.Equal(t, http.StatusBadRequest, malformed.Code)
+	assert.Less(t, malformed.Body.Len(), 1<<10, "a parse error must not echo the raw body")
 }
