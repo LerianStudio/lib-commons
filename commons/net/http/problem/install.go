@@ -179,7 +179,7 @@ func fold(errs []error) []*huma.ErrorDetail {
 			continue
 		}
 
-		details = append(details, &huma.ErrorDetail{Message: e.Error()})
+		details = append(details, &huma.ErrorDetail{Message: truncate(e.Error(), maxMessageLen)})
 	}
 
 	if len(details) == 0 {
@@ -189,38 +189,45 @@ func fold(errs []error) []*huma.ErrorDetail {
 	return details
 }
 
-// Huma echoes request-sized data into errors[]: one detail per failing item or
-// unexpected key, that key in Location, the whole parent object or raw body in
-// Value. These caps size a 4xx by its errors, never by the request.
+// Huma echoes request-sized data into errors[]: a detail per failing item or key,
+// that key in Location, a rejected URI or duration in Message, the parent object
+// or raw body in Value. These caps size a 4xx by its errors, never the request.
 const (
 	maxErrorDetails = 100
 	maxEchoLen      = 256
+	maxMessageLen   = 1024
 )
 
-// bounded returns d with Location cut on a rune boundary to at most maxEchoLen
-// bytes and Value kept only when echoable. It copies, never mutates: an
-// ErrorDetailer may return a shared detail.
+// bounded returns d with Location and Message truncated to their caps and Value
+// kept only when echoable. It copies, never mutates: an ErrorDetailer may return
+// a shared detail.
 func bounded(d *huma.ErrorDetail) *huma.ErrorDetail {
-	if len(d.Location) <= maxEchoLen && echoable(d.Value) {
+	if len(d.Location) <= maxEchoLen && len(d.Message) <= maxMessageLen && echoable(d.Value) {
 		return d
 	}
 
 	trimmed := *d
-
-	if len(d.Location) > maxEchoLen {
-		cut := maxEchoLen
-		for cut > 0 && !utf8.RuneStart(d.Location[cut]) {
-			cut--
-		}
-
-		trimmed.Location = d.Location[:cut]
-	}
+	trimmed.Location = truncate(d.Location, maxEchoLen)
+	trimmed.Message = truncate(d.Message, maxMessageLen)
 
 	if !echoable(d.Value) {
 		trimmed.Value = nil
 	}
 
 	return &trimmed
+}
+
+// truncate cuts s to at most n bytes on a rune boundary, so it stays valid UTF-8.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+
+	return s[:n]
 }
 
 // echoable admits nil, a bool, a number, or a string within maxEchoLen bytes.
