@@ -3,14 +3,18 @@
 package problem
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/humatest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -419,4 +423,117 @@ func TestInstall_ServerError_UpstreamReachesTheWire(t *testing.T) {
 	require.True(t, ok, "upstream member must reach the wire on a 5xx, got %s", raw)
 	assert.Equal(t, "E4001", up["code"])
 	assert.Equal(t, "CPF não encontrado na base", up["message"])
+}
+
+// TestInstall_ValidationErrorsDoNotEchoLargeValues proves a 4xx body is sized by
+// fixed caps, never by the request: not by a large or malformed body, nor by many
+// or long unexpected keys.
+func TestInstall_ValidationErrorsDoNotEchoLargeValues(t *testing.T) {
+	// NOT parallel: mutates the process-global huma.NewError.
+	installForTest(t)
+
+	type input struct {
+		Body struct {
+			ContractID string `json:"contract_id"`
+			Status     string `json:"status" enum:"OPEN,CLOSED"`
+			Callback   string `json:"callback,omitempty" format:"uri"`
+		}
+	}
+
+	// humatest's own api.Post logs every body, so requests go to the handler.
+	handler, api := humatest.New(t)
+	huma.Register(api, huma.Operation{Method: http.MethodPost, Path: "/echo", MaxBodyBytes: 8 << 20},
+		func(context.Context, *input) (*struct{}, error) { return nil, nil })
+
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		return rec
+	}
+
+	// camelCase keys where the schema wants snake_case, padded to size.
+	wrongKeys := func(padding int) *httptest.ResponseRecorder {
+		return post(fmt.Sprintf(`{"contractId":"c-1","status":"NOPE","blob":%q}`, strings.Repeat("a", padding)))
+	}
+
+	small, large := wrongKeys(1<<10), wrongKeys(4<<20)
+	require.Equal(t, http.StatusUnprocessableEntity, large.Code)
+	require.Equal(t, small.Body.Len(), large.Body.Len(), "the response must not grow with the request body")
+
+	var got Detail
+	require.NoError(t, json.Unmarshal(large.Body.Bytes(), &got))
+	require.NotEmpty(t, got.Errors)
+
+	for _, e := range got.Errors {
+		if e.Location == "body.status" {
+			assert.Equal(t, "NOPE", e.Value, "a small invalid scalar is still echoed")
+
+			continue
+		}
+
+		assert.Nil(t, e.Value, "%s must not echo the body", e.Location)
+	}
+
+	malformed := post("{" + strings.Repeat("a", 4<<20))
+	require.Equal(t, http.StatusBadRequest, malformed.Code)
+	assert.Less(t, malformed.Body.Len(), 1<<10, "a parse error must not echo the raw body")
+
+	// One detail per unexpected key, each carrying that key in its location.
+	manyKeys := func(n, keyLen int) *httptest.ResponseRecorder {
+		var b strings.Builder
+
+		b.WriteString(`{"status":"OPEN"`)
+
+		for i := range n {
+			fmt.Fprintf(&b, `,"%0*d":0`, keyLen, i)
+		}
+
+		return post(b.String() + "}")
+	}
+
+	few, many := manyKeys(maxErrorDetails+1, maxEchoLen+1), manyKeys(20*maxErrorDetails, 8*maxEchoLen)
+	require.Equal(t, http.StatusUnprocessableEntity, many.Code)
+	require.Equal(t, few.Body.Len(), many.Body.Len(), "the response must not grow with the key count or key size")
+
+	var capped Detail
+	require.NoError(t, json.Unmarshal(many.Body.Bytes(), &capped))
+	assert.Len(t, capped.Errors, maxErrorDetails)
+
+	for _, e := range capped.Errors {
+		assert.LessOrEqual(t, len(e.Location), maxEchoLen)
+	}
+
+	// A 3-byte rune straddles the cut: "body." + 83 runes ends at byte 254.
+	multibyte := post(`{"status":"OPEN","` + strings.Repeat("€", 100) + `":0}`)
+	require.Equal(t, http.StatusUnprocessableEntity, multibyte.Code)
+
+	var cut Detail
+	require.NoError(t, json.Unmarshal(multibyte.Body.Bytes(), &cut))
+
+	for _, e := range cut.Errors {
+		assert.True(t, utf8.ValidString(e.Location), "location must stay valid UTF-8")
+		assert.LessOrEqual(t, len(e.Location), maxEchoLen, "location must stay within the cap once decoded")
+	}
+
+	// url.Parse quotes the rejected URI in its error, which Huma puts in Message.
+	badURI := func(padding int) *httptest.ResponseRecorder {
+		return post(`{"contract_id":"c-1","status":"OPEN","callback":"http://a/` + strings.Repeat("€", padding) + `%zz"}`)
+	}
+
+	shortURI, longURI := badURI(1<<10), badURI(1<<20)
+	require.Equal(t, http.StatusUnprocessableEntity, longURI.Code)
+	require.Equal(t, shortURI.Body.Len(), longURI.Body.Len(), "the response must not grow with a rejected URI")
+
+	var uri Detail
+	require.NoError(t, json.Unmarshal(longURI.Body.Bytes(), &uri))
+	require.NotEmpty(t, uri.Errors)
+
+	for _, e := range uri.Errors {
+		assert.True(t, utf8.ValidString(e.Message), "message must stay valid UTF-8")
+		assert.LessOrEqual(t, len(e.Message), maxMessageLen, "message must stay within the cap once decoded")
+	}
 }
