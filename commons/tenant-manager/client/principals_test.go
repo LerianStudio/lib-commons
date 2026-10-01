@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/cache"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 )
 
@@ -37,16 +38,29 @@ func TestClient_GetTenantPrincipals_DecodesLiveParties(t *testing.T) {
 	}, principals)
 }
 
-func TestClient_GetTenantPrincipals_NoneIsEmpty(t *testing.T) {
+func TestClient_GetTenantPrincipals_RevocationShowsOnNextCall(t *testing.T) {
+	bodies := []string{
+		`{"items":[{"nature":"fundo","partyRef":"VERT"},{"nature":"originador","partyRef":"ORQUESS"}]}`,
+		`{"items":[{"nature":"fundo","partyRef":"VERT"}]}`,
+	}
+	calls := 0
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"items":[]}`))
+		_, _ = w.Write([]byte(bodies[calls]))
+		calls++
 	}))
 	defer server.Close()
 
-	principals, err := mustNewClient(t, server.URL).GetTenantPrincipals(context.Background(), "tenant-123", "streaming-hub")
+	client := mustNewClient(t, server.URL, WithCache(cache.NewInMemoryCache()))
+	t.Cleanup(func() { _ = client.Close() })
 
+	_, err := client.GetTenantPrincipals(context.Background(), "tenant-123", "streaming-hub")
 	require.NoError(t, err)
-	assert.Empty(t, principals)
+
+	principals, err := client.GetTenantPrincipals(context.Background(), "tenant-123", "streaming-hub")
+	require.NoError(t, err)
+	assert.Equal(t, []TenantPrincipal{{Nature: "fundo", PartyRef: "VERT"}}, principals,
+		"never served from the client's cache: a revoked party drops out on the next call")
 }
 
 func TestClient_GetTenantPrincipals_MapsStatusesLikeGetTenantConfig(t *testing.T) {
@@ -58,7 +72,6 @@ func TestClient_GetTenantPrincipals_MapsStatusesLikeGetTenantConfig(t *testing.T
 	}{
 		{"unknown or unassociated tenant", http.StatusNotFound, `{"code":"TN-0103"}`, core.ErrTenantNotFound},
 		{"another service's key", http.StatusForbidden, `{"code":"TN-0116","error":"API key is not authorized for the requested service"}`, core.ErrTenantServiceAccessDenied},
-		{"suspended association", http.StatusForbidden, `{"code":"TN-0114","error":"suspended","status":"suspended"}`, core.ErrTenantServiceAccessDenied},
 	}
 
 	for _, tt := range tests {

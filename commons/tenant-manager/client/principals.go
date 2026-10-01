@@ -22,22 +22,10 @@ type TenantPrincipal struct {
 	PartyRef string `json:"partyRef"`
 }
 
-// GetTenantPrincipals lists the parties the tenant's ACTIVE principals act for,
-// across every service they target, one entry per (PartyRef, Nature); a revoked
-// principal is absent. The API endpoint is:
+// GetTenantPrincipals lists the parties the tenant's active principals act for:
 // GET {baseURL}/v1/tenants/{tenantID}/associations/{service}/principals.
-//
-// The result is never cached, so a revocation shows on the next call. Statuses
-// map as in GetTenantConfig: 404 is core.ErrTenantNotFound (tenant unknown or
-// not associated with service), 403 wraps core.ErrTenantServiceAccessDenied,
-// and only 5xx trips the circuit breaker.
+// Never cached, so a revocation shows on the next call; statuses map as in GetTenantConfig.
 func (c *Client) GetTenantPrincipals(ctx context.Context, tenantID, service string) ([]TenantPrincipal, error) {
-	c.httpClientOnce.Do(func() {
-		if c.httpClient == nil {
-			c.httpClient = newDefaultHTTPClient()
-		}
-	})
-
 	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_tenant_principals")
@@ -98,7 +86,6 @@ func (c *Client) GetTenantPrincipals(ctx context.Context, tenantID, service stri
 	var parsed struct {
 		Items []TenantPrincipal `json:"items"`
 	}
-
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		logger.Log(ctx, obs.LevelError, "failed to parse response", "error", err)
 		libOpentelemetry.HandleSpanError(span, "Failed to parse response", err)
