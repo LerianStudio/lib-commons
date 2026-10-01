@@ -425,8 +425,8 @@ func TestInstall_ServerError_UpstreamReachesTheWire(t *testing.T) {
 }
 
 // TestInstall_ValidationErrorsDoNotEchoLargeValues proves a 4xx body is sized by
-// its errors, not by the request. Huma echoes the whole parent object once per
-// failing field and the raw body on a parse error; only small scalars survive.
+// fixed caps, never by the request: not by a large or malformed body, nor by many
+// or long unexpected keys.
 func TestInstall_ValidationErrorsDoNotEchoLargeValues(t *testing.T) {
 	// NOT parallel: mutates the process-global huma.NewError.
 	installForTest(t)
@@ -479,4 +479,29 @@ func TestInstall_ValidationErrorsDoNotEchoLargeValues(t *testing.T) {
 	malformed := post("{" + strings.Repeat("a", 4<<20))
 	require.Equal(t, http.StatusBadRequest, malformed.Code)
 	assert.Less(t, malformed.Body.Len(), 1<<10, "a parse error must not echo the raw body")
+
+	// One detail per unexpected key, each carrying that key in its location.
+	manyKeys := func(n, keyLen int) *httptest.ResponseRecorder {
+		var b strings.Builder
+
+		b.WriteString(`{"status":"OPEN"`)
+
+		for i := range n {
+			fmt.Fprintf(&b, `,"%0*d":0`, keyLen, i)
+		}
+
+		return post(b.String() + "}")
+	}
+
+	few, many := manyKeys(maxErrorDetails+1, maxEchoLen+1), manyKeys(20*maxErrorDetails, 8*maxEchoLen)
+	require.Equal(t, http.StatusUnprocessableEntity, many.Code)
+	require.Equal(t, few.Body.Len(), many.Body.Len(), "the response must not grow with the key count or key size")
+
+	var capped Detail
+	require.NoError(t, json.Unmarshal(many.Body.Bytes(), &capped))
+	assert.Len(t, capped.Errors, maxErrorDetails)
+
+	for _, e := range capped.Errors {
+		assert.LessOrEqual(t, len(e.Location), maxEchoLen)
+	}
 }

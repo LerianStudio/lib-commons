@@ -75,9 +75,9 @@ var installMu sync.Mutex
 //     the direct-huma.Error5xx(rawErr) info-leak that br-sfn's old override left
 //     open by passing the raw msg/errs straight through.
 //   - status  < 500: msg is passed through and errs are folded into Errors[] in
-//     order (skip nil, honor huma.ErrorDetailer) — exactly like the stock
+//     order (skip nil, honor huma.ErrorDetailer) — like the stock
 //     huma.NewError, so native 422 validation errors keep their per-field
-//     errors[] list. A detail's Value survives only when echoable.
+//     errors[] list, within the caps on fold.
 //   - at ANY status, an *Upstream, an Extensions or a PublicDetail found in errs
 //     is lifted onto the body instead of being folded (see curated). They are
 //     the only exceptions to the >=500 scrub, and each is carried by its TYPE,
@@ -155,12 +155,15 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 }
 
 // fold renders errs as errors[] like the stock huma.NewError: nil errs are
-// skipped and a huma.ErrorDetailer contributes its own detail, minus any Value
-// that is not echoable.
+// skipped and a huma.ErrorDetailer contributes its own detail, through bounded.
 func fold(errs []error) []*huma.ErrorDetail {
-	details := make([]*huma.ErrorDetail, 0, len(errs))
+	details := make([]*huma.ErrorDetail, 0, min(len(errs), maxErrorDetails))
 
 	for _, e := range errs {
+		if len(details) == maxErrorDetails {
+			break
+		}
+
 		if e == nil {
 			continue
 		}
@@ -169,14 +172,7 @@ func fold(errs []error) []*huma.ErrorDetail {
 			// ErrorDetail() may return a nil *huma.ErrorDetail; appending it
 			// would serialize a null entry into errors[]. Skip the nil one.
 			if d := converted.ErrorDetail(); d != nil {
-				// Copy, never mutate: an ErrorDetailer may return a shared detail.
-				if !echoable(d.Value) {
-					trimmed := *d
-					trimmed.Value = nil
-					d = &trimmed
-				}
-
-				details = append(details, d)
+				details = append(details, bounded(d))
 			}
 
 			continue
@@ -192,19 +188,39 @@ func fold(errs []error) []*huma.ErrorDetail {
 	return details
 }
 
-// maxEchoedValueLen bounds the value an errors[] entry echoes back. Huma sets
-// Value to the whole parent object per failing field and to the raw body on a
-// parse error, so only a scalar this small may reach the client.
-const maxEchoedValueLen = 256
+// Huma echoes request-sized data into errors[]: one detail per failing item or
+// unexpected key, that key in Location, the whole parent object or raw body in
+// Value. These caps size a 4xx by its errors, never by the request.
+const (
+	maxErrorDetails = 100
+	maxEchoLen      = 256
+)
 
-// echoable reports whether v may be echoed: nil, a bool, a number, or a string
-// of at most maxEchoedValueLen bytes. Objects and arrays never are.
+// bounded returns d with Location cut to maxEchoLen bytes and Value kept only
+// when echoable. It copies, never mutates: an ErrorDetailer may return a shared
+// detail.
+func bounded(d *huma.ErrorDetail) *huma.ErrorDetail {
+	if len(d.Location) <= maxEchoLen && echoable(d.Value) {
+		return d
+	}
+
+	trimmed := *d
+	trimmed.Location = d.Location[:min(len(d.Location), maxEchoLen)]
+
+	if !echoable(d.Value) {
+		trimmed.Value = nil
+	}
+
+	return &trimmed
+}
+
+// echoable admits nil, a bool, a number, or a string within maxEchoLen bytes.
 func echoable(v any) bool {
 	switch v := v.(type) {
 	case nil, bool, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return true
 	case string:
-		return len(v) <= maxEchoedValueLen
+		return len(v) <= maxEchoLen
 	default:
 		return false
 	}
