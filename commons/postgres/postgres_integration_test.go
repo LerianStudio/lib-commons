@@ -11,7 +11,6 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-observability/v4/metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -67,10 +66,9 @@ func setupPostgresContainer(t *testing.T) (string, func()) {
 // the connector lifecycle, not read/write splitting.
 func newTestConfig(dsn string) Config {
 	return Config{
-		PrimaryDSN:     dsn,
-		ReplicaDSN:     dsn,
-		Logger:         obs.Nop(),
-		MetricsFactory: metrics.NewNopFactory(),
+		PrimaryDSN: dsn,
+		ReplicaDSN: dsn,
+		Logger:     obs.Nop(),
 	}
 }
 
