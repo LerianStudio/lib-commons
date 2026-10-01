@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/humatest"
@@ -503,5 +504,17 @@ func TestInstall_ValidationErrorsDoNotEchoLargeValues(t *testing.T) {
 
 	for _, e := range capped.Errors {
 		assert.LessOrEqual(t, len(e.Location), maxEchoLen)
+	}
+
+	// A 3-byte rune straddles the cut: "body." + 83 runes ends at byte 254.
+	multibyte := post(`{"status":"OPEN","` + strings.Repeat("€", 100) + `":0}`)
+	require.Equal(t, http.StatusUnprocessableEntity, multibyte.Code)
+
+	var cut Detail
+	require.NoError(t, json.Unmarshal(multibyte.Body.Bytes(), &cut))
+
+	for _, e := range cut.Errors {
+		assert.True(t, utf8.ValidString(e.Location), "location must stay valid UTF-8")
+		assert.LessOrEqual(t, len(e.Location), maxEchoLen, "location must stay within the cap once decoded")
 	}
 }

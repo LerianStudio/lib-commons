@@ -3,6 +3,7 @@ package problem
 import (
 	"net/http"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/danielgtaylor/huma/v2"
 )
@@ -196,16 +197,24 @@ const (
 	maxEchoLen      = 256
 )
 
-// bounded returns d with Location cut to maxEchoLen bytes and Value kept only
-// when echoable. It copies, never mutates: an ErrorDetailer may return a shared
-// detail.
+// bounded returns d with Location cut on a rune boundary to at most maxEchoLen
+// bytes and Value kept only when echoable. It copies, never mutates: an
+// ErrorDetailer may return a shared detail.
 func bounded(d *huma.ErrorDetail) *huma.ErrorDetail {
 	if len(d.Location) <= maxEchoLen && echoable(d.Value) {
 		return d
 	}
 
 	trimmed := *d
-	trimmed.Location = d.Location[:min(len(d.Location), maxEchoLen)]
+
+	if len(d.Location) > maxEchoLen {
+		cut := maxEchoLen
+		for cut > 0 && !utf8.RuneStart(d.Location[cut]) {
+			cut--
+		}
+
+		trimmed.Location = d.Location[:cut]
+	}
 
 	if !echoable(d.Value) {
 		trimmed.Value = nil
