@@ -436,6 +436,7 @@ func TestInstall_ValidationErrorsDoNotEchoLargeValues(t *testing.T) {
 		Body struct {
 			ContractID string `json:"contract_id"`
 			Status     string `json:"status" enum:"OPEN,CLOSED"`
+			Callback   string `json:"callback,omitempty" format:"uri"`
 		}
 	}
 
@@ -516,5 +517,23 @@ func TestInstall_ValidationErrorsDoNotEchoLargeValues(t *testing.T) {
 	for _, e := range cut.Errors {
 		assert.True(t, utf8.ValidString(e.Location), "location must stay valid UTF-8")
 		assert.LessOrEqual(t, len(e.Location), maxEchoLen, "location must stay within the cap once decoded")
+	}
+
+	// url.Parse quotes the rejected URI in its error, which Huma puts in Message.
+	badURI := func(padding int) *httptest.ResponseRecorder {
+		return post(`{"contract_id":"c-1","status":"OPEN","callback":"http://a/` + strings.Repeat("€", padding) + `%zz"}`)
+	}
+
+	shortURI, longURI := badURI(1<<10), badURI(1<<20)
+	require.Equal(t, http.StatusUnprocessableEntity, longURI.Code)
+	require.Equal(t, shortURI.Body.Len(), longURI.Body.Len(), "the response must not grow with a rejected URI")
+
+	var uri Detail
+	require.NoError(t, json.Unmarshal(longURI.Body.Bytes(), &uri))
+	require.NotEmpty(t, uri.Errors)
+
+	for _, e := range uri.Errors {
+		assert.True(t, utf8.ValidString(e.Message), "message must stay valid UTF-8")
+		assert.LessOrEqual(t, len(e.Message), maxMessageLen, "message must stay within the cap once decoded")
 	}
 }
