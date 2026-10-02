@@ -4,9 +4,16 @@ package outbound
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +22,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/LerianStudio/lib-commons/v7/commons/security/ssrf"
@@ -48,6 +56,33 @@ func newForwardProxy(t *testing.T, upstream string) *forwardProxy {
 	p.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.serve(t, upstream, w, r)
 	}))
+
+	t.Cleanup(func() {
+		p.srv.Close()
+		p.closeTunnels()
+	})
+
+	return p
+}
+
+// newTLSForwardProxy is newForwardProxy behind TLS, offering h2 and HTTP/1.1
+// in ALPN as L7 egress gateways do. Its certificate is the httptest one, which
+// tlsServer's client config already trusts and which names 127.0.0.1.
+// A non-nil cert replaces the httptest certificate.
+func newTLSForwardProxy(t *testing.T, upstream string, cert *tls.Certificate) *forwardProxy {
+	t.Helper()
+
+	p := &forwardProxy{}
+	p.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.serve(t, upstream, w, r)
+	}))
+	p.srv.EnableHTTP2 = true
+
+	if cert != nil {
+		p.srv.TLS = &tls.Config{Certificates: []tls.Certificate{*cert}, MinVersion: tls.VersionTLS12}
+	}
+
+	p.srv.StartTLS()
 
 	t.Cleanup(func() {
 		p.srv.Close()
@@ -251,6 +286,130 @@ func TestWithProxy_TunnelsHTTPSThroughConnect(t *testing.T) {
 	assert.Equal(t, "tunnelled example.com", readBody(t, resp),
 		"TLS runs end to end to the target, verified against its certificate")
 	assert.Equal(t, []string{"CONNECT example.com:443"}, proxy.seen())
+}
+
+func TestWithProxy_HTTPSProxyOfferingH2(t *testing.T) {
+	t.Parallel()
+
+	target, tlsCfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "tunnelled "+r.Host+" "+r.Proto)
+	}))
+	proxy := newTLSForwardProxy(t, target.Listener.Addr().String(), nil)
+
+	proxyURL := proxy.url(t)
+	require.Equal(t, "https", proxyURL.Scheme)
+
+	proxyURL.User = url.UserPassword("svc-egress", "s3cret-pw")
+
+	client, err := NewClient(WithProxy(proxyURL), WithTLSConfig(tlsCfg), WithAllowPlaintextHTTP(),
+		WithLookupFunc(hostLookup(nil, map[string][]string{"example.com": {publicAddr}})))
+	require.NoError(t, err)
+	t.Cleanup(client.CloseIdleConnections)
+
+	resp, err := get(t, client, "https://example.com/")
+	require.NoError(t, err, "the CONNECT goes to an h2-capable proxy over HTTP/1.1")
+	assert.Equal(t, "tunnelled example.com HTTP/1.1", readBody(t, resp))
+
+	resp, err = get(t, client, "http://example.com/plain")
+	require.NoError(t, err)
+	assert.Equal(t, "proxied http://example.com/plain", readBody(t, resp),
+		"a plaintext target goes to the TLS proxy in absolute form")
+
+	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("svc-egress:s3cret-pw"))
+	assert.Equal(t, []string{"CONNECT example.com:443", "GET http://example.com/plain"}, proxy.seen())
+	assert.Equal(t, []string{wantAuth, wantAuth}, proxy.seenAuth())
+}
+
+func TestWithProxy_HTTPSProxyIsVerifiedUnderItsOwnName(t *testing.T) {
+	t.Parallel()
+
+	target, tlsCfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "tunnelled "+r.Host)
+	}))
+
+	untrustedProxy := newTLSForwardProxy(t, target.Listener.Addr().String(), nil)
+
+	untrusted, err := NewClient(WithProxy(untrustedProxy.url(t)), publicExample())
+	require.NoError(t, err)
+
+	_, err = get(t, untrusted, "https://example.com/")
+	require.Error(t, err, "a proxy certificate outside the client's roots is refused")
+	assert.Zero(t, untrustedProxy.hits.Load())
+
+	// The proxy's certificate names only 127.0.0.1; the client's ServerName
+	// names the target. The proxy is verified under its own name.
+	proxyCert, proxyLeaf := loopbackOnlyCert(t)
+	proxy := newTLSForwardProxy(t, target.Listener.Addr().String(), &proxyCert)
+
+	tlsCfg.RootCAs.AddCert(proxyLeaf)
+	tlsCfg.ServerName = "example.com"
+
+	client, err := NewClient(WithProxy(proxy.url(t)), WithTLSConfig(tlsCfg), publicExample())
+	require.NoError(t, err)
+	t.Cleanup(client.CloseIdleConnections)
+
+	resp, err := get(t, client, "https://example.com/")
+	require.NoError(t, err)
+	assert.Equal(t, "tunnelled example.com", readBody(t, resp))
+	assert.Equal(t, int32(1), proxy.hits.Load())
+}
+
+// loopbackOnlyCert returns a self-signed certificate valid for 127.0.0.1 only.
+func loopbackOnlyCert(t *testing.T) (tls.Certificate, *x509.Certificate) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "egress proxy"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1)},
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	leaf, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, leaf
+}
+
+func TestWithProxyFromEnvironment_HTTPSProxyOfferingH2(t *testing.T) {
+	clearProxyEnv(t)
+
+	target, tlsCfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "tunnelled "+r.Host)
+	}))
+	proxy := newTLSForwardProxy(t, target.Listener.Addr().String(), nil)
+
+	t.Setenv("HTTPS_PROXY", proxy.srv.URL)
+
+	client, err := NewClient(WithProxyFromEnvironment(), WithTLSConfig(tlsCfg), publicExample())
+	require.NoError(t, err)
+	t.Cleanup(client.CloseIdleConnections)
+
+	resp, err := get(t, client, "https://example.com/")
+	require.NoError(t, err)
+	assert.Equal(t, "tunnelled example.com", readBody(t, resp))
+	assert.Equal(t, []string{"CONNECT example.com:443"}, proxy.seen())
+}
+
+func TestWithProxyFromEnvironment_OneAddressTwoSchemesIsRefused(t *testing.T) {
+	clearProxyEnv(t)
+
+	t.Setenv("HTTPS_PROXY", "https://proxy.example:3128")
+	t.Setenv("HTTP_PROXY", "http://proxy.example:3128")
+
+	_, err := NewClient(WithProxyFromEnvironment())
+	require.ErrorIs(t, err, ErrInvalidOption)
 }
 
 func TestWithProxy_ClonesTheURL(t *testing.T) {

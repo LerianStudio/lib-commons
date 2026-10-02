@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -36,9 +37,10 @@ const (
 // unspecified or multicast address is refused, at construction for an IP
 // literal and at connect time for a name ([ssrf.ErrBlocked]); loopback and
 // private proxies, such as a sidecar or a corporate proxy, are allowed. An
-// https:// proxy is verified with the client's TLS config, under the proxy's
-// name unless that config sets ServerName, which then applies to the proxy
-// and the target alike.
+// https:// proxy is verified with the client's TLS config (roots, client
+// certificate, TLS floor) under the proxy's own host, whatever ServerName that
+// config sets for targets, and is always spoken to in HTTP/1.1, so a proxy
+// that also offers h2 still receives a plain CONNECT.
 //
 // Behind a proxy the client still refuses, before contacting the proxy, a
 // non-https scheme without an allowance, a blocked hostname, a blocked IP
@@ -92,23 +94,24 @@ type proxyFunc func(*http.Request) (*url.URL, error)
 
 // configureProxy returns the transport's proxy function (nil without a proxy)
 // and its dial function, which sends a dial to a proxy address through the
-// proxy dialer and every other dial through direct.
-func configureProxy(ctx context.Context, cfg *config, base *net.Dialer, direct ssrf.DialFunc) (proxyFunc, ssrf.DialFunc, error) {
+// proxy dialer and every other dial through direct. tlsConfig is the client's
+// resolved TLS config, cloned for every https:// proxy.
+func configureProxy(ctx context.Context, cfg *config, tlsConfig *tls.Config, base *net.Dialer, direct ssrf.DialFunc) (proxyFunc, ssrf.DialFunc, error) {
 	switch {
 	case cfg.proxyURL != nil && cfg.proxyFromEnvironment:
 		return nil, nil, fmt.Errorf("%w: WithProxy and WithProxyFromEnvironment are mutually exclusive", ErrInvalidOption)
 	case cfg.proxyUnresolvedTargets && cfg.proxyURL == nil && !cfg.proxyFromEnvironment:
 		return nil, nil, fmt.Errorf("%w: WithProxyUnresolvedTargets needs WithProxy or WithProxyFromEnvironment", ErrInvalidOption)
 	case cfg.proxyURL != nil:
-		return optionProxy(ctx, cfg, base, direct)
+		return optionProxy(ctx, cfg, tlsConfig, base, direct)
 	case cfg.proxyFromEnvironment:
-		return environmentProxy(ctx, cfg, base, direct)
+		return environmentProxy(ctx, cfg, tlsConfig, base, direct)
 	default:
 		return nil, direct, nil
 	}
 }
 
-func optionProxy(ctx context.Context, cfg *config, base *net.Dialer, direct ssrf.DialFunc) (proxyFunc, ssrf.DialFunc, error) {
+func optionProxy(ctx context.Context, cfg *config, tlsConfig *tls.Config, base *net.Dialer, direct ssrf.DialFunc) (proxyFunc, ssrf.DialFunc, error) {
 	proxyURL := cfg.proxyURL
 	proxyURL.Scheme = strings.ToLower(proxyURL.Scheme)
 
@@ -116,14 +119,19 @@ func optionProxy(ctx context.Context, cfg *config, base *net.Dialer, direct ssrf
 		return nil, nil, err
 	}
 
-	route := newProxyRoute(base, direct, proxyURL)
+	route, err := newProxyRoute(base, direct, tlsConfig, proxyURL)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	logProxy(ctx, cfg, "option", proxyURL, "http,https")
 
-	return func(*http.Request) (*url.URL, error) { return proxyURL, nil }, route.dial, nil
+	dialURL := netHTTPProxyURL(proxyURL)
+
+	return func(*http.Request) (*url.URL, error) { return dialURL, nil }, route.dial, nil
 }
 
-func environmentProxy(ctx context.Context, cfg *config, base *net.Dialer, direct ssrf.DialFunc) (proxyFunc, ssrf.DialFunc, error) {
+func environmentProxy(ctx context.Context, cfg *config, tlsConfig *tls.Config, base *net.Dialer, direct ssrf.DialFunc) (proxyFunc, ssrf.DialFunc, error) {
 	env := httpproxy.FromEnvironment()
 
 	httpsProxy, err := parseEnvironmentProxy(env.HTTPSProxy, "HTTPS_PROXY")
@@ -140,9 +148,13 @@ func environmentProxy(ctx context.Context, cfg *config, base *net.Dialer, direct
 		return nil, direct, nil
 	}
 
+	route, err := newProxyRoute(base, direct, tlsConfig, httpsProxy, httpProxy)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	logEnvironmentProxies(ctx, cfg, httpsProxy, httpProxy)
 
-	route := newProxyRoute(base, direct, httpsProxy, httpProxy)
 	choose := env.ProxyFunc()
 
 	return func(req *http.Request) (*url.URL, error) {
@@ -151,13 +163,17 @@ func environmentProxy(ctx context.Context, cfg *config, base *net.Dialer, direct
 			return nil, fmt.Errorf("outbound: proxy selection: %w", err)
 		}
 
+		if proxyURL != nil {
+			return netHTTPProxyURL(proxyURL), nil
+		}
+
 		// A direct dial to a proxy's own address would take the proxy dialer
 		// and skip the target's dial-time check.
-		if proxyURL == nil && route.isProxyAddr(targetAddr(req.URL)) {
+		if route.isProxyAddr(targetAddr(req.URL)) {
 			return nil, fmt.Errorf("%w: direct request to the forward proxy's address %s", ssrf.ErrBlocked, req.URL.Host)
 		}
 
-		return proxyURL, nil
+		return nil, nil
 	}, route.dial, nil
 }
 
@@ -349,20 +365,41 @@ func (g *guardedTransport) admitProxiedTarget(req *http.Request) error {
 }
 
 // proxyRoute dials the configured proxy addresses through the proxy dialer
-// and every other address through the SSRF-checked direct dialer.
+// and every other address through the SSRF-checked direct dialer. It also
+// speaks TLS to an https:// proxy itself: net/http is handed that proxy as
+// http://, so it sends the CONNECT (or an absolute-form request) as HTTP/1.1
+// over the TLS connection the route returns. Left to net/http, the handshake
+// would use the client's TLS config, whose ALPN offers h2, and a proxy that
+// accepts h2 would then receive an HTTP/1.1 CONNECT it cannot read.
 type proxyRoute struct {
-	addrs  map[string]struct{}
+	addrs  map[string]*tls.Config // proxy address -> TLS to it; nil for an http:// proxy
 	proxy  ssrf.DialFunc
 	direct ssrf.DialFunc
 }
 
-func newProxyRoute(base *net.Dialer, direct ssrf.DialFunc, proxies ...*url.URL) *proxyRoute {
-	addrs := make(map[string]struct{}, len(proxies))
+func newProxyRoute(base *net.Dialer, direct ssrf.DialFunc, tlsConfig *tls.Config, proxies ...*url.URL) (*proxyRoute, error) {
+	addrs := make(map[string]*tls.Config, len(proxies))
 
 	for _, proxyURL := range proxies {
-		if proxyURL != nil {
-			addrs[targetAddr(proxyURL)] = struct{}{}
+		if proxyURL == nil {
+			continue
 		}
+
+		var proxyTLS *tls.Config
+
+		if strings.EqualFold(proxyURL.Scheme, schemeHTTPS) {
+			proxyTLS = tlsConfig.Clone()
+			proxyTLS.ServerName = proxyURL.Hostname()
+			proxyTLS.NextProtos = []string{"http/1.1"}
+		}
+
+		addr := targetAddr(proxyURL)
+
+		if prev, seen := addrs[addr]; seen && (prev == nil) != (proxyTLS == nil) {
+			return nil, fmt.Errorf("%w: proxy address %s is named as both an http:// and an https:// proxy", ErrInvalidOption, addr)
+		}
+
+		addrs[addr] = proxyTLS
 	}
 
 	dialer := *base
@@ -370,26 +407,71 @@ func newProxyRoute(base *net.Dialer, direct ssrf.DialFunc, proxies ...*url.URL) 
 		return checkProxyConnectAddr(address)
 	}
 
-	return &proxyRoute{addrs: addrs, proxy: dialer.DialContext, direct: direct}
+	return &proxyRoute{addrs: addrs, proxy: dialer.DialContext, direct: direct}, nil
 }
 
 func (r *proxyRoute) dial(ctx context.Context, network, address string) (net.Conn, error) {
-	if r.isProxyAddr(address) {
-		return r.proxy(ctx, network, address)
+	proxyTLS, isProxy := r.proxyConfig(address)
+	if !isProxy {
+		return r.direct(ctx, network, address)
 	}
 
-	return r.direct(ctx, network, address)
+	conn, err := r.proxy(ctx, network, address)
+	if err != nil || proxyTLS == nil {
+		return conn, err
+	}
+
+	return handshakeProxy(ctx, conn, proxyTLS, address)
+}
+
+// handshakeProxy runs the TLS handshake with an https:// proxy, bounded by the
+// transport's TLS handshake timeout, and closes conn when it fails.
+func handshakeProxy(ctx context.Context, conn net.Conn, proxyTLS *tls.Config, address string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, defaultTLSHandshakeTimeout)
+	defer cancel()
+
+	tlsConn := tls.Client(conn, proxyTLS)
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		_ = conn.Close()
+
+		return nil, fmt.Errorf("outbound: TLS handshake with forward proxy %s: %w", address, err)
+	}
+
+	return tlsConn, nil
 }
 
 func (r *proxyRoute) isProxyAddr(address string) bool {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return false
-	}
-
-	_, ok := r.addrs[addrKey(host, port)]
+	_, ok := r.proxyConfig(address)
 
 	return ok
+}
+
+// proxyConfig reports whether address is a proxy's and returns the TLS config
+// for it, nil for an http:// proxy.
+func (r *proxyRoute) proxyConfig(address string) (*tls.Config, bool) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, false
+	}
+
+	proxyTLS, ok := r.addrs[addrKey(host, port)]
+
+	return proxyTLS, ok
+}
+
+// netHTTPProxyURL is the proxy URL handed to net/http: an https:// proxy
+// becomes http:// with its port made explicit, because proxyRoute's dial
+// already returns the TLS connection to it.
+func netHTTPProxyURL(proxyURL *url.URL) *url.URL {
+	if !strings.EqualFold(proxyURL.Scheme, schemeHTTPS) {
+		return proxyURL
+	}
+
+	plain := *proxyURL
+	plain.Scheme = schemeHTTP
+	plain.Host = targetAddr(proxyURL)
+
+	return &plain
 }
 
 // targetAddr is the host:port net/http dials for u: the port defaults by

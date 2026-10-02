@@ -314,7 +314,7 @@ func newGuardedTransport(cfg *config) (*guardedTransport, error) {
 
 	dialer := &net.Dialer{Timeout: defaultDialTimeout, KeepAlive: defaultDialKeepAlive}
 
-	proxy, dial, err := configureProxy(ctx, cfg, dialer, ssrf.DialContext(dialer, ssrfOpts...))
+	proxy, dial, err := configureProxy(ctx, cfg, tlsConfig, dialer, ssrf.DialContext(dialer, ssrfOpts...))
 	if err != nil {
 		return nil, err
 	}

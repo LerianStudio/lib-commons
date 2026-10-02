@@ -49,7 +49,10 @@
 // one logs WARN "outbound forward proxy active" (feature
 // outbound_forward_proxy) with the proxy's scheme and host, never its
 // credentials. Only http:// and https:// proxies are accepted; a malformed
-// proxy URL fails construction with [ErrInvalidOption].
+// proxy URL fails construction with [ErrInvalidOption]. An https:// proxy is
+// verified with the client's TLS config under the proxy's own host and is
+// always spoken to in HTTP/1.1, so an egress gateway that also offers h2
+// still receives a plain CONNECT.
 //
 // What still holds behind a proxy:
 //   - The scheme, hostname blocklist and IP-literal checks run before the
