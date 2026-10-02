@@ -1,5 +1,21 @@
 # Lib-commons Changelog
 
+## [7.14.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.14.0)
+
+Features:
+- Add `GetTenantPrincipals` client method to enhance tenant management capabilities. (@fredcamaral)
+
+Fixes:
+- Ensure `GetTenantPrincipals` remains nil-safe when used on a bare Client to prevent potential errors. (@fredcamaral)
+
+Improvements:
+- Refine `GetTenantPrincipals` implementation following a review to streamline its functionality. (@fredcamaral)
+- Remove the obsolete metrics factory from the PostgreSQL integration test configuration for cleaner test setups. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.13.2...v7.14.0)
+
+---
+
 ## [7.13.2](https://github.com/LerianStudio/lib-commons/releases/tag/v7.13.2)
 
 Fixes:
