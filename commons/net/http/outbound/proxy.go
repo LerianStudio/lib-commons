@@ -41,12 +41,18 @@ const (
 // and the target alike.
 //
 // Behind a proxy the client still refuses, before contacting the proxy, a
-// non-https scheme without an allowance, a blocked hostname and a blocked IP
-// literal. What it can no longer check is the address a target name resolves
-// to: the proxy resolves and connects to the target, so that policy, the
-// dial-time defence against DNS rebinding, moves to the proxy. The client
-// logs WARN "outbound forward proxy active" (feature outbound_forward_proxy)
-// when it is built.
+// non-https scheme without an allowance, a blocked hostname, a blocked IP
+// literal and a target name that resolves, through the client's own resolver
+// ([WithLookupFunc] when given), to any blocked address. A target name the
+// client cannot resolve is refused ([ssrf.ErrDNSFailed]) unless
+// [WithProxyUnresolvedTargets] is set. What the client cannot check is the
+// address the proxy itself resolves and connects to: a DNS answer that
+// changes between the two lookups (DNS rebinding) is the proxy's to police,
+// so a proxied client should be given target URLs from configuration or
+// vetted sources, never raw user input. [WithAllowPrivateNetwork] turns the
+// target resolution off along with the IP-range blocklist. The client logs
+// WARN "outbound forward proxy active" (feature outbound_forward_proxy, with
+// the target_ip_check in force) when it is built.
 func WithProxy(proxyURL *url.URL) Option {
 	return func(c *config) {
 		if proxyURL != nil {
@@ -71,6 +77,16 @@ func WithProxyFromEnvironment() Option {
 	return func(c *config) { c.proxyFromEnvironment = true }
 }
 
+// WithProxyUnresolvedTargets lets a proxied request whose target name the
+// client cannot resolve go to the proxy, for egress where only the proxy has
+// DNS for external names. A target name that does resolve is still refused
+// when any answer is blocked. It needs [WithProxy] or
+// [WithProxyFromEnvironment] ([ErrInvalidOption] otherwise), and the forward
+// proxy audit line records it.
+func WithProxyUnresolvedTargets() Option {
+	return func(c *config) { c.proxyUnresolvedTargets = true }
+}
+
 // proxyFunc is the type of [net/http.Transport.Proxy].
 type proxyFunc func(*http.Request) (*url.URL, error)
 
@@ -81,6 +97,8 @@ func configureProxy(ctx context.Context, cfg *config, base *net.Dialer, direct s
 	switch {
 	case cfg.proxyURL != nil && cfg.proxyFromEnvironment:
 		return nil, nil, fmt.Errorf("%w: WithProxy and WithProxyFromEnvironment are mutually exclusive", ErrInvalidOption)
+	case cfg.proxyUnresolvedTargets && cfg.proxyURL == nil && !cfg.proxyFromEnvironment:
+		return nil, nil, fmt.Errorf("%w: WithProxyUnresolvedTargets needs WithProxy or WithProxyFromEnvironment", ErrInvalidOption)
 	case cfg.proxyURL != nil:
 		return optionProxy(ctx, cfg, base, direct)
 	case cfg.proxyFromEnvironment:
@@ -100,7 +118,7 @@ func optionProxy(ctx context.Context, cfg *config, base *net.Dialer, direct ssrf
 
 	route := newProxyRoute(base, direct, proxyURL)
 
-	logProxy(ctx, cfg.logger, "option", proxyURL, "http,https")
+	logProxy(ctx, cfg, "option", proxyURL, "http,https")
 
 	return func(*http.Request) (*url.URL, error) { return proxyURL, nil }, route.dial, nil
 }
@@ -122,7 +140,7 @@ func environmentProxy(ctx context.Context, cfg *config, base *net.Dialer, direct
 		return nil, direct, nil
 	}
 
-	logEnvironmentProxies(ctx, cfg.logger, httpsProxy, httpProxy)
+	logEnvironmentProxies(ctx, cfg, httpsProxy, httpProxy)
 
 	route := newProxyRoute(base, direct, httpsProxy, httpProxy)
 	choose := env.ProxyFunc()
@@ -265,29 +283,69 @@ func describeProxy(u *url.URL) string {
 	return u.Scheme + "://" + u.Host
 }
 
-func logProxy(ctx context.Context, logger obs.Logger, source string, proxyURL *url.URL, targets string) {
-	logger.Log(ctx, obs.LevelWarn, "outbound forward proxy active",
+func logProxy(ctx context.Context, cfg *config, source string, proxyURL *url.URL, targets string) {
+	cfg.logger.Log(ctx, obs.LevelWarn, "outbound forward proxy active",
 		"feature", "outbound_forward_proxy",
 		"source", source,
 		"proxy", describeProxy(proxyURL),
 		"targets", targets,
-		"target_ip_check", "delegated to the proxy",
+		"target_ip_check", describeTargetCheck(cfg),
 	)
 }
 
-func logEnvironmentProxies(ctx context.Context, logger obs.Logger, httpsProxy, httpProxy *url.URL) {
+// describeTargetCheck names, for the audit line, how a proxied target's
+// resolved addresses are checked.
+func describeTargetCheck(cfg *config) string {
+	switch {
+	case cfg.allowPrivate:
+		return "off: private network allowed"
+	case cfg.proxyUnresolvedTargets:
+		return "resolved by the client; unresolved names delegated to the proxy"
+	default:
+		return "resolved by the client, fail-closed"
+	}
+}
+
+func logEnvironmentProxies(ctx context.Context, cfg *config, httpsProxy, httpProxy *url.URL) {
 	switch {
 	case httpsProxy != nil && httpProxy != nil && httpsProxy.String() == httpProxy.String():
-		logProxy(ctx, logger, "environment", httpsProxy, "http,https")
+		logProxy(ctx, cfg, "environment", httpsProxy, "http,https")
 	default:
 		if httpsProxy != nil {
-			logProxy(ctx, logger, "environment", httpsProxy, schemeHTTPS)
+			logProxy(ctx, cfg, "environment", httpsProxy, schemeHTTPS)
 		}
 
 		if httpProxy != nil {
-			logProxy(ctx, logger, "environment", httpProxy, schemeHTTP)
+			logProxy(ctx, cfg, "environment", httpProxy, schemeHTTP)
 		}
 	}
+}
+
+// admitProxiedTarget resolves the target of a request that will go through
+// the proxy and refuses it when any answer is blocked, or when the name does
+// not resolve and unresolved targets are not delegated. A direct request, an
+// IP literal (judged by ssrf.ValidateURL) and a client with private networks
+// allowed are not resolved here.
+func (g *guardedTransport) admitProxiedTarget(req *http.Request) error {
+	if g.proxy == nil || g.allowPrivate {
+		return nil
+	}
+
+	if _, err := netip.ParseAddr(strings.TrimRight(req.URL.Hostname(), ".")); err == nil {
+		return nil
+	}
+
+	proxyURL, err := g.proxy(req)
+	if err != nil || proxyURL == nil {
+		return err
+	}
+
+	_, err = ssrf.ResolveAndValidate(req.Context(), req.URL.String(), g.ssrfOpts...)
+	if err != nil && g.proxyUnresolvedTargets && errors.Is(err, ssrf.ErrDNSFailed) {
+		return nil
+	}
+
+	return err
 }
 
 // proxyRoute dials the configured proxy addresses through the proxy dialer

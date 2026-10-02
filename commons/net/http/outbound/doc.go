@@ -53,7 +53,15 @@
 //
 // What still holds behind a proxy:
 //   - The scheme, hostname blocklist and IP-literal checks run before the
-//     proxy is contacted, so a refused target never reaches it.
+//     proxy is contacted, so a refused target never reaches it. A host that
+//     ends in a numeric label but is not a canonical IP literal ("127.1",
+//     "2130706433") is a blocked hostname, because the proxy may read it as
+//     an address.
+//   - The client resolves a target name itself (through [WithLookupFunc] when
+//     given) and refuses it when any answer is blocked, before the proxy is
+//     contacted. A name the client cannot resolve is refused
+//     ([ssrf.ErrDNSFailed]); [WithProxyUnresolvedTargets] sends it to the
+//     proxy instead, for egress where only the proxy resolves external names.
 //   - An https target goes through a CONNECT tunnel: TLS is end to end, with
 //     the target's name as SNI, its certificate verified and the TLS 1.2
 //     floor. An http target needs a plaintext allowance and is sent to the
@@ -66,11 +74,13 @@
 //     Loopback and private proxies, such as a sidecar or a corporate proxy,
 //     are allowed.
 //
-// What changes: the proxy, not the client, resolves the target's name and
-// connects to it, so the client cannot check the address a target name
-// resolves to. That policy, the dial-time defence against DNS rebinding,
-// becomes the proxy's. The client adds no local DNS pre-check: failing closed
-// on it would break split-DNS egress, and failing open would protect nothing.
+// What changes: the proxy, not the client, makes the connection, after its own
+// lookup of the target's name. A DNS answer that changes between the client's
+// lookup and the proxy's (DNS rebinding), and a name the client delegated
+// unresolved, are the proxy's to police. Give a proxied client target URLs
+// from configuration or vetted sources, never raw user input.
+// [WithAllowPrivateNetwork] turns the client-side target resolution off along
+// with the IP-range blocklist.
 //
 // # Private networks
 //

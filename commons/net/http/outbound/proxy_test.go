@@ -172,6 +172,32 @@ func blockedLookup(count *atomic.Int32) ssrf.LookupFunc {
 	}
 }
 
+// publicAddr is a public address the SSRF blocklist admits.
+const publicAddr = "93.184.216.34"
+
+// hostLookup answers each hostname from answers, fails for any other, and
+// counts lookups. A proxied target is resolved by the client before the proxy
+// is contacted, so a test that reaches the proxy must answer its target here,
+// never through real DNS.
+func hostLookup(count *atomic.Int32, answers map[string][]string) ssrf.LookupFunc {
+	return func(_ context.Context, host string) ([]string, error) {
+		if count != nil {
+			count.Add(1)
+		}
+
+		if addrs, ok := answers[host]; ok {
+			return addrs, nil
+		}
+
+		return nil, fmt.Errorf("no such host %s", host)
+	}
+}
+
+// publicExample resolves example.com to a public address.
+func publicExample() Option {
+	return WithLookupFunc(hostLookup(nil, map[string][]string{"example.com": {publicAddr}}))
+}
+
 // clearProxyEnv empties every variable httpproxy reads, lowercase first, so a
 // test sees only what it sets.
 func clearProxyEnv(t *testing.T) {
@@ -215,7 +241,7 @@ func TestWithProxy_TunnelsHTTPSThroughConnect(t *testing.T) {
 	}))
 	proxy := newForwardProxy(t, target.Listener.Addr().String())
 
-	client, err := NewClient(WithProxy(proxy.url(t)), WithTLSConfig(tlsCfg))
+	client, err := NewClient(WithProxy(proxy.url(t)), WithTLSConfig(tlsCfg), publicExample())
 	require.NoError(t, err)
 	t.Cleanup(client.CloseIdleConnections)
 
@@ -235,7 +261,7 @@ func TestWithProxy_ClonesTheURL(t *testing.T) {
 
 	proxyURL := proxy.url(t)
 
-	client, err := NewClient(WithProxy(proxyURL), WithTLSConfig(tlsCfg))
+	client, err := NewClient(WithProxy(proxyURL), WithTLSConfig(tlsCfg), publicExample())
 	require.NoError(t, err)
 	t.Cleanup(client.CloseIdleConnections)
 
@@ -288,6 +314,141 @@ func TestWithProxy_RefusesNonCanonicalIPTargetsBeforeContactingProxy(t *testing.
 	assert.Zero(t, proxy.hits.Load(), "a proxy resolving inet_aton-style never sees a blocked address")
 }
 
+func TestWithProxy_ResolvesTargetBeforeContactingProxy(t *testing.T) {
+	t.Parallel()
+
+	target, tlsCfg := tlsServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	proxy := newForwardProxy(t, target.Listener.Addr().String())
+
+	var lookups atomic.Int32
+
+	client, err := NewClient(WithProxy(proxy.url(t)), WithTLSConfig(tlsCfg),
+		WithLookupFunc(hostLookup(&lookups, map[string][]string{
+			"example.com":         {publicAddr},
+			"intranet.example":    {"10.0.0.5"},
+			"mixed.example":       {publicAddr, "169.254.169.254"},
+			"loopback.example":    {"::1"},
+			"unparseable.example": {"not-an-ip"},
+		})))
+	require.NoError(t, err)
+	t.Cleanup(client.CloseIdleConnections)
+
+	for _, refused := range []string{
+		"https://intranet.example/", "https://mixed.example/", "https://loopback.example/",
+	} {
+		_, err := get(t, client, refused)
+		require.ErrorIs(t, err, ssrf.ErrBlocked, refused)
+	}
+
+	_, err = get(t, client, "https://unparseable.example/")
+	require.ErrorIs(t, err, ssrf.ErrInvalidURL)
+
+	_, err = get(t, client, "https://unknown.example/")
+	require.ErrorIs(t, err, ssrf.ErrDNSFailed, "a target the client cannot resolve is refused by default")
+
+	assert.Zero(t, proxy.hits.Load(), "a refused target never reaches the proxy")
+
+	_, err = get(t, client, "https://example.com/")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), proxy.hits.Load())
+	assert.Equal(t, int32(6), lookups.Load())
+}
+
+func TestWithProxy_IPLiteralTargetIsNotLookedUp(t *testing.T) {
+	t.Parallel()
+
+	target, tlsCfg := tlsServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	proxy := newForwardProxy(t, target.Listener.Addr().String())
+
+	var lookups atomic.Int32
+
+	tlsCfg.ServerName = "example.com"
+
+	client, err := NewClient(WithProxy(proxy.url(t)), WithTLSConfig(tlsCfg),
+		WithLookupFunc(hostLookup(&lookups, nil)))
+	require.NoError(t, err)
+	t.Cleanup(client.CloseIdleConnections)
+
+	_, err = get(t, client, "https://"+publicAddr+"/")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), proxy.hits.Load())
+	assert.Zero(t, lookups.Load(), "an IP literal is judged as written")
+}
+
+func TestWithProxyUnresolvedTargets_DelegatesOnlyFailedLookups(t *testing.T) {
+	t.Parallel()
+
+	target, tlsCfg := tlsServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	proxy := newForwardProxy(t, target.Listener.Addr().String())
+
+	logger := &recordingLogger{}
+
+	client, err := NewClient(WithLogger(logger), WithProxy(proxy.url(t)), WithTLSConfig(tlsCfg),
+		WithProxyUnresolvedTargets(),
+		WithLookupFunc(hostLookup(nil, map[string][]string{"intranet.example": {"10.0.0.5"}})))
+	require.NoError(t, err)
+	t.Cleanup(client.CloseIdleConnections)
+
+	_, err = get(t, client, "https://intranet.example/")
+	require.ErrorIs(t, err, ssrf.ErrBlocked, "a name that resolves is still checked")
+	assert.Zero(t, proxy.hits.Load())
+
+	_, err = get(t, client, "https://example.com/")
+	require.NoError(t, err, "a name the client cannot resolve goes to the proxy")
+	assert.Equal(t, int32(1), proxy.hits.Load())
+
+	warns := logger.withFeature(obs.LevelWarn, "outbound_forward_proxy")
+	require.Len(t, warns, 1)
+	assert.Equal(t, "resolved by the client; unresolved names delegated to the proxy", warns[0]["target_ip_check"])
+}
+
+func TestWithProxy_AllowPrivateNetworkSkipsTargetResolution(t *testing.T) {
+	t.Parallel()
+
+	target, tlsCfg := tlsServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	proxy := newForwardProxy(t, target.Listener.Addr().String())
+
+	var lookups atomic.Int32
+
+	logger := &recordingLogger{}
+
+	client, err := NewClient(WithLogger(logger), WithProxy(proxy.url(t)), WithTLSConfig(tlsCfg),
+		WithAllowPrivateNetwork(), WithLookupFunc(hostLookup(&lookups, nil)))
+	require.NoError(t, err)
+	t.Cleanup(client.CloseIdleConnections)
+
+	_, err = get(t, client, "https://example.com/")
+	require.NoError(t, err)
+	assert.Zero(t, lookups.Load(), "with the IP-range blocklist lifted there is nothing to resolve for")
+
+	warns := logger.withFeature(obs.LevelWarn, "outbound_forward_proxy")
+	require.Len(t, warns, 1)
+	assert.Equal(t, "off: private network allowed", warns[0]["target_ip_check"])
+}
+
+func TestWithProxy_DefaultAuditNamesTheTargetCheck(t *testing.T) {
+	t.Parallel()
+
+	logger := &recordingLogger{}
+
+	_, err := NewClient(WithLogger(logger), WithProxy(mustURL(t, "http://proxy.example:3128")))
+	require.NoError(t, err)
+
+	warns := logger.withFeature(obs.LevelWarn, "outbound_forward_proxy")
+	require.Len(t, warns, 1)
+	assert.Equal(t, "resolved by the client, fail-closed", warns[0]["target_ip_check"])
+}
+
+func TestWithProxyUnresolvedTargets_NeedsAProxyOption(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewClient(WithProxyUnresolvedTargets())
+	require.ErrorIs(t, err, ErrInvalidOption)
+
+	_, err = NewTransport(WithProxyUnresolvedTargets())
+	require.ErrorIs(t, err, ErrInvalidOption)
+}
+
 func TestWithProxy_PlaintextNeedsAnAllowance(t *testing.T) {
 	t.Setenv("ALLOW_INSECURE_TLS", "")
 
@@ -300,7 +461,7 @@ func TestWithProxy_PlaintextNeedsAnAllowance(t *testing.T) {
 	require.ErrorIs(t, err, ErrInsecureScheme)
 	assert.Zero(t, proxy.hits.Load(), "a refused scheme never reaches the proxy")
 
-	plaintext, err := NewClient(WithProxy(proxy.url(t)), WithAllowPlaintextHTTP())
+	plaintext, err := NewClient(WithProxy(proxy.url(t)), WithAllowPlaintextHTTP(), publicExample())
 	require.NoError(t, err)
 	t.Cleanup(plaintext.CloseIdleConnections)
 
@@ -319,7 +480,7 @@ func TestWithProxy_RedirectThroughTunnelIsRefused(t *testing.T) {
 	}))
 	proxy := newForwardProxy(t, target.Listener.Addr().String())
 
-	client, err := NewClient(WithProxy(proxy.url(t)), WithTLSConfig(tlsCfg))
+	client, err := NewClient(WithProxy(proxy.url(t)), WithTLSConfig(tlsCfg), publicExample())
 	require.NoError(t, err)
 	t.Cleanup(client.CloseIdleConnections)
 
@@ -434,7 +595,7 @@ func TestWithProxy_AuditsWithoutCredentials(t *testing.T) {
 
 	logger := &recordingLogger{}
 
-	client, err := NewClient(WithLogger(logger), WithProxy(proxyURL), WithTLSConfig(tlsCfg))
+	client, err := NewClient(WithLogger(logger), WithProxy(proxyURL), WithTLSConfig(tlsCfg), publicExample())
 	require.NoError(t, err)
 	t.Cleanup(client.CloseIdleConnections)
 
@@ -489,8 +650,11 @@ func TestWithProxyFromEnvironment_ReadsOnceAndHonoursNoProxy(t *testing.T) {
 
 	logger := &recordingLogger{}
 
-	client, err := NewClient(WithLogger(logger), WithProxyFromEnvironment(),
-		WithTLSConfig(tlsCfg), WithLookupFunc(blockedLookup(&lookups)))
+	client, err := NewClient(WithLogger(logger), WithProxyFromEnvironment(), WithTLSConfig(tlsCfg),
+		WithLookupFunc(hostLookup(&lookups, map[string][]string{
+			"example.com":        {publicAddr},
+			"direct.example.net": {"10.0.0.1"},
+		})))
 	require.NoError(t, err)
 	t.Cleanup(client.CloseIdleConnections)
 
@@ -501,10 +665,11 @@ func TestWithProxyFromEnvironment_ReadsOnceAndHonoursNoProxy(t *testing.T) {
 	_, err = get(t, client, "https://example.com/")
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), proxy.hits.Load())
+	assert.Equal(t, int32(1), lookups.Load(), "the proxied target is resolved and checked by the client")
 
 	_, err = get(t, client, "https://direct.example.net/")
 	require.ErrorIs(t, err, ssrf.ErrBlocked, "a NO_PROXY host takes the direct, SSRF-checked dial")
-	assert.Equal(t, int32(1), lookups.Load())
+	assert.Equal(t, int32(2), lookups.Load())
 	assert.Equal(t, int32(1), proxy.hits.Load())
 
 	t.Setenv("HTTPS_PROXY", "")
@@ -529,7 +694,7 @@ func TestWithProxyFromEnvironment_PlaintextUsesHTTPProxy(t *testing.T) {
 
 	t.Setenv("HTTP_PROXY", strings.TrimPrefix(proxy.srv.URL, "http://"))
 
-	client, err := NewClient(WithProxyFromEnvironment(), WithAllowPlaintextHTTP())
+	client, err := NewClient(WithProxyFromEnvironment(), WithAllowPlaintextHTTP(), publicExample())
 	require.NoError(t, err, "a value without a scheme is read as http://")
 	t.Cleanup(client.CloseIdleConnections)
 

@@ -97,8 +97,9 @@ type config struct {
 	allowedHostnames     []string
 	lookup               ssrf.LookupFunc
 	logger               obs.Logger
-	proxyURL             *url.URL
-	proxyFromEnvironment bool
+	proxyURL               *url.URL
+	proxyFromEnvironment   bool
+	proxyUnresolvedTargets bool
 }
 
 // WithTimeout sets the client's total request timeout. It must be positive;
@@ -205,9 +206,8 @@ func WithLogger(logger obs.Logger) Option {
 //     checked at connect time and DNS rebinding cannot reach a blocked range;
 //   - uses no proxy, ignoring HTTP_PROXY/HTTPS_PROXY, unless [WithProxy] or
 //     [WithProxyFromEnvironment] selects one; a proxied request still passes
-//     the scheme, hostname and IP-literal checks before the proxy is
-//     contacted, and the target's resolved address is then the proxy's to
-//     police;
+//     the scheme, hostname and IP-literal checks, and its target name is
+//     resolved and checked by the client, before the proxy is contacted;
 //   - verifies the certificate against the URL hostname, sent as SNI;
 //   - answers a 3xx the redirect policy does not follow with
 //     [ErrRedirectRefused] instead of a response, so no client built around
@@ -280,10 +280,13 @@ func buildConfig(opts []Option) (*config, error) {
 // guardedTransport admits a request by scheme and hostname, then hands it to
 // a transport whose every dial is SSRF-checked.
 type guardedTransport struct {
-	base      *http.Transport
-	allowHTTP bool
-	redirects RedirectPolicy
-	ssrfOpts  []ssrf.Option
+	base                   *http.Transport
+	allowHTTP              bool
+	redirects              RedirectPolicy
+	ssrfOpts               []ssrf.Option
+	proxy                  proxyFunc
+	allowPrivate           bool
+	proxyUnresolvedTargets bool
 }
 
 func newGuardedTransport(cfg *config) (*guardedTransport, error) {
@@ -327,9 +330,12 @@ func newGuardedTransport(cfg *config) (*guardedTransport, error) {
 			TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
 			ExpectContinueTimeout: defaultExpectContinueTimeout,
 		},
-		allowHTTP: plaintextAllowed(ctx, cfg),
-		redirects: cfg.redirects,
-		ssrfOpts:  ssrfOpts,
+		allowHTTP:              plaintextAllowed(ctx, cfg),
+		redirects:              cfg.redirects,
+		ssrfOpts:               ssrfOpts,
+		proxy:                  proxy,
+		allowPrivate:           cfg.allowPrivate,
+		proxyUnresolvedTargets: cfg.proxyUnresolvedTargets,
 	}, nil
 }
 
@@ -457,7 +463,11 @@ func (g *guardedTransport) admit(req *http.Request) error {
 		return fmt.Errorf("%w: %q", ErrInsecureScheme, req.URL.Scheme)
 	}
 
-	return ssrf.ValidateURL(req.Context(), req.URL.String(), g.ssrfOpts...)
+	if err := ssrf.ValidateURL(req.Context(), req.URL.String(), g.ssrfOpts...); err != nil {
+		return err
+	}
+
+	return g.admitProxiedTarget(req)
 }
 
 // CloseIdleConnections closes the underlying transport's idle connections, so
