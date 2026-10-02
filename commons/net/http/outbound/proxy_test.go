@@ -431,6 +431,34 @@ func TestWithProxy_ClonesTheURL(t *testing.T) {
 	assert.Equal(t, int32(1), proxy.hits.Load(), "a later change to the caller's URL has no effect")
 }
 
+func TestWithProxy_ClonesAtTheCall(t *testing.T) {
+	t.Parallel()
+
+	target, tlsCfg := tlsServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	proxy := newForwardProxy(t, target.Listener.Addr().String())
+
+	proxyURL := proxy.url(t)
+	opt := WithProxy(proxyURL)
+
+	proxyURL.Host = "203.0.113.9:1"
+
+	client, err := NewClient(opt, WithTLSConfig(tlsCfg), publicExample())
+	require.NoError(t, err)
+	t.Cleanup(client.CloseIdleConnections)
+
+	_, err = get(t, client, "https://example.com/")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), proxy.hits.Load(), "a change between WithProxy and construction has no effect")
+
+	again, err := NewClient(opt, WithTLSConfig(tlsCfg), publicExample())
+	require.NoError(t, err, "one option builds several clients")
+	t.Cleanup(again.CloseIdleConnections)
+
+	_, err = get(t, again, "https://example.com/")
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), proxy.hits.Load())
+}
+
 func TestWithProxy_RefusesBlockedTargetsBeforeContactingProxy(t *testing.T) {
 	t.Parallel()
 

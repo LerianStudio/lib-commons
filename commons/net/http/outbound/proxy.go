@@ -29,9 +29,9 @@ const (
 // and an http target (only under a plaintext allowance) in absolute form, so
 // the proxy then sees that request, credentials included, in the clear.
 //
-// proxyURL is cloned, and a nil URL is ignored. It must be an http:// or
-// https:// URL with an ASCII host, an optional port and no path, query or
-// fragment; userinfo becomes the Proxy-Authorization credentials. Anything
+// proxyURL is cloned when WithProxy is called, and a nil URL is ignored. It
+// must be an http:// or https:// URL with an ASCII host, an optional port, no
+// path but an optional "/", and no query or fragment; userinfo becomes the Proxy-Authorization credentials. Anything
 // else, or combining it with [WithProxyFromEnvironment], fails construction
 // with [ErrInvalidOption]. A proxy at a link-local (cloud metadata),
 // unspecified or multicast address is refused, at construction for an IP
@@ -56,11 +56,15 @@ const (
 // WARN "outbound forward proxy active" (feature outbound_forward_proxy, with
 // the target_ip_check in force) when it is built.
 func WithProxy(proxyURL *url.URL) Option {
+	if proxyURL == nil {
+		return func(*config) {}
+	}
+
+	snapshot := *proxyURL
+
 	return func(c *config) {
-		if proxyURL != nil {
-			clone := *proxyURL
-			c.proxyURL = &clone
-		}
+		clone := snapshot
+		c.proxyURL = &clone
 	}
 }
 
