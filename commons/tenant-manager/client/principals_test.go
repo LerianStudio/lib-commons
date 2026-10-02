@@ -108,3 +108,9 @@ func TestClient_GetTenantPrincipals_ServerErrorTripsBreaker(t *testing.T) {
 	require.ErrorIs(t, err, core.ErrCircuitBreakerOpen)
 	assert.Equal(t, 1, calls, "an open breaker fails fast without calling the Tenant Manager")
 }
+
+func TestClient_GetTenantPrincipals_ZeroValueClientErrsInsteadOfPanicking(t *testing.T) {
+	_, err := (&Client{}).GetTenantPrincipals(context.Background(), "tenant-123", "streaming-hub")
+
+	require.Error(t, err)
+}

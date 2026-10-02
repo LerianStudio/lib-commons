@@ -26,6 +26,12 @@ type TenantPrincipal struct {
 // GET {baseURL}/v1/tenants/{tenantID}/associations/{service}/principals.
 // Never cached, so a revocation shows on the next call; statuses map as in GetTenantConfig.
 func (c *Client) GetTenantPrincipals(ctx context.Context, tenantID, service string) ([]TenantPrincipal, error) {
+	c.httpClientOnce.Do(func() {
+		if c.httpClient == nil {
+			c.httpClient = newDefaultHTTPClient()
+		}
+	})
+
 	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_tenant_principals")
