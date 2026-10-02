@@ -3,6 +3,7 @@ package problem
 import (
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/danielgtaylor/huma/v2"
 )
@@ -86,6 +87,9 @@ var installMu sync.Mutex
 //
 // For framework errors Code stays empty (dropped by omitempty) and Type stays at
 // the RFC default about:blank.
+//
+// Folded errors[] entries keep the value Huma echoes from the rejected input;
+// [InstallWithoutValueEcho] drops it.
 func Install() {
 	installMu.Lock()
 	defer installMu.Unlock()
@@ -95,6 +99,42 @@ func Install() {
 	}
 
 	huma.NewError = newError
+}
+
+// dropValueEcho is set by InstallWithoutValueEcho and never cleared by the
+// package. It is read by fold on every error built, from request goroutines, so
+// it is atomic rather than guarded by installMu.
+var dropValueEcho atomic.Bool
+
+// InstallWithoutValueEcho does everything [Install] does and also stops
+// errors[] entries from echoing the rejected input back to the client: every
+// errors[] entry of a <500 problem document keeps its message and location and
+// loses its value.
+//
+// Huma fills that value with the offending input — the field value on a 422
+// validation failure, the raw path, query or header parameter on a parse
+// failure, and the ENTIRE raw request body when the body is not valid JSON
+// (400) or has an unsupported content type (415). For an API that receives
+// personal data (a taxpayer document, an account number) that echo returns
+// the data in an error body, where it lands in client logs, proxies and
+// support tickets. The drop applies to every location: body, path, query and
+// header.
+//
+// It is opt-in because it changes the 4xx bodies a client already sees.
+// Installing it is sticky for the life of the process: a later plain Install()
+// (a second bootstrap, a spec-gen entrypoint) never turns the drop back off.
+// It is read when each error is built, so a decorator of the installed model
+// that delegates to it keeps the drop.
+//
+// It removes only the value member. Some Huma messages quote the input inside
+// the message text itself — a time that fails to parse
+// (`invalid value: parsing time "..."`), or a JSON syntax error near the
+// offending token — and those messages are passed through unchanged.
+//
+// Like Install, it MUST run during bootstrap, before the server serves.
+func InstallWithoutValueEcho() {
+	dropValueEcho.Store(true)
+	Install()
 }
 
 // installed reports whether a constructor already yields the shared model, which
@@ -155,8 +195,11 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 }
 
 // fold renders errs as errors[] exactly like the stock huma.NewError: nil errs
-// are skipped and a huma.ErrorDetailer contributes its own detail.
+// are skipped and a huma.ErrorDetailer contributes its own detail. Under
+// InstallWithoutValueEcho a detail carrying a value is folded as a copy with no
+// value; the caller's (or Huma's) detail is never modified.
 func fold(errs []error) []*huma.ErrorDetail {
+	dropValue := dropValueEcho.Load()
 	details := make([]*huma.ErrorDetail, 0, len(errs))
 
 	for _, e := range errs {
@@ -168,7 +211,7 @@ func fold(errs []error) []*huma.ErrorDetail {
 			// ErrorDetail() may return a nil *huma.ErrorDetail; appending it
 			// would serialize a null entry into errors[]. Skip the nil one.
 			if d := converted.ErrorDetail(); d != nil {
-				details = append(details, d)
+				details = append(details, withoutValue(d, dropValue))
 			}
 
 			continue
@@ -182,4 +225,17 @@ func fold(errs []error) []*huma.ErrorDetail {
 	}
 
 	return details
+}
+
+// withoutValue returns d unchanged unless drop is set and d carries a value, in
+// which case it returns a copy of d with no value.
+func withoutValue(d *huma.ErrorDetail, drop bool) *huma.ErrorDetail {
+	if !drop || d.Value == nil {
+		return d
+	}
+
+	stripped := *d
+	stripped.Value = nil
+
+	return &stripped
 }
