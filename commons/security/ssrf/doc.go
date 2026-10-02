@@ -42,6 +42,18 @@
 //	// Set the Host header to result.Authority.
 //	// Set TLS ServerName to result.SNIHostname.
 //
+// Dial-time enforcement for an http.Transport (closes DNS rebinding, because
+// the address actually connected to is checked, not an earlier lookup):
+//
+//	transport := &http.Transport{
+//	    Proxy:       nil, // behind a proxy the dial check would see the proxy's IP
+//	    DialContext: ssrf.DialContext(nil),
+//	}
+//	// err from a refused dial wraps ssrf.ErrBlocked or ssrf.ErrDNSFailed.
+//
+// commons/net/http/outbound builds a complete client on top of it (https-only,
+// redirects refused by default).
+//
 // Custom DNS resolver for tests:
 //
 //	result, err := ssrf.ResolveAndValidate(ctx, rawURL,

@@ -25,17 +25,18 @@ type fakeAcknowledger struct {
 	ackCalls  int
 	nackCalls int
 	requeue   bool
+	err       error // returned by Ack and Nack when set
 }
 
 func (f *fakeAcknowledger) Ack(uint64, bool) error {
 	f.ackCalls++
-	return nil
+	return f.err
 }
 
-func (f *fakeAcknowledger) Nack(uint64, bool, bool) error {
+func (f *fakeAcknowledger) Nack(_ uint64, _ bool, requeue bool) error {
 	f.nackCalls++
-	f.requeue = true
-	return nil
+	f.requeue = requeue
+	return f.err
 }
 
 func (f *fakeAcknowledger) Reject(uint64, bool) error { return nil }
@@ -90,7 +91,7 @@ func TestMultiTenantConsumer_ProcessMessages_ReturnsOnChannelClose(t *testing.T)
 	go func() {
 		consumer.processMessages(context.Background(), "tenant-close", "queue-c", func(context.Context, amqp.Delivery) error {
 			return nil
-		}, msgs, notifyClose, logger)
+		}, nil, msgs, notifyClose, logger)
 		close(done)
 	}()
 
