@@ -8,8 +8,8 @@
 // # What the client refuses
 //
 //   - A scheme other than https, before any resolution or dial
-//     ([ErrInsecureScheme]). Plaintext needs two keys: [WithAllowInsecureHTTP]
-//     in code AND ALLOW_INSECURE_TLS truthy in the environment.
+//     ([ErrInsecureScheme]). Plaintext needs one of two allowances, see
+//     "Plaintext" below.
 //   - A blocked hostname (localhost, cloud metadata names, .internal, .local,
 //     .cluster.local) or blocked IP literal ([ssrf.ErrBlocked]).
 //   - A connection to a private, loopback, link-local or reserved address. The
@@ -28,6 +28,18 @@
 //
 // Environment proxies (HTTP_PROXY, HTTPS_PROXY) are ignored: behind a proxy the
 // dial check would judge the proxy's address instead of the target's.
+//
+// # Plaintext
+//
+// [WithAllowPlaintextHTTP] permits http:// for one client. It is a code-level
+// decision, logged WARN "security bypass active" when the client is built, and
+// it neither reads nor sets ALLOW_INSECURE_TLS, so it relaxes nothing else in
+// the process: not other clients, not the TLS of database, cache or broker
+// connections, and not this client's own certificate verification.
+//
+// [WithAllowInsecureHTTP] is the development allowance: it takes effect only
+// while ALLOW_INSECURE_TLS is truthy in the environment, and is refused with an
+// ERROR log otherwise.
 //
 // # Private networks
 //

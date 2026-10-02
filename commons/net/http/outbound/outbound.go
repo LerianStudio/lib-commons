@@ -28,8 +28,9 @@ var (
 	ErrRedirectRefused = errors.New("outbound: redirect refused")
 
 	// ErrInsecureScheme is returned, before any resolution or dial, for a
-	// request whose scheme is not https (or not http/https when the plaintext
-	// allowance is in effect).
+	// request whose scheme is not https (or not http/https when a plaintext
+	// allowance, [WithAllowPlaintextHTTP] or [WithAllowInsecureHTTP], is in
+	// effect).
 	ErrInsecureScheme = errors.New("outbound: insecure scheme refused")
 
 	// ErrInsecureTLSConfig is returned by the constructors for a TLS config with
@@ -88,8 +89,9 @@ type config struct {
 	timeout           time.Duration
 	redirects         RedirectPolicy
 	maxHops           int
-	tlsConfig         *tls.Config
-	allowInsecureHTTP bool
+	tlsConfig          *tls.Config
+	allowInsecureHTTP  bool
+	allowPlaintextHTTP bool
 	allowPrivate      bool
 	allowedHostnames  []string
 	lookup            ssrf.LookupFunc
@@ -128,8 +130,31 @@ func WithTLSConfig(cfg *tls.Config) Option {
 // ALLOW_INSECURE_TLS is truthy when the transport is built (logged WARN
 // "security bypass active"). Without that variable the option is refused with
 // an ERROR log and the transport stays https-only: both keys are required.
+//
+// It is meant for development, where the whole process already runs with
+// ALLOW_INSECURE_TLS. A client that must speak plaintext in every environment,
+// such as one reaching a peer over a private link that terminates TLS
+// elsewhere, uses [WithAllowPlaintextHTTP] instead, which does not depend on
+// that process-wide switch.
 func WithAllowInsecureHTTP() Option {
 	return func(c *config) { c.allowInsecureHTTP = true }
+}
+
+// WithAllowPlaintextHTTP permits plaintext http:// requests for this client
+// only. Like [WithAllowPrivateNetwork] it is a code-level decision with no
+// environment switch, logged WARN "security bypass active" (feature
+// outbound_plaintext_http) when the transport is built.
+//
+// It neither reads nor sets ALLOW_INSECURE_TLS, so it does not relax TLS for
+// other clients or for the process's datastore and broker connections, and it
+// does not relax certificate verification for this client's https requests:
+// a TLS config with InsecureSkipVerify is still refused unless
+// ALLOW_INSECURE_TLS is truthy. Every other check (hostname and IP-literal
+// blocklist, dial-time IP check, redirect policy) applies to plaintext
+// requests unchanged. Contrast [WithAllowInsecureHTTP], the development-only
+// allowance keyed to the environment.
+func WithAllowPlaintextHTTP() Option {
+	return func(c *config) { c.allowPlaintextHTTP = true }
 }
 
 // WithAllowPrivateNetwork lifts the IP-range blocklist, so loopback, RFC 1918,
@@ -321,8 +346,19 @@ func resolveTLSConfig(ctx context.Context, cfg *config) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
-// plaintextAllowed applies the double key: the option and ALLOW_INSECURE_TLS.
+// plaintextAllowed reports whether http:// requests are admitted: either the
+// per-client allowance, or the double key of the development option and
+// ALLOW_INSECURE_TLS. Each allowance in effect is audited on its own line.
 func plaintextAllowed(ctx context.Context, cfg *config) bool {
+	if cfg.allowPlaintextHTTP {
+		cfg.logger.Log(ctx, obs.LevelWarn, "security bypass active", "feature", "outbound_plaintext_http")
+	}
+
+	return insecureHTTPAllowed(ctx, cfg) || cfg.allowPlaintextHTTP
+}
+
+// insecureHTTPAllowed applies the double key: the option and ALLOW_INSECURE_TLS.
+func insecureHTTPAllowed(ctx context.Context, cfg *config) bool {
 	if !cfg.allowInsecureHTTP {
 		return false
 	}

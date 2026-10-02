@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,8 +30,9 @@ import (
 // ---------------------------------------------------------------------------
 
 type logEntry struct {
-	level int
-	msg   string
+	level  int
+	msg    string
+	fields []any
 }
 
 type recordingLogger struct {
@@ -38,11 +40,11 @@ type recordingLogger struct {
 	entries []logEntry
 }
 
-func (l *recordingLogger) Log(_ context.Context, level int, msg string, _ ...any) {
+func (l *recordingLogger) Log(_ context.Context, level int, msg string, fields ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.entries = append(l.entries, logEntry{level: level, msg: msg})
+	l.entries = append(l.entries, logEntry{level: level, msg: msg, fields: append([]any(nil), fields...)})
 }
 
 func (l *recordingLogger) Enabled(int) bool { return true }
@@ -60,6 +62,35 @@ func (l *recordingLogger) has(level int, fragment string) bool {
 	}
 
 	return false
+}
+
+// withFeature returns the fields of every entry at level whose "feature" field
+// equals feature, as key-value maps.
+func (l *recordingLogger) withFeature(level int, feature string) []map[string]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	var out []map[string]any
+
+	for _, e := range l.entries {
+		if e.level != level {
+			continue
+		}
+
+		kv := make(map[string]any, len(e.fields)/2)
+
+		for i := 0; i+1 < len(e.fields); i += 2 {
+			if key, ok := e.fields[i].(string); ok {
+				kv[key] = e.fields[i+1]
+			}
+		}
+
+		if kv["feature"] == feature {
+			out = append(out, kv)
+		}
+	}
+
+	return out
 }
 
 // loopbackLookup answers every hostname with 127.0.0.1 and counts lookups, so
@@ -175,6 +206,72 @@ func TestNewClient_EnvAloneDoesNotAllowPlainHTTP(t *testing.T) {
 
 	_, err = get(t, client, "http://example.com/")
 	require.ErrorIs(t, err, ErrInsecureScheme)
+}
+
+func TestNewClient_PlaintextHTTPOptionAllowsPlainHTTPWithoutEnv(t *testing.T) {
+	t.Setenv(commons.EnvAllowInsecureTLS, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "plain")
+	}))
+	t.Cleanup(srv.Close)
+
+	logger := &recordingLogger{}
+
+	client, err := NewClient(WithLogger(logger), WithAllowPlaintextHTTP(),
+		WithAllowPrivateNetwork(), WithLookupFunc(loopbackLookup(nil)))
+	require.NoError(t, err)
+
+	resp, err := get(t, client, exampleURL(t, srv, "/"))
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, "plain", string(body))
+
+	warns := logger.withFeature(obs.LevelWarn, "outbound_plaintext_http")
+	require.Len(t, warns, 1, "the per-client allowance is audited once, at construction")
+	assert.NotContains(t, warns[0], "env_var", "the per-client allowance does not depend on the environment")
+	assert.True(t, logger.has(obs.LevelWarn, "security bypass active"))
+	assert.False(t, logger.has(obs.LevelError, commons.EnvAllowInsecureTLS),
+		"the per-client allowance is not the refused double-key path")
+}
+
+func TestNewClient_PlaintextHTTPOptionLeavesProcessSwitchAlone(t *testing.T) {
+	t.Setenv(commons.EnvAllowInsecureTLS, "")
+
+	_, err := NewClient(WithAllowPlaintextHTTP())
+	require.NoError(t, err)
+
+	_, err = NewTransport(WithAllowPlaintextHTTP())
+	require.NoError(t, err)
+
+	assert.False(t, commons.AllowInsecureTLS(), "the per-client allowance never enables the process-wide switch")
+	assert.Empty(t, os.Getenv(commons.EnvAllowInsecureTLS))
+}
+
+func TestNewClient_PlaintextHTTPOptionDoesNotRelaxCertificateChecks(t *testing.T) {
+	t.Setenv(commons.EnvAllowInsecureTLS, "")
+
+	insecure := &tls.Config{InsecureSkipVerify: true} //nolint:gosec // the refusal of this config is under test
+
+	client, err := NewClient(WithAllowPlaintextHTTP(), WithTLSConfig(insecure))
+	require.ErrorIs(t, err, ErrInsecureTLSConfig)
+	assert.Nil(t, client)
+}
+
+func TestNewClient_PlaintextHTTPOptionWithEnvLogsOnlyPerClientAllowance(t *testing.T) {
+	t.Setenv(commons.EnvAllowInsecureTLS, "")
+
+	logger := &recordingLogger{}
+
+	_, err := NewClient(WithLogger(logger), WithAllowPlaintextHTTP(), WithAllowInsecureHTTP())
+	require.NoError(t, err)
+
+	assert.Len(t, logger.withFeature(obs.LevelWarn, "outbound_plaintext_http"), 1)
+	assert.True(t, logger.has(obs.LevelError, commons.EnvAllowInsecureTLS),
+		"the double-key option still reports its refusal when the environment is off")
 }
 
 func TestNewClient_RefusesNonHTTPSchemes(t *testing.T) {
