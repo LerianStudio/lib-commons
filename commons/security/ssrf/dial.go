@@ -47,6 +47,8 @@ type DialFunc func(ctx context.Context, network, address string) (net.Conn, erro
 //
 // Use it as an [net/http.Transport.DialContext] with the transport's Proxy set
 // to nil: behind a proxy the dialed address is the proxy's, not the target's.
+// A transport that uses a forward proxy must send only its direct dials here,
+// as commons/net/http/outbound does.
 func DialContext(base *net.Dialer, opts ...Option) DialFunc {
 	cfg := buildConfig(opts)
 

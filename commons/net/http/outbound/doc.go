@@ -26,8 +26,8 @@
 //   - A TLS config with InsecureSkipVerify unless ALLOW_INSECURE_TLS is truthy
 //     ([ErrInsecureTLSConfig]); TLS below 1.2.
 //
-// Environment proxies (HTTP_PROXY, HTTPS_PROXY) are ignored: behind a proxy the
-// dial check would judge the proxy's address instead of the target's.
+// Environment proxies (HTTP_PROXY, HTTPS_PROXY) are ignored unless a proxy
+// option asks for them, see "Forward proxy" below.
 //
 // # Plaintext
 //
@@ -40,6 +40,37 @@
 // [WithAllowInsecureHTTP] is the development allowance: it takes effect only
 // while ALLOW_INSECURE_TLS is truthy in the environment, and is refused with an
 // ERROR log otherwise.
+//
+// # Forward proxy
+//
+// A client that must leave through a forward proxy (BYOC egress) opts in with
+// [WithProxy], a fixed proxy URL, or [WithProxyFromEnvironment], which reads
+// HTTPS_PROXY, HTTP_PROXY and NO_PROXY once, when the client is built. Either
+// one logs WARN "outbound forward proxy active" (feature
+// outbound_forward_proxy) with the proxy's scheme and host, never its
+// credentials. Only http:// and https:// proxies are accepted; a malformed
+// proxy URL fails construction with [ErrInvalidOption].
+//
+// What still holds behind a proxy:
+//   - The scheme, hostname blocklist and IP-literal checks run before the
+//     proxy is contacted, so a refused target never reaches it.
+//   - An https target goes through a CONNECT tunnel: TLS is end to end, with
+//     the target's name as SNI, its certificate verified and the TLS 1.2
+//     floor. An http target needs a plaintext allowance and is sent to the
+//     proxy in absolute form, so the proxy sees it, credentials included.
+//   - The redirect policy is unchanged.
+//   - A host NO_PROXY matches is dialed directly, through the full dial-time
+//     check; a direct request to the proxy's own address is refused.
+//   - The proxy's own address must not be link-local (which covers cloud
+//     metadata endpoints), unspecified or multicast ([ssrf.ErrBlocked]).
+//     Loopback and private proxies, such as a sidecar or a corporate proxy,
+//     are allowed.
+//
+// What changes: the proxy, not the client, resolves the target's name and
+// connects to it, so the client cannot check the address a target name
+// resolves to. That policy, the dial-time defence against DNS rebinding,
+// becomes the proxy's. The client adds no local DNS pre-check: failing closed
+// on it would break split-DNS egress, and failing open would protect nothing.
 //
 // # Private networks
 //

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -86,16 +87,18 @@ func (p RedirectPolicy) String() string {
 type Option func(*config)
 
 type config struct {
-	timeout           time.Duration
-	redirects         RedirectPolicy
-	maxHops           int
-	tlsConfig          *tls.Config
-	allowInsecureHTTP  bool
-	allowPlaintextHTTP bool
-	allowPrivate      bool
-	allowedHostnames  []string
-	lookup            ssrf.LookupFunc
-	logger            obs.Logger
+	timeout              time.Duration
+	redirects            RedirectPolicy
+	maxHops              int
+	tlsConfig            *tls.Config
+	allowInsecureHTTP    bool
+	allowPlaintextHTTP   bool
+	allowPrivate         bool
+	allowedHostnames     []string
+	lookup               ssrf.LookupFunc
+	logger               obs.Logger
+	proxyURL             *url.URL
+	proxyFromEnvironment bool
 }
 
 // WithTimeout sets the client's total request timeout. It must be positive;
@@ -200,8 +203,11 @@ func WithLogger(logger obs.Logger) Option {
 //   - refuses a blocked hostname or IP literal ([ssrf.ErrBlocked]);
 //   - dials through [ssrf.DialContext], so the IP actually connected to is
 //     checked at connect time and DNS rebinding cannot reach a blocked range;
-//   - ignores HTTP_PROXY/HTTPS_PROXY (Proxy is nil), because behind a proxy
-//     the dial check would judge the proxy's IP instead of the target's;
+//   - uses no proxy, ignoring HTTP_PROXY/HTTPS_PROXY, unless [WithProxy] or
+//     [WithProxyFromEnvironment] selects one; a proxied request still passes
+//     the scheme, hostname and IP-literal checks before the proxy is
+//     contacted, and the target's resolved address is then the proxy's to
+//     police;
 //   - verifies the certificate against the URL hostname, sent as SNI;
 //   - answers a 3xx the redirect policy does not follow with
 //     [ErrRedirectRefused] instead of a response, so no client built around
@@ -305,10 +311,15 @@ func newGuardedTransport(cfg *config) (*guardedTransport, error) {
 
 	dialer := &net.Dialer{Timeout: defaultDialTimeout, KeepAlive: defaultDialKeepAlive}
 
+	proxy, dial, err := configureProxy(ctx, cfg, dialer, ssrf.DialContext(dialer, ssrfOpts...))
+	if err != nil {
+		return nil, err
+	}
+
 	return &guardedTransport{
 		base: &http.Transport{
-			Proxy:                 nil,
-			DialContext:           ssrf.DialContext(dialer, ssrfOpts...),
+			Proxy:                 proxy,
+			DialContext:           dial,
 			TLSClientConfig:       tlsConfig,
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          defaultMaxIdleConns,
