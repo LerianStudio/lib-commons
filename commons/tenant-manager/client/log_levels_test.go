@@ -68,6 +68,17 @@ func TestClient_RoutineFetchesLogAtDebug(t *testing.T) {
 				return err
 			},
 		},
+		{
+			name:       "tenant principals",
+			okBody:     `{"items":[{"nature":"fundo","partyRef":"VERT"}]}`,
+			fetchMsg:   "fetching tenant principals",
+			successMsg: "successfully fetched tenant principals",
+			call: func(ctx context.Context, c *Client) error {
+				_, err := c.GetTenantPrincipals(ctx, "tenant-123", "streaming-hub")
+
+				return err
+			},
+		},
 	}
 
 	for _, tt := range tests {
