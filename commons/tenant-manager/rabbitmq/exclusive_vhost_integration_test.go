@@ -145,6 +145,31 @@ func TestIntegration_ExclusiveVHosts_RefusesSecondTenant(t *testing.T) {
 		require.ErrorIs(t, err, core.ErrVHostConflict, "the claim now belongs to tenant-b")
 	})
 
+	t.Run("a dropped holder connection keeps the claim", func(t *testing.T) {
+		m := NewManager(sameVHostClient(t, ep), "ledger",
+			WithLogger(testutil.NewMockLogger()), WithExclusiveVHosts())
+		t.Cleanup(func() { assert.NoError(t, m.Close(context.Background())) })
+
+		connA, err := m.GetConnection(ctx, vhostTenantA)
+		require.NoError(t, err)
+
+		// Closed behind the manager's back, as a broker restart or network
+		// drop would: the manager still caches it and still records the claim.
+		require.NoError(t, connA.Close())
+		require.True(t, connA.IsClosed())
+
+		_, err = m.GetConnection(ctx, vhostTenantB)
+		require.ErrorIs(t, err, core.ErrVHostConflict, "tenant-b must not win the race to reconnect")
+
+		reconnected, err := m.GetConnection(ctx, vhostTenantA)
+		require.NoError(t, err, "the holder reconnects to its own vhost")
+		assert.False(t, reconnected.IsClosed())
+		assert.NotSame(t, connA, reconnected)
+
+		_, err = m.GetConnection(ctx, vhostTenantB)
+		require.ErrorIs(t, err, core.ErrVHostConflict)
+	})
+
 	t.Run("default lets both tenants share the vhost", func(t *testing.T) {
 		m := NewManager(sameVHostClient(t, ep), "ledger", WithLogger(testutil.NewMockLogger()))
 		t.Cleanup(func() { assert.NoError(t, m.Close(context.Background())) })

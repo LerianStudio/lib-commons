@@ -71,7 +71,8 @@ var ErrManagerClosed = errors.New("tenant connection manager is closed")
 
 // ErrVHostConflict is returned by a RabbitMQ manager built with
 // WithExclusiveVHosts when a tenant's config resolves to a broker vhost that
-// another tenant of the same manager already holds open. Two tenants on one
+// another tenant of the same manager already holds (its claim lasts until its
+// connection is released, a dropped connection included). Two tenants on one
 // vhost share every queue and exchange, so a consumer that derives tenant
 // identity from where a message arrived would attribute one tenant's messages
 // to the other. The wrapped message names the broker (host:port), the vhost,

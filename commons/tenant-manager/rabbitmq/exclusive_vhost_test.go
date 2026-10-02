@@ -162,11 +162,6 @@ func TestExclusiveVHosts_DistinctVHostReachesDial(t *testing.T) {
 			holder:     core.RabbitMQConfig{Host: unreachableHost, Port: unreachablePort, VHost: "Shared"},
 			holderConn: &amqp.Connection{},
 		},
-		{
-			name:       "holder has no live connection",
-			holder:     request,
-			holderConn: nil,
-		},
 	}
 
 	for _, tt := range tests {
@@ -184,6 +179,35 @@ func TestExclusiveVHosts_DistinctVHostReachesDial(t *testing.T) {
 			assert.Contains(t, err.Error(), "failed to connect to RabbitMQ")
 		})
 	}
+}
+
+// TestExclusiveVHosts_ClaimOutlivesADroppedConnection covers a broker restart
+// or network drop: the holder's connection is closed but not released, and a
+// misconfigured tenant retrying on the same vhost must not take the vhost
+// before the holder reconnects.
+func TestExclusiveVHosts_ClaimOutlivesADroppedConnection(t *testing.T) {
+	t.Parallel()
+
+	shared := core.RabbitMQConfig{Host: unreachableHost, Port: unreachablePort, VHost: "shared"}
+
+	c := rabbitConfigServer(t, map[string]core.RabbitMQConfig{vhostHolder: shared, vhostRequester: shared})
+	m := NewManager(c, "ledger", WithLogger(testutil.NewMockLogger()), WithExclusiveVHosts())
+	seedHolder(m, vhostHolder, shared)
+
+	// No live connection behind the claim (a nil entry reads as dropped).
+	m.connections[vhostHolder] = nil
+
+	_, err := m.GetConnection(context.Background(), vhostRequester)
+	require.ErrorIs(t, err, core.ErrVHostConflict, "a dropped connection does not release the claim")
+	assert.Contains(t, err.Error(), vhostHolder)
+
+	// The holder's own reconnect is not refused by its claim.
+	delete(m.connections, vhostHolder)
+
+	_, err = m.GetConnection(context.Background(), vhostHolder)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, core.ErrVHostConflict)
+	assert.Contains(t, err.Error(), "failed to connect to RabbitMQ")
 }
 
 func TestExclusiveVHosts_OffByDefault(t *testing.T) {

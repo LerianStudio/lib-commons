@@ -18,8 +18,8 @@ import (
 const defaultVHost = "/"
 
 // WithExclusiveVHosts makes the manager refuse a tenant whose RabbitMQ config
-// resolves to a broker vhost that another tenant of this manager already holds
-// over a live connection. The refused call returns an error wrapping
+// resolves to a broker vhost that another tenant of this manager already holds.
+// The refused call returns an error wrapping
 // core.ErrVHostConflict that names the broker, the vhost and both tenants, and
 // no connection is dialed. A config change detected by settings revalidation
 // that would collide keeps the tenant's current connection and logs an ERROR.
@@ -29,6 +29,13 @@ const defaultVHost = "/"
 // tenants on one vhost read each other's messages. The multi-tenant consumer
 // needs no change: the refusal surfaces through its existing reconnect backoff
 // and degraded marking, and clears once the tenant's config is fixed.
+//
+// A tenant holds its vhost from its first stored connection until that
+// connection is released: CloseConnection (tenant removal or suspension), LRU
+// eviction or Close. A connection that drops (broker restart, network failure)
+// keeps the claim, so only the holder can reconnect to the vhost; a
+// misconfigured tenant retrying on the same vhost cannot win that race and
+// take over the holder's queues.
 //
 // A vhost is identified by the lowercased broker host, the port and the
 // case-sensitive vhost name, with an empty name meaning "/". The check does
@@ -63,19 +70,16 @@ func claimFor(cfg *core.RabbitMQConfig) vhostClaim {
 }
 
 // vhostConflict returns an error wrapping core.ErrVHostConflict when exclusive
-// vhosts are on and a tenant other than tenantID holds claim over a live
-// connection, and nil otherwise. Caller MUST hold p.mu (read or write).
+// vhosts are on and a tenant other than tenantID holds claim, whether or not
+// its connection is still open, and nil otherwise. Caller MUST hold p.mu
+// (read or write).
 func (p *Manager) vhostConflict(tenantID string, claim vhostClaim) error {
 	if !p.exclusiveVHost {
 		return nil
 	}
 
 	for holder, held := range p.vhosts {
-		if holder == tenantID || held != claim {
-			continue
-		}
-
-		if conn := p.connections[holder]; conn != nil && !conn.IsClosed() {
+		if holder != tenantID && held == claim {
 			return fmt.Errorf("%w: broker %s vhost %q requested by tenant %s is held by tenant %s",
 				core.ErrVHostConflict, claim.broker, claim.vhost, tenantID, holder)
 		}
