@@ -18,6 +18,12 @@
 //     and the reverse-proxy helper delegate to this package instead of
 //     maintaining their own blocklists.
 //
+//   - One IPv4 spelling: a host that ends in a numeric label but is not a
+//     canonical IP literal ("2130706433", "127.1", "0x7f000001") is refused
+//     as a blocked hostname. inet_aton, the WHATWG URL parser and forward
+//     proxies read such hosts as IPv4 addresses, not always the same one, so
+//     the only safe answer is to accept the canonical dotted quad alone.
+//
 //   - Modern types: [netip.Prefix] and [netip.Addr] are the canonical types.
 //     A legacy [net.IP] entry point ([IsBlockedIP]) is provided for callers
 //     that have not yet migrated, but it delegates to [IsBlockedAddr] after

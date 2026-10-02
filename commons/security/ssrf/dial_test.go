@@ -297,3 +297,21 @@ func TestDialContext_StopsTryingAddressesOnceContextEnds(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, int32(1), attempts.Load(), "a cancelled dial does not move on to the next address")
 }
+
+func TestDialContext_RefusesNonCanonicalIPv4BeforeLookup(t *testing.T) {
+	t.Parallel()
+
+	lookups := 0
+	dial := DialContext(nil, WithAllowPrivateNetwork(), WithLookupFunc(func(context.Context, string) ([]string, error) {
+		lookups++
+
+		return []string{"127.0.0.1"}, nil
+	}))
+
+	for _, host := range []string{"2130706433", "127.1", "0x7f000001"} {
+		_, err := dial(context.Background(), "tcp", net.JoinHostPort(host, "80"))
+		require.ErrorIs(t, err, ErrBlocked, host)
+	}
+
+	assert.Zero(t, lookups)
+}

@@ -30,8 +30,9 @@ type ResolveResult struct {
 }
 
 // ValidateURL checks a URL for SSRF safety without performing DNS resolution.
-// It validates the scheme, hostname blocking, and any IP literal in the
-// hostname.
+// It validates the scheme, hostname blocking (which refuses non-canonical IPv4
+// spellings such as "127.1" or "2130706433", see [IsBlockedHostname]), and any
+// IP literal in the hostname, with or without a trailing root label.
 //
 // Use [ResolveAndValidate] when DNS pinning is needed (i.e. when you intend to
 // actually connect to the URL). ValidateURL is suitable for pre-flight
@@ -66,8 +67,10 @@ func ValidateURL(ctx context.Context, rawURL string, opts ...Option) error {
 	}
 
 	// If the hostname is an IP literal, validate it against the CIDR blocklist.
+	// The trailing root label is dropped first: "10.0.0.1." is still 10.0.0.1
+	// to a resolver or a forward proxy.
 	if !cfg.allowPrivate {
-		if addr, err := netip.ParseAddr(hostname); err == nil {
+		if addr, err := netip.ParseAddr(strings.TrimRight(hostname, ".")); err == nil {
 			if IsBlockedAddr(addr) {
 				return fmt.Errorf("%w: IP %s is in a blocked range", ErrBlocked, hostname)
 			}

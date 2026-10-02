@@ -1006,3 +1006,87 @@ func TestSentinelErrors_AreDistinct(t *testing.T) {
 	assert.NotErrorIs(t, ErrBlocked, ErrDNSFailed)
 	assert.NotErrorIs(t, ErrInvalidURL, ErrDNSFailed)
 }
+
+// ---------------------------------------------------------------------------
+// Non-canonical IPv4 spellings
+// ---------------------------------------------------------------------------
+
+// nonCanonicalIPv4Hosts are spellings netip.ParseAddr rejects but that
+// inet_aton (glibc, most forward proxies) or the WHATWG URL parser read as an
+// IPv4 address. Every one names a blocked address under at least one reader.
+var nonCanonicalIPv4Hosts = []string{
+	"2130706433",          // 127.0.0.1, one decimal part
+	"127.1",               // 127.0.0.1, two parts
+	"10.1",                // 10.0.0.1
+	"0x7f000001",          // 127.0.0.1, hex
+	"0X7F000001",          // 127.0.0.1, hex, upper case
+	"017700000001",        // 127.0.0.1, octal
+	"0177.0.0.1",          // 127.0.0.1, octal first part
+	"0251.0376.0251.0376", // 169.254.169.254, octal parts
+	"0xA9FEA9FE",          // 169.254.169.254, hex
+	"2852039166",          // 169.254.169.254, decimal
+	"167772161",           // 10.0.0.1, decimal
+	"010.0.0.1",           // 8.0.0.1 to inet_aton, 10.0.0.1 to a decimal reader
+	"0x7f.1",              // 127.0.0.1, hex first part
+	"1.2.3.4.5",           // five parts: no reader agrees on it
+	"0x",                  // 0.0.0.0 to the WHATWG parser
+}
+
+func TestIsBlockedHostname_NonCanonicalIPv4(t *testing.T) {
+	t.Parallel()
+
+	for _, host := range nonCanonicalIPv4Hosts {
+		assert.True(t, IsBlockedHostname(host), host)
+		assert.True(t, IsBlockedHostname(host+"."), host+".")
+	}
+
+	for _, host := range []string{
+		"8.8.8.8", "10.0.0.1", "::1", "example.com", "123.example.com", "1e100.net",
+		"0xdeadbeef.example", "api-2.example.com", "x1", "0xg",
+	} {
+		assert.False(t, IsBlockedHostname(host), host)
+	}
+}
+
+func TestValidateURL_RefusesNonCanonicalIPv4(t *testing.T) {
+	t.Parallel()
+
+	for _, host := range nonCanonicalIPv4Hosts {
+		for _, raw := range []string{"https://" + host + "/", "http://" + host + ":8080/x"} {
+			err := ValidateURL(context.Background(), raw)
+			require.ErrorIs(t, err, ErrBlocked, raw)
+
+			err = ValidateURL(context.Background(), raw, WithAllowPrivateNetwork())
+			require.ErrorIs(t, err, ErrBlocked, "an ambiguous spelling is refused even with private networks allowed: %s", raw)
+		}
+	}
+}
+
+func TestValidateURL_IPLiteralWithTrailingDot(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{"https://10.0.0.1./", "https://127.0.0.1../", "https://169.254.169.254./"} {
+		require.ErrorIs(t, ValidateURL(context.Background(), raw), ErrBlocked, raw)
+	}
+
+	require.NoError(t, ValidateURL(context.Background(), "https://8.8.8.8./"))
+	require.NoError(t, ValidateURL(context.Background(), "https://10.0.0.1./", WithAllowPrivateNetwork()))
+}
+
+func TestResolveAndValidate_RefusesNonCanonicalIPv4BeforeLookup(t *testing.T) {
+	t.Parallel()
+
+	lookups := 0
+	lookup := func(context.Context, string) ([]string, error) {
+		lookups++
+
+		return []string{"93.184.216.34"}, nil
+	}
+
+	for _, host := range nonCanonicalIPv4Hosts {
+		_, err := ResolveAndValidate(context.Background(), "https://"+host+"/", WithLookupFunc(lookup))
+		require.ErrorIs(t, err, ErrBlocked, host)
+	}
+
+	assert.Zero(t, lookups)
+}

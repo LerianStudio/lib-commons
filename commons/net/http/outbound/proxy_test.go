@@ -267,6 +267,27 @@ func TestWithProxy_RefusesBlockedTargetsBeforeContactingProxy(t *testing.T) {
 	assert.Zero(t, proxy.hits.Load(), "a blocked target never reaches the proxy")
 }
 
+func TestWithProxy_RefusesNonCanonicalIPTargetsBeforeContactingProxy(t *testing.T) {
+	t.Parallel()
+
+	proxy := newForwardProxy(t, "127.0.0.1:1")
+
+	client, err := NewClient(WithProxy(proxy.url(t)), WithAllowPlaintextHTTP())
+	require.NoError(t, err)
+
+	for _, host := range []string{
+		"10.0.0.1.", "167772161", "0xA9FEA9FE", "2852039166", "127.1", "0177.0.0.1",
+		"2130706433", "0x7f000001", "017700000001", "10.1", "0251.0376.0251.0376",
+	} {
+		for _, target := range []string{"https://" + host + "/", "http://" + host + "/latest/meta-data/"} {
+			_, err := get(t, client, target)
+			require.ErrorIs(t, err, ssrf.ErrBlocked, target)
+		}
+	}
+
+	assert.Zero(t, proxy.hits.Load(), "a proxy resolving inet_aton-style never sees a blocked address")
+}
+
 func TestWithProxy_PlaintextNeedsAnAllowance(t *testing.T) {
 	t.Setenv("ALLOW_INSECURE_TLS", "")
 
