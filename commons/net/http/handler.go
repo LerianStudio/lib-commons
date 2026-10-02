@@ -72,39 +72,31 @@ func File(filePath string) fiber.Handler {
 	}
 }
 
-// ExtractTokenFromHeader extracts a token from the Authorization header.
-// It accepts `Bearer <token>` case-insensitively and also preserves the
-// legacy raw-token form when the header contains a single token with no scheme.
-// Malformed Bearer values and non-Bearer multi-part values return an empty string.
+// ExtractTokenFromHeader extracts a token from the Authorization header of a Fiber request,
+// with the rules of ExtractTokenFromAuthorization.
 func ExtractTokenFromHeader(c fiber.Ctx) string {
 	if c == nil {
 		return ""
 	}
 
-	authHeader := strings.TrimSpace(c.Get(fiber.HeaderAuthorization))
-	if authHeader == "" {
-		return ""
-	}
+	return ExtractTokenFromAuthorization(c.Get(fiber.HeaderAuthorization))
+}
 
-	fields := strings.Fields(authHeader)
+// ExtractTokenFromAuthorization extracts a token from an Authorization header value, for servers
+// that do not run on Fiber. It accepts `Bearer <token>` case-insensitively and the legacy raw-token
+// form (a single field with no scheme); a malformed Bearer value or a non-Bearer multi-part value
+// returns an empty string.
+func ExtractTokenFromAuthorization(header string) string {
+	fields := strings.Fields(header)
 
-	if len(fields) == 2 && strings.EqualFold(fields[0], cn.Bearer) {
+	switch {
+	case len(fields) == 2 && strings.EqualFold(fields[0], cn.Bearer):
 		return fields[1]
-	}
-
-	if len(fields) > 2 && strings.EqualFold(fields[0], cn.Bearer) {
+	case len(fields) == 1 && !strings.EqualFold(fields[0], cn.Bearer):
+		return fields[0]
+	default:
 		return ""
 	}
-
-	if len(fields) == 1 {
-		if strings.EqualFold(fields[0], cn.Bearer) {
-			return ""
-		}
-
-		return fields[0]
-	}
-
-	return ""
 }
 
 // FiberErrorHandler is the canonical Fiber error handler.
