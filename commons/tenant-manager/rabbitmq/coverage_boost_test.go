@@ -146,7 +146,7 @@ func TestSwapRabbitMQConnection_UpdatesCache(t *testing.T) {
 	m.lastAccessed["tenant-swap"] = time.Now().Add(-1 * time.Hour)
 
 	freshKey := "amqp://user:pass@newhost:5672//"
-	m.swapRabbitMQConnection("tenant-swap", nil, freshKey)
+	m.swapRabbitMQConnection("tenant-swap", nil, freshKey, vhostClaim{broker: "newhost:5672", vhost: "/"})
 
 	m.mu.RLock()
 	cachedURI := m.cachedURIs["tenant-swap"]

@@ -69,6 +69,15 @@ var ErrTenantServiceAccessDenied = errors.New("tenant service access denied")
 // ErrManagerClosed is returned when attempting to use a closed connection manager.
 var ErrManagerClosed = errors.New("tenant connection manager is closed")
 
+// ErrVHostConflict is returned by a RabbitMQ manager built with
+// WithExclusiveVHosts when a tenant's config resolves to a broker vhost that
+// another tenant of the same manager already holds open. Two tenants on one
+// vhost share every queue and exchange, so a consumer that derives tenant
+// identity from where a message arrived would attribute one tenant's messages
+// to the other. The wrapped message names the broker (host:port), the vhost,
+// the requesting tenant and the holding tenant, never credentials.
+var ErrVHostConflict = errors.New("rabbitmq vhost already held by another tenant")
+
 // ErrTenantContextRequired is returned when no tenant context is found for a database operation.
 // This error indicates that a request attempted to access the database without proper tenant identification.
 // The tenant connection must be set in context via middleware before database operations.
