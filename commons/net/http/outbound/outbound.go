@@ -83,20 +83,21 @@ func (p RedirectPolicy) String() string {
 	}
 }
 
-// Option configures [NewTransport] and [NewClient]. A nil Option is ignored.
+// Option configures [NewTransport], [NewClient] and [NewDialer]. A nil Option
+// is ignored.
 type Option func(*config)
 
 type config struct {
-	timeout              time.Duration
-	redirects            RedirectPolicy
-	maxHops              int
-	tlsConfig            *tls.Config
-	allowInsecureHTTP    bool
-	allowPlaintextHTTP   bool
-	allowPrivate         bool
-	allowedHostnames     []string
-	lookup               ssrf.LookupFunc
-	logger               obs.Logger
+	timeout                time.Duration
+	redirects              RedirectPolicy
+	maxHops                int
+	tlsConfig              *tls.Config
+	allowInsecureHTTP      bool
+	allowPlaintextHTTP     bool
+	allowPrivate           bool
+	allowedHostnames       []string
+	lookup                 ssrf.LookupFunc
+	logger                 obs.Logger
 	proxyURL               *url.URL
 	proxyFromEnvironment   bool
 	proxyUnresolvedTargets bool
@@ -277,21 +278,22 @@ func buildConfig(opts []Option) (*config, error) {
 	return cfg, nil
 }
 
-// guardedTransport admits a request by scheme and hostname, then hands it to
-// a transport whose every dial is SSRF-checked.
-type guardedTransport struct {
-	base                   *http.Transport
-	allowHTTP              bool
-	redirects              RedirectPolicy
+// egress is the outbound policy the transport and the dialer share, built once
+// from a config: the TLS config, the SSRF options, the proxy choice and the
+// dial route.
+type egress struct {
+	tlsConfig              *tls.Config
 	ssrfOpts               []ssrf.Option
-	proxy                  proxyFunc
+	proxy                  proxyFunc     // nil without a proxy
+	dial                   ssrf.DialFunc // a proxy's address through the proxy dialer, any other direct
+	direct                 ssrf.DialFunc // the SSRF-checked dial
 	allowPrivate           bool
 	proxyUnresolvedTargets bool
 }
 
-func newGuardedTransport(cfg *config) (*guardedTransport, error) {
-	ctx := context.Background()
-
+// newEgress resolves the TLS config, the SSRF options and the proxy, logging
+// the audit lines for each bypass and proxy in effect.
+func newEgress(ctx context.Context, cfg *config) (*egress, error) {
 	tlsConfig, err := resolveTLSConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -313,29 +315,84 @@ func newGuardedTransport(cfg *config) (*guardedTransport, error) {
 	}
 
 	dialer := &net.Dialer{Timeout: defaultDialTimeout, KeepAlive: defaultDialKeepAlive}
+	direct := ssrf.DialContext(dialer, ssrfOpts...)
 
-	proxy, dial, err := configureProxy(ctx, cfg, tlsConfig, dialer, ssrf.DialContext(dialer, ssrfOpts...))
+	proxy, dial, err := configureProxy(ctx, cfg, tlsConfig, dialer, direct)
+	if err != nil {
+		return nil, err
+	}
+
+	return &egress{
+		tlsConfig:              tlsConfig,
+		ssrfOpts:               ssrfOpts,
+		proxy:                  proxy,
+		dial:                   dial,
+		direct:                 direct,
+		allowPrivate:           cfg.allowPrivate,
+		proxyUnresolvedTargets: cfg.proxyUnresolvedTargets,
+	}, nil
+}
+
+// admit runs the target checks both paths share, before any proxy is
+// contacted: the hostname blocklist, the IP-literal check and, for a target
+// that will go through the proxy, the client-side resolution. The scheme is
+// the caller's to check.
+func (e *egress) admit(ctx context.Context, target *url.URL) error {
+	if err := ssrf.ValidateURL(ctx, target.String(), e.ssrfOpts...); err != nil {
+		return err
+	}
+
+	return e.admitProxiedTarget(ctx, target)
+}
+
+// transportProxy is the [net/http.Transport.Proxy] function, nil without a
+// proxy.
+func (e *egress) transportProxy() func(*http.Request) (*url.URL, error) {
+	if e.proxy == nil {
+		return nil
+	}
+
+	return func(req *http.Request) (*url.URL, error) {
+		proxyURL, err := e.proxy(req.URL)
+		if err != nil || proxyURL == nil {
+			return nil, err
+		}
+
+		return netHTTPProxyURL(proxyURL), nil
+	}
+}
+
+// guardedTransport admits a request by scheme and hostname, then hands it to
+// a transport whose every dial is SSRF-checked.
+type guardedTransport struct {
+	base      *http.Transport
+	egress    *egress
+	allowHTTP bool
+	redirects RedirectPolicy
+}
+
+func newGuardedTransport(cfg *config) (*guardedTransport, error) {
+	ctx := context.Background()
+
+	e, err := newEgress(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	return &guardedTransport{
 		base: &http.Transport{
-			Proxy:                 proxy,
-			DialContext:           dial,
-			TLSClientConfig:       tlsConfig,
+			Proxy:                 e.transportProxy(),
+			DialContext:           e.dial,
+			TLSClientConfig:       e.tlsConfig,
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          defaultMaxIdleConns,
 			IdleConnTimeout:       defaultIdleConnTimeout,
 			TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
 			ExpectContinueTimeout: defaultExpectContinueTimeout,
 		},
-		allowHTTP:              plaintextAllowed(ctx, cfg),
-		redirects:              cfg.redirects,
-		ssrfOpts:               ssrfOpts,
-		proxy:                  proxy,
-		allowPrivate:           cfg.allowPrivate,
-		proxyUnresolvedTargets: cfg.proxyUnresolvedTargets,
+		egress:    e,
+		allowHTTP: plaintextAllowed(ctx, cfg),
+		redirects: cfg.redirects,
 	}, nil
 }
 
@@ -463,11 +520,7 @@ func (g *guardedTransport) admit(req *http.Request) error {
 		return fmt.Errorf("%w: %q", ErrInsecureScheme, req.URL.Scheme)
 	}
 
-	if err := ssrf.ValidateURL(req.Context(), req.URL.String(), g.ssrfOpts...); err != nil {
-		return err
-	}
-
-	return g.admitProxiedTarget(req)
+	return g.egress.admit(req.Context(), req.URL)
 }
 
 // CloseIdleConnections closes the underlying transport's idle connections, so

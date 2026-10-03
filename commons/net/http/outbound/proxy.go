@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"net/netip"
 	"net/url"
 	"strconv"
@@ -93,8 +92,9 @@ func WithProxyUnresolvedTargets() Option {
 	return func(c *config) { c.proxyUnresolvedTargets = true }
 }
 
-// proxyFunc is the type of [net/http.Transport.Proxy].
-type proxyFunc func(*http.Request) (*url.URL, error)
+// proxyFunc returns the proxy for a target URL as configured (an https://
+// proxy keeps its scheme), or nil to dial the target directly.
+type proxyFunc func(target *url.URL) (*url.URL, error)
 
 // configureProxy returns the transport's proxy function (nil without a proxy)
 // and its dial function, which sends a dial to a proxy address through the
@@ -130,9 +130,7 @@ func optionProxy(ctx context.Context, cfg *config, tlsConfig *tls.Config, base *
 
 	logProxy(ctx, cfg, "option", proxyURL, "http,https")
 
-	dialURL := netHTTPProxyURL(proxyURL)
-
-	return func(*http.Request) (*url.URL, error) { return dialURL, nil }, route.dial, nil
+	return func(*url.URL) (*url.URL, error) { return proxyURL, nil }, route.dial, nil
 }
 
 func environmentProxy(ctx context.Context, cfg *config, tlsConfig *tls.Config, base *net.Dialer, direct ssrf.DialFunc) (proxyFunc, ssrf.DialFunc, error) {
@@ -161,20 +159,20 @@ func environmentProxy(ctx context.Context, cfg *config, tlsConfig *tls.Config, b
 
 	choose := env.ProxyFunc()
 
-	return func(req *http.Request) (*url.URL, error) {
-		proxyURL, err := choose(req.URL)
+	return func(target *url.URL) (*url.URL, error) {
+		proxyURL, err := choose(target)
 		if err != nil {
 			return nil, fmt.Errorf("outbound: proxy selection: %w", err)
 		}
 
 		if proxyURL != nil {
-			return netHTTPProxyURL(proxyURL), nil
+			return proxyURL, nil
 		}
 
 		// A direct dial to a proxy's own address would take the proxy dialer
 		// and skip the target's dial-time check.
-		if route.isProxyAddr(targetAddr(req.URL)) {
-			return nil, fmt.Errorf("%w: direct request to the forward proxy's address %s", ssrf.ErrBlocked, req.URL.Host)
+		if route.isProxyAddr(targetAddr(target)) {
+			return nil, fmt.Errorf("%w: direct request to the forward proxy's address %s", ssrf.ErrBlocked, target.Host)
 		}
 
 		return nil, nil
@@ -341,27 +339,27 @@ func logEnvironmentProxies(ctx context.Context, cfg *config, httpsProxy, httpPro
 	}
 }
 
-// admitProxiedTarget resolves the target of a request that will go through
-// the proxy and refuses it when any answer is blocked, or when the name does
-// not resolve and unresolved targets are not delegated. A direct request, an
-// IP literal (judged by ssrf.ValidateURL) and a client with private networks
-// allowed are not resolved here.
-func (g *guardedTransport) admitProxiedTarget(req *http.Request) error {
-	if g.proxy == nil || g.allowPrivate {
+// admitProxiedTarget resolves a target that will go through the proxy and
+// refuses it when any answer is blocked, or when the name does not resolve and
+// unresolved targets are not delegated. A direct target, an IP literal (judged
+// by ssrf.ValidateURL) and a client with private networks allowed are not
+// resolved here.
+func (e *egress) admitProxiedTarget(ctx context.Context, target *url.URL) error {
+	if e.proxy == nil || e.allowPrivate {
 		return nil
 	}
 
-	if _, err := netip.ParseAddr(strings.TrimRight(req.URL.Hostname(), ".")); err == nil {
+	if _, err := netip.ParseAddr(strings.TrimRight(target.Hostname(), ".")); err == nil {
 		return nil
 	}
 
-	proxyURL, err := g.proxy(req)
+	proxyURL, err := e.proxy(target)
 	if err != nil || proxyURL == nil {
 		return err
 	}
 
-	_, err = ssrf.ResolveAndValidate(req.Context(), req.URL.String(), g.ssrfOpts...)
-	if err != nil && g.proxyUnresolvedTargets && errors.Is(err, ssrf.ErrDNSFailed) {
+	_, err = ssrf.ResolveAndValidate(ctx, target.String(), e.ssrfOpts...)
+	if err != nil && e.proxyUnresolvedTargets && errors.Is(err, ssrf.ErrDNSFailed) {
 		return nil
 	}
 

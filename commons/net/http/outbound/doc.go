@@ -1,6 +1,7 @@
-// Package outbound builds net/http clients for calls to hosts the caller does
-// not fully control: partner APIs, callback URLs, anything whose address comes
-// from configuration or from a tenant.
+// Package outbound builds net/http clients, and TLS dialers for readiness
+// probes, for calls to hosts the caller does not fully control: partner APIs,
+// callback URLs, anything whose address comes from configuration or from a
+// tenant.
 //
 // It is the stdlib net/http counterpart to the Fiber helpers in commons/net/http,
 // and it reuses commons/security/ssrf as its single blocklist.
@@ -84,6 +85,33 @@
 // from configuration or vetted sources, never raw user input.
 // [WithAllowPrivateNetwork] turns the client-side target resolution off along
 // with the IP-range blocklist.
+//
+// # Readiness dial
+//
+// A readiness probe that only needs to know the upstream is reachable and
+// presents a valid certificate uses [NewDialer] with the client's options.
+// [Dialer.DialTLS] applies the same egress rules: https only, the target
+// checks before anything is dialed, the same proxy choice (NO_PROXY
+// included), the dial-time check on a direct dial. Behind a proxy it sends a
+// CONNECT, with the proxy credentials when the proxy URL carries them, then
+// runs the TLS handshake with the target through the tunnel, and returns the
+// connection without writing an HTTP request. A proxy that does not open the
+// tunnel is [ErrProxyConnect]; a certificate the target fails is still a
+// *[crypto/tls.CertificateVerificationError] under [errors.As], so a probe
+// can tell a refused tunnel, a bad certificate and an unreachable upstream
+// apart.
+//
+//	dialer, err := outbound.NewDialer(outbound.WithProxyFromEnvironment())
+//	if err != nil {
+//	    return err
+//	}
+//
+//	conn, err := dialer.DialTLS(ctx, upstreamURL)
+//	if err != nil {
+//	    return err // errors.Is(err, outbound.ErrProxyConnect), errors.As(err, &certErr), ...
+//	}
+//
+//	_ = conn.Close()
 //
 // # Private networks
 //
