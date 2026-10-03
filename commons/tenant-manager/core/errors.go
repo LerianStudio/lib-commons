@@ -70,22 +70,29 @@ var ErrTenantServiceAccessDenied = errors.New("tenant service access denied")
 var ErrManagerClosed = errors.New("tenant connection manager is closed")
 
 // ErrVHostConflict is returned by a RabbitMQ manager built with
-// WithExclusiveVHosts when a tenant's config resolves to a broker vhost that
-// the tenants' configuration assigns to more than one active tenant (every one
-// of them is refused, whatever the connection order), or that another tenant
-// of the same manager still holds through a live or dropped connection. Two
-// tenants on one vhost share every queue and exchange, so a consumer that
-// derives tenant identity from where a message arrived would attribute one
-// tenant's messages to the other. The wrapped message names the broker
-// (host:port), the vhost and the tenants involved, never credentials.
+// WithExclusiveVHosts when a tenant's config resolves to a broker vhost that is
+// not that tenant's alone: another tenant of the same manager holds it through
+// a live or dropped connection and that tenant's current config still names it
+// (or cannot be read), or no tenant holds it and the tenants' configuration
+// assigns it to more than one active tenant (every one of them is refused,
+// whatever the connection order). A holder is never refused or disconnected
+// because the configuration later names its vhost for another tenant; the
+// tenant newly configured onto it is. Two tenants on one vhost share every
+// queue and exchange, so a consumer that derives tenant identity from where a
+// message arrived would attribute one tenant's messages to the other. The
+// wrapped message names the broker (host:port), the vhost and the tenants
+// involved, never credentials.
 var ErrVHostConflict = errors.New("rabbitmq vhost configured for more than one tenant")
 
 // ErrVHostCensusUnavailable is returned by a RabbitMQ manager built with
 // WithExclusiveVHosts when it cannot learn which vhost each active tenant is
-// configured for (the Tenant Manager is unreachable or answers with an error)
-// and has never learnt it. Nothing is dialed: without the census the manager
-// cannot tell whether the vhost is shared. Once a census has been built, a
-// failed refresh falls back to the last one instead.
+// configured for (the active tenants cannot be listed, the Tenant Manager's
+// circuit breaker is open, the rebuild runs out of time, or no listed tenant's
+// config can be read) and has never learnt it. Nothing is dialed: without the
+// census the manager cannot tell whether the vhost is shared. A failed census
+// is not retried for five seconds. Once a census has been built, a failed
+// refresh falls back to the last one instead. A single tenant whose config
+// cannot be read is left out of the census, not fatal to it.
 var ErrVHostCensusUnavailable = errors.New("rabbitmq vhost census unavailable")
 
 // ErrTenantContextRequired is returned when no tenant context is found for a database operation.

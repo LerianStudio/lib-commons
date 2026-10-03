@@ -218,9 +218,9 @@ func seedHolder(m *Manager, holder string, cfg core.RabbitMQConfig) {
 	m.lastAccessed[holder] = time.Now()
 }
 
-// TestExclusiveVHosts_LiveClaimRefusesBeforeDial covers the second layer: the
-// holder's config is not in the census (it no longer lists that vhost, or the
-// census is older than its connection), yet it still holds the vhost.
+// TestExclusiveVHosts_LiveClaimRefusesBeforeDial covers the holder layer: the
+// holder is not in the census (not listed, or the census is older than its
+// connection), but its current config still names the vhost it holds.
 func TestExclusiveVHosts_LiveClaimRefusesBeforeDial(t *testing.T) {
 	t.Parallel()
 
@@ -250,7 +250,9 @@ func TestExclusiveVHosts_LiveClaimRefusesBeforeDial(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			c := rabbitConfigServer(t, map[string]core.RabbitMQConfig{vhostRequester: tt.request})
+			dir, c := newTenantDirectory(t, map[string]core.RabbitMQConfig{vhostHolder: tt.holder, vhostRequester: tt.request})
+			dir.list(vhostHolder, "")
+
 			m := NewManager(c, "ledger", WithLogger(testutil.NewMockLogger()), WithExclusiveVHosts())
 			seedHolder(m, vhostHolder, tt.holder)
 
@@ -391,7 +393,7 @@ func TestExclusiveVHosts_ReconnectKeepsOldConnectionOnCollision(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			c := rabbitConfigServer(t, map[string]core.RabbitMQConfig{vhostRequester: shared})
+			c := rabbitConfigServer(t, map[string]core.RabbitMQConfig{vhostHolder: shared, vhostRequester: shared})
 			logger := testutil.NewLevelCapturingLogger()
 			m := NewManager(c, "ledger", append([]Option{WithLogger(logger)}, tt.opts...)...)
 			seedHolder(m, vhostHolder, shared)
@@ -526,8 +528,8 @@ func assertNoSecret(t *testing.T, err error, logger *testutil.LevelCapturingLogg
 }
 
 // TestExclusiveVHosts_ConfiguredSharedVHostRefusesEveryTenant pins BRSFN-67:
-// two active tenants configured for one vhost are both refused, before any
-// dial, whichever connects first.
+// two active tenants configured for one vhost that neither holds are both
+// refused, before any dial, whichever connects first.
 func TestExclusiveVHosts_ConfiguredSharedVHostRefusesEveryTenant(t *testing.T) {
 	t.Parallel()
 
@@ -640,11 +642,12 @@ func TestExclusiveVHosts_ConnectingTenantFreshConfigOverlaysCensus(t *testing.T)
 	assert.Equal(t, int32(1), dir.activeHits.Load(), "the cached census was reused")
 }
 
-// TestExclusiveVHosts_RevalidationClosesTenantsOnANewlySharedVHost covers a
-// config change that makes a vhost shared while both tenants are connected:
-// at their next revalidation both lose their connection and claim, whichever
-// revalidates first.
-func TestExclusiveVHosts_RevalidationClosesTenantsOnANewlySharedVHost(t *testing.T) {
+// TestExclusiveVHosts_HolderKeepsAVHostTheConfigurationSharesLater covers a
+// config change that moves a connected tenant onto the vhost another tenant
+// holds: whichever revalidates first, the holder keeps its connection and its
+// claim, the tenant that moved is refused and keeps its old connection, and
+// both are named in an ERROR.
+func TestExclusiveVHosts_HolderKeepsAVHostTheConfigurationSharesLater(t *testing.T) {
 	t.Parallel()
 
 	shared := core.RabbitMQConfig{Host: unreachableHost, Port: unreachablePort, VHost: "shared"}
@@ -661,6 +664,7 @@ func TestExclusiveVHosts_RevalidationClosesTenantsOnANewlySharedVHost(t *testing
 
 			seedConnected(m, vhostHolder, shared)
 			seedConnected(m, vhostRequester, own)
+			ownKey := m.cachedURIs[vhostRequester]
 
 			dir.set(vhostRequester, shared)
 
@@ -668,14 +672,109 @@ func TestExclusiveVHosts_RevalidationClosesTenantsOnANewlySharedVHost(t *testing
 				m.revalidatePoolSettings(tenantID)
 			}
 
-			for _, tenantID := range []string{vhostHolder, vhostRequester} {
-				assert.NotContains(t, m.connections, tenantID, "tenant %s keeps a connection", tenantID)
-				assert.NotContains(t, m.vhosts, tenantID, "tenant %s keeps its claim", tenantID)
-				assert.True(t, logger.ContainsAtLevel(obs.LevelError, tenantID, vhostHolder, vhostRequester, "shared"),
-					"ERROR naming the tenants for %s: %v", tenantID, logger.Entries())
-			}
+			assert.Contains(t, m.connections, vhostHolder, "the holder keeps its connection")
+			assert.Equal(t, claimFor(&shared), m.vhosts[vhostHolder], "the holder keeps its claim")
+
+			assert.Contains(t, m.connections, vhostRequester, "the tenant that moved keeps its old connection")
+			assert.Equal(t, claimFor(&own), m.vhosts[vhostRequester])
+			assert.Equal(t, ownKey, m.cachedURIs[vhostRequester])
+
+			assert.True(t, logger.ContainsAtLevel(obs.LevelError, vhostRequester, vhostHolder, "shared", "keeping old connection"),
+				"ERROR refusing the tenant that moved: %v", logger.Entries())
+			assert.True(t, logger.ContainsAtLevel(obs.LevelError, vhostHolder, vhostRequester, "keeps"),
+				"ERROR telling the operator the configuration names the vhost twice: %v", logger.Entries())
 
 			assertNoSecret(t, nil, logger)
+		})
+	}
+}
+
+// TestExclusiveVHosts_MisconfiguredNewcomerIsRefusedAndTheHolderStays covers
+// BRSFN-67's operator error: a tenant newly configured onto a vhost a
+// connected tenant holds is refused, and the holder is not disturbed.
+func TestExclusiveVHosts_MisconfiguredNewcomerIsRefusedAndTheHolderStays(t *testing.T) {
+	t.Parallel()
+
+	shared := core.RabbitMQConfig{Host: unreachableHost, Port: unreachablePort, VHost: "shared"}
+
+	_, c := newTenantDirectory(t, map[string]core.RabbitMQConfig{vhostHolder: shared, vhostRequester: shared})
+	logger := testutil.NewLevelCapturingLogger()
+	m := NewManager(c, "ledger", WithLogger(logger), WithExclusiveVHosts(), WithConnectionsCheckInterval(alwaysStale))
+	seedConnected(m, vhostHolder, shared)
+
+	for range 2 {
+		_, err := m.GetConnection(context.Background(), vhostRequester)
+		require.ErrorIs(t, err, core.ErrVHostConflict)
+		assert.Contains(t, err.Error(), vhostHolder)
+		assert.NotContains(t, err.Error(), "failed to connect", "the refusal must come before the dial")
+		assertNoSecret(t, err, logger)
+
+		m.revalidatePoolSettings(vhostHolder)
+
+		assert.Contains(t, m.connections, vhostHolder)
+		assert.Equal(t, claimFor(&shared), m.vhosts[vhostHolder])
+	}
+}
+
+// TestExclusiveVHosts_ReassignedVHostGoesToTheConfiguredTenant covers a vhost
+// the configuration takes from its holder and gives to another tenant: the new
+// owner connects without the old holder calling GetConnection again, and the
+// old holder's connection and claim are released. When the holder's current
+// config cannot be read, the claim stands.
+func TestExclusiveVHosts_ReassignedVHostGoesToTheConfiguredTenant(t *testing.T) {
+	t.Parallel()
+
+	reassigned := core.RabbitMQConfig{Host: unreachableHost, Port: unreachablePort, VHost: "reassigned"}
+	moved := core.RabbitMQConfig{Host: unreachableHost, Port: unreachablePort, VHost: "moved"}
+
+	tests := []struct {
+		name        string
+		holderNow   func(d *tenantDirectory)
+		wantRelease bool
+	}{
+		{name: "holder moved to another vhost", holderNow: func(d *tenantDirectory) { d.set(vhostHolder, moved) }, wantRelease: true},
+		{name: "holder removed from the tenant manager", holderNow: func(d *tenantDirectory) {
+			d.mu.Lock()
+			delete(d.configs, vhostHolder)
+			delete(d.statuses, vhostHolder)
+			d.mu.Unlock()
+		}, wantRelease: true},
+		{name: "holder config unreadable keeps the claim", holderNow: func(d *tenantDirectory) {
+			d.set(vhostHolder, moved)
+			d.setFailConfig(vhostHolder)
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir, c := newTenantDirectory(t, map[string]core.RabbitMQConfig{vhostHolder: reassigned})
+			logger := testutil.NewLevelCapturingLogger()
+			m := NewManager(c, "ledger", WithLogger(logger), WithExclusiveVHosts(), WithConnectionsCheckInterval(alwaysStale))
+			seedConnected(m, vhostHolder, reassigned)
+
+			tt.holderNow(dir)
+			dir.set(vhostTenantC, reassigned)
+			dir.list(vhostTenantC, "active")
+
+			_, err := m.GetConnection(context.Background(), vhostTenantC)
+			require.Error(t, err)
+			assertNoSecret(t, err, logger)
+
+			if !tt.wantRelease {
+				require.ErrorIs(t, err, core.ErrVHostConflict)
+				assert.Contains(t, err.Error(), vhostHolder)
+				assert.Equal(t, claimFor(&reassigned), m.vhosts[vhostHolder])
+
+				return
+			}
+
+			assert.NotErrorIs(t, err, core.ErrVHostConflict)
+			assert.Contains(t, err.Error(), "failed to connect to RabbitMQ", "the configured owner reaches the dial")
+			assert.NotContains(t, m.connections, vhostHolder, "the old holder's connection is closed")
+			assert.NotContains(t, m.vhosts, vhostHolder, "the old holder's claim is released")
+			assert.True(t, logger.ContainsAtLevel(obs.LevelWarn, vhostHolder, vhostTenantC, "reassigned"), "%v", logger.Entries())
 		})
 	}
 }
@@ -739,10 +838,27 @@ func TestExclusiveVHosts_CensusUnavailable(t *testing.T) {
 		assert.NotContains(t, err.Error(), "failed to connect")
 	})
 
-	t.Run("a tenant config the census cannot read fails it", func(t *testing.T) {
+	t.Run("a tenant config the census cannot read leaves only that tenant out", func(t *testing.T) {
 		t.Parallel()
 
 		dir, c := newTenantDirectory(t, map[string]core.RabbitMQConfig{vhostHolder: own, vhostTenantC: own})
+		dir.setFailConfig(vhostTenantC)
+
+		logger := testutil.NewLevelCapturingLogger()
+		m := NewManager(c, "ledger", WithLogger(logger), WithExclusiveVHosts())
+
+		_, err := m.GetConnection(context.Background(), vhostHolder)
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, core.ErrVHostCensusUnavailable)
+		assert.Contains(t, err.Error(), "failed to connect to RabbitMQ")
+		assert.True(t, logger.ContainsAtLevel(obs.LevelWarn, "census", vhostTenantC), "%v", logger.Entries())
+	})
+
+	t.Run("no listed tenant config readable fails the census", func(t *testing.T) {
+		t.Parallel()
+
+		dir, c := newTenantDirectory(t, map[string]core.RabbitMQConfig{vhostHolder: own, vhostTenantC: own})
+		dir.list(vhostHolder, "")
 		dir.setFailConfig(vhostTenantC)
 
 		m := NewManager(c, "ledger", WithLogger(testutil.NewMockLogger()), WithExclusiveVHosts())
@@ -778,6 +894,52 @@ func TestExclusiveVHosts_CensusUnavailable(t *testing.T) {
 		require.ErrorIs(t, err, core.ErrVHostConflict, "the last census still refuses a shared vhost")
 
 		assert.True(t, logger.ContainsAtLevel(obs.LevelWarn, "census"), "%v", logger.Entries())
+	})
+}
+
+// TestExclusiveVHosts_FailedCensusBacksOff covers a failing Tenant Manager: a
+// failed rebuild is not retried by every caller, with or without a prior
+// census.
+func TestExclusiveVHosts_FailedCensusBacksOff(t *testing.T) {
+	t.Parallel()
+
+	own := core.RabbitMQConfig{Host: unreachableHost, Port: unreachablePort, VHost: "own"}
+
+	t.Run("no census yet", func(t *testing.T) {
+		t.Parallel()
+
+		dir, c := newTenantDirectory(t, map[string]core.RabbitMQConfig{vhostHolder: own})
+		dir.setActiveDown(true)
+
+		m := NewManager(c, "ledger", WithLogger(testutil.NewMockLogger()),
+			WithExclusiveVHosts(), WithConnectionsCheckInterval(alwaysStale))
+
+		for range 3 {
+			_, err := m.GetConnection(context.Background(), vhostHolder)
+			require.ErrorIs(t, err, core.ErrVHostCensusUnavailable)
+		}
+
+		assert.Equal(t, int32(1), dir.activeHits.Load())
+	})
+
+	t.Run("after a census", func(t *testing.T) {
+		t.Parallel()
+
+		dir, c := newTenantDirectory(t, map[string]core.RabbitMQConfig{vhostHolder: own})
+		m := NewManager(c, "ledger", WithLogger(testutil.NewMockLogger()),
+			WithExclusiveVHosts(), WithConnectionsCheckInterval(alwaysStale))
+
+		_, err := m.GetConnection(context.Background(), vhostHolder)
+		require.Contains(t, err.Error(), "failed to connect to RabbitMQ")
+
+		dir.setActiveDown(true)
+
+		for range 3 {
+			_, err = m.GetConnection(context.Background(), vhostHolder)
+			assert.Contains(t, err.Error(), "failed to connect to RabbitMQ", "the last census admits the tenant")
+		}
+
+		assert.Equal(t, int32(2), dir.activeHits.Load())
 	})
 }
 

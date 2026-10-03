@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"slices"
 	"strconv"
@@ -27,47 +28,66 @@ import (
 const defaultVHost = "/"
 
 // WithExclusiveVHosts makes the manager refuse a tenant whose RabbitMQ config
-// resolves to a broker vhost that the tenants' configuration does not give to
-// that tenant alone. Ownership comes from the Tenant Manager, not from who
-// connects first:
+// resolves to a broker vhost that is not that tenant's alone. Ownership comes
+// from the Tenant Manager's tenant-to-vhost configuration, never from which
+// tenant connects first:
 //
 //   - The manager builds a census of the active tenants of its service
 //     (GetActiveTenantsByService, then each tenant's config for its module):
-//     which vhost each one is configured for. A vhost configured for exactly
-//     one active tenant belongs to that tenant.
-//   - A vhost configured for two or more active tenants is refused for every
-//     one of them, whatever the connection order, with an error wrapping
-//     core.ErrVHostConflict that names the broker, the vhost and all those
-//     tenants (sorted), never credentials. Nothing is dialed. The refusal
-//     clears once the configuration gives the vhost to a single tenant.
-//   - The connecting tenant's freshly fetched config replaces its census
-//     entry, so a move onto a shared vhost is refused at once.
-//   - A tenant that is already connected and that a newer census puts on a
-//     shared vhost loses its cached connection and its claim at its next
-//     settings revalidation, with an ERROR log. Both tenants end up refused,
-//     whichever revalidates first.
+//     which vhost each one is configured for. The connecting tenant's freshly
+//     fetched config replaces its census entry.
+//   - A tenant connects to a vhost only when the census configures it for that
+//     tenant alone and no other tenant holds it. A tenant holds a vhost from
+//     its first stored connection until that connection is released
+//     (CloseConnection on tenant removal or suspension, LRU eviction, Close); a
+//     connection that drops (broker restart, network failure) keeps the claim.
+//   - The holder keeps its vhost when the configuration later names a second
+//     tenant for it: the holder could only have connected while the
+//     configuration gave it the vhost alone, so the tenant newly configured
+//     onto it is the misconfigured one. That tenant is refused before any dial
+//     with an error wrapping core.ErrVHostConflict that names the holder; a
+//     connected tenant whose config moves onto the held vhost keeps its old
+//     connection. While the configuration names the vhost twice, every settings
+//     revalidation or reconnect of the holder logs an ERROR naming all those
+//     tenants, so the operator fixes the newcomer's config. The holder's
+//     connection is never closed for another tenant's configuration error.
+//   - A held vhost whose holder's current config no longer names it (the
+//     holder was moved to another vhost, removed, suspended or denied) goes to
+//     the tenant the configuration names now: the holder's connection is
+//     closed and its claim released, with a WARN, as part of that tenant's
+//     GetConnection, without waiting for the holder to call GetConnection.
+//     The holder's config is fetched fresh for that decision; when it cannot be
+//     read, the claim stands and the requester is refused.
+//   - With no holder, a vhost the census configures for two or more tenants is
+//     refused for every one of them, whatever the order, with an error naming
+//     the broker, the vhost and all those tenants (sorted): the configuration
+//     alone cannot say which of them is wrong. This is the case after a process
+//     start or after the holder's claim was released.
+//
+// Errors and logs never carry credentials. The holder rule is per manager, so
+// per process: a pod that starts while the configuration names one vhost for
+// two tenants refuses both there, even if another pod's holder keeps it.
+// Messages that other services publish into a held vhost under the refused
+// tenant's config still reach the holder's consumers until the configuration
+// is fixed.
 //
 // The census is cached for the connections check interval
 // (WithConnectionsCheckInterval, 30s by default; a disabled interval still
 // caches it for 30s) and rebuilt lazily by the first caller that finds it
 // stale, one rebuild at a time; every caller waits for it on its own context.
 // A rebuild costs one active-tenants call plus one config call per active
-// tenant, at most eight at once. If no census was ever built and one cannot be
-// (the Tenant Manager is unreachable, or a listed tenant's config answers
-// with anything but success, not found or access denied), the call fails with
+// tenant, at most eight at once. A tenant whose config the census cannot read
+// is left out of it with a WARN; the holder layer and the connecting tenant's
+// own fresh config still keep it off another tenant's vhost in this manager.
+// A rebuild fails when the active tenants cannot be listed, the Tenant
+// Manager's circuit breaker is open, the rebuild runs out of time, or no
+// listed tenant's config could be read; it is then not retried for five
+// seconds. If no census was ever built, a failed one makes the call fail with
 // core.ErrVHostCensusUnavailable and nothing is dialed; after a first census,
 // a failed rebuild keeps the last one with a WARN. Tenants listed with a
-// status other than active, or whose config is not found, denied, or carries
-// no RabbitMQ settings for the module, cannot connect and are left out.
-//
-// A second layer covers what the census cannot see yet: a tenant also holds
-// its vhost from its first stored connection until that connection is
-// released (CloseConnection on tenant removal or suspension, LRU eviction,
-// Close), and another tenant asking for that vhost is refused with
-// core.ErrVHostConflict naming the holder. A connection that drops (broker
-// restart, network failure) keeps the claim. A config change detected by
-// settings revalidation that lands on a vhost another tenant still holds
-// keeps the tenant's current connection and logs an ERROR.
+// status other than active, or whose config is not found, denied, suspended,
+// or carries no RabbitMQ settings for the module, cannot connect and are left
+// out.
 //
 // Use it whenever tenant identity is derived from the vhost a message arrived
 // on (a per-tenant consumer, a subscription bound to the tenant's queues): two
@@ -96,6 +116,10 @@ const censusFetchConcurrency = 8
 // caller that started it, so another caller's deadline cannot cut it short.
 const censusBuildTimeout = 30 * time.Second
 
+// censusRetryBackoff is how long a failed census rebuild is not retried, so a
+// failing Tenant Manager is not called by every connecting tenant.
+const censusRetryBackoff = 5 * time.Second
+
 // censusKey is the single in-flight key of a manager's census rebuilds.
 const censusKey = "vhost-census"
 
@@ -108,6 +132,8 @@ type vhostCensus struct {
 	mu      sync.Mutex
 	claims  map[string]vhostClaim // tenantID -> configured vhost; nil until the first build
 	builtAt time.Time
+	retryAt time.Time // no rebuild before this, after a failed one
+	lastErr error     // why the last rebuild failed; nil after a success
 }
 
 // vhostClaim identifies one vhost on one broker. It holds no credentials.
@@ -131,90 +157,194 @@ func claimFor(cfg *core.RabbitMQConfig) vhostClaim {
 
 // vhostConflict returns an error wrapping core.ErrVHostConflict when exclusive
 // vhosts are on and a tenant other than tenantID holds claim through a stored
-// connection, whether or not
-// its connection is still open, and nil otherwise. Caller MUST hold p.mu
-// (read or write).
+// connection, whether or not its connection is still open, and nil otherwise.
+// Caller MUST hold p.mu (read or write).
 func (p *Manager) vhostConflict(tenantID string, claim vhostClaim) error {
 	if !p.exclusiveVHost {
 		return nil
 	}
 
-	for holder, held := range p.vhosts {
-		if holder != tenantID && held == claim {
-			return fmt.Errorf("%w: broker %s vhost %q requested by tenant %s is held by tenant %s",
-				core.ErrVHostConflict, claim.broker, claim.vhost, tenantID, holder)
-		}
+	if holder := p.vhostHolder(tenantID, claim); holder != "" {
+		return heldConflict(tenantID, holder, claim)
 	}
 
 	return nil
 }
 
-// heldVHostConflict is vhostConflict under the read lock.
-// Caller must NOT hold p.mu.
-func (p *Manager) heldVHostConflict(tenantID string, claim vhostClaim) error {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+// vhostHolder returns the tenant other than tenantID that holds claim, or "".
+// Caller MUST hold p.mu (read or write).
+func (p *Manager) vhostHolder(tenantID string, claim vhostClaim) string {
+	for holder, held := range p.vhosts {
+		if holder != tenantID && held == claim {
+			return holder
+		}
+	}
 
-	return p.vhostConflict(tenantID, claim)
+	return ""
+}
+
+// heldConflict is the refusal of requester on claim, which holder holds.
+func heldConflict(requester, holder string, claim vhostClaim) error {
+	return fmt.Errorf("%w: broker %s vhost %q requested by tenant %s is held by tenant %s",
+		core.ErrVHostConflict, claim.broker, claim.vhost, requester, holder)
 }
 
 // admitVHost returns nil when tenantID may connect to claim: always without
-// WithExclusiveVHosts; with it, when the configuration gives the vhost to
-// tenantID alone and no other tenant holds it. Caller must NOT hold p.mu.
+// WithExclusiveVHosts; with it, when tenantID holds claim, or when no other
+// tenant holds it (after releasing a holder its configuration no longer
+// names) and the census configures it for tenantID alone.
+// Caller must NOT hold p.mu.
 func (p *Manager) admitVHost(ctx context.Context, tenantID string, claim vhostClaim) error {
 	if !p.exclusiveVHost {
 		return nil
 	}
 
-	if err := p.configuredVHostConflict(ctx, tenantID, claim); err != nil {
-		return err
+	p.mu.RLock()
+	held, holds := p.vhosts[tenantID]
+	owns := holds && held == claim
+	holder := p.vhostHolder(tenantID, claim)
+	p.mu.RUnlock()
+
+	if owns {
+		p.reportConfiguredSharers(ctx, tenantID, claim)
+
+		return nil
 	}
 
-	return p.heldVHostConflict(tenantID, claim)
+	if holder != "" {
+		if err := p.releaseUnconfiguredHolder(ctx, tenantID, holder, claim); err != nil {
+			return err
+		}
+	}
+
+	return p.configuredVHostConflict(ctx, tenantID, claim, holder)
+}
+
+// releaseUnconfiguredHolder decides whether holder, which holds claim, still
+// owns it, from holder's current config. It returns the refusal of requester
+// when holder's config still names claim or cannot be read, and otherwise
+// closes holder's connection, releases its claim and returns nil.
+// Caller must NOT hold p.mu.
+func (p *Manager) releaseUnconfiguredHolder(ctx context.Context, requester, holder string, claim vhostClaim) error {
+	config, err := p.client.GetTenantConfig(ctx, holder, p.service, client.WithSkipCache())
+
+	switch {
+	case err == nil:
+		if rabbitConfig := resolveRabbitMQConfig(config, p.module); rabbitConfig != nil && claimFor(rabbitConfig) == claim {
+			return heldConflict(requester, holder, claim)
+		}
+	case cannotConnect(err):
+	default:
+		return fmt.Errorf("%w (its current configuration could not be read: %w)", heldConflict(requester, holder, claim), err)
+	}
+
+	p.mu.Lock()
+
+	if p.vhosts[holder] != claim {
+		p.mu.Unlock()
+
+		return nil
+	}
+
+	conn := p.connections[holder]
+	delete(p.connections, holder)
+	delete(p.cachedURIs, holder)
+	delete(p.vhosts, holder)
+	delete(p.lastAccessed, holder)
+	delete(p.lastConnectionsCheck, holder)
+
+	p.mu.Unlock()
+
+	if p.logger != nil {
+		p.logger.Warnf("tenant %s's configuration no longer names RabbitMQ broker %s vhost %q it holds; closing its connection so tenant %s can connect",
+			holder, claim.broker, claim.vhost, requester)
+	}
+
+	p.closeRabbitMQConn(conn, "failed to close the RabbitMQ connection of tenant %s, whose vhost was reassigned", holder)
+
+	return nil
+}
+
+// cannotConnect reports whether a tenant config fetch failed because the
+// tenant cannot connect at all: not found, access denied or suspended.
+func cannotConnect(err error) bool {
+	return errors.Is(err, core.ErrTenantNotFound) ||
+		errors.Is(err, core.ErrTenantServiceAccessDenied) ||
+		core.IsTenantSuspendedError(err)
+}
+
+// reportConfiguredSharers logs an ERROR when the census configures claim, which
+// holder holds, for other tenants too. It never refuses: the holder keeps its
+// vhost. A census that cannot be read is skipped. Caller must NOT hold p.mu.
+func (p *Manager) reportConfiguredSharers(ctx context.Context, holder string, claim vhostClaim) {
+	census, err := p.vhostCensus(ctx)
+	if err != nil || p.logger == nil {
+		return
+	}
+
+	if sharers := configuredSharers(census, holder, claim, ""); len(sharers) > 0 {
+		p.logger.Errorf("tenant %s keeps RabbitMQ broker %s vhost %q, which it holds; the configuration also names tenants %s, which are refused until it gives the vhost to one tenant",
+			holder, claim.broker, claim.vhost, strings.Join(sharers, ", "))
+	}
 }
 
 // configuredVHostConflict returns an error wrapping core.ErrVHostConflict when
-// the census configures claim for any active tenant other than tenantID, whose
-// own census entry is replaced by claim. It returns the census error when no
-// census is available. Caller must NOT hold p.mu.
-func (p *Manager) configuredVHostConflict(ctx context.Context, tenantID string, claim vhostClaim) error {
+// the census configures claim for any active tenant other than tenantID and
+// released, whose own census entry is replaced by claim. It returns the census
+// error when no census is available. Caller must NOT hold p.mu.
+func (p *Manager) configuredVHostConflict(ctx context.Context, tenantID string, claim vhostClaim, released string) error {
 	census, err := p.vhostCensus(ctx)
 	if err != nil {
 		return err
 	}
 
-	tenants := []string{tenantID}
-
-	for other, configured := range census {
-		if other != tenantID && configured == claim {
-			tenants = append(tenants, other)
-		}
-	}
-
-	if len(tenants) == 1 {
+	sharers := configuredSharers(census, tenantID, claim, released)
+	if len(sharers) == 0 {
 		return nil
 	}
 
+	tenants := append([]string{tenantID}, sharers...)
 	slices.Sort(tenants)
 
 	return fmt.Errorf("%w: broker %s vhost %q is configured for tenants %s",
 		core.ErrVHostConflict, claim.broker, claim.vhost, strings.Join(tenants, ", "))
 }
 
+// configuredSharers returns, sorted, the tenants other than tenantID and
+// except that census configures for claim.
+func configuredSharers(census map[string]vhostClaim, tenantID string, claim vhostClaim, except string) []string {
+	var sharers []string
+
+	for other, configured := range census {
+		if other != tenantID && other != except && configured == claim {
+			sharers = append(sharers, other)
+		}
+	}
+
+	slices.Sort(sharers)
+
+	return sharers
+}
+
 // vhostCensus returns the current census, rebuilding it when it is missing or
-// older than the census interval. Concurrent callers share one rebuild and
-// each stops waiting when its own ctx ends. A failed rebuild falls back to the
-// last census with a WARN, or returns core.ErrVHostCensusUnavailable when
+// older than the census interval and no failed rebuild is backing off.
+// Concurrent callers share one rebuild and each stops waiting when its own ctx
+// ends. A failed rebuild falls back to the last census (with a WARN when the
+// rebuild has just failed), or returns core.ErrVHostCensusUnavailable when
 // there is none.
 func (p *Manager) vhostCensus(ctx context.Context) (map[string]vhostClaim, error) {
 	c := &p.census
 
 	c.mu.Lock()
-	last, builtAt := c.claims, c.builtAt
+	last, builtAt, retryAt, lastErr := c.claims, c.builtAt, c.retryAt, c.lastErr
 	c.mu.Unlock()
 
 	if last != nil && time.Since(builtAt) < p.censusInterval() {
 		return last, nil
+	}
+
+	if time.Now().Before(retryAt) {
+		return censusFallback(last, lastErr)
 	}
 
 	rebuilt := c.group.DoChan(censusKey, func() (any, error) {
@@ -222,13 +352,17 @@ func (p *Manager) vhostCensus(ctx context.Context) (map[string]vhostClaim, error
 		defer cancel()
 
 		claims, err := p.buildVHostCensus(buildCtx)
+
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
 		if err != nil {
+			c.retryAt, c.lastErr = time.Now().Add(censusRetryBackoff), err
+
 			return nil, err
 		}
 
-		c.mu.Lock()
-		c.claims, c.builtAt = claims, time.Now()
-		c.mu.Unlock()
+		c.claims, c.builtAt, c.retryAt, c.lastErr = claims, time.Now(), time.Time{}, nil
 
 		return claims, nil
 	})
@@ -241,17 +375,23 @@ func (p *Manager) vhostCensus(ctx context.Context) (map[string]vhostClaim, error
 			return claims, nil
 		}
 
-		if last != nil {
-			if p.logger != nil {
-				p.logger.Warnf("rabbitmq vhost census rebuild failed, using the census from %s: %v",
-					builtAt.UTC().Format(time.RFC3339), res.Err)
-			}
-
-			return last, nil
+		if last != nil && p.logger != nil {
+			p.logger.Warnf("rabbitmq vhost census rebuild failed, using the census from %s: %v",
+				builtAt.UTC().Format(time.RFC3339), res.Err)
 		}
 
-		return nil, fmt.Errorf("%w: %w", core.ErrVHostCensusUnavailable, res.Err)
+		return censusFallback(last, res.Err)
 	}
+}
+
+// censusFallback returns last when there is one, and otherwise
+// core.ErrVHostCensusUnavailable wrapping why the census could not be built.
+func censusFallback(last map[string]vhostClaim, failure error) (map[string]vhostClaim, error) {
+	if last != nil {
+		return last, nil
+	}
+
+	return nil, fmt.Errorf("%w: %w", core.ErrVHostCensusUnavailable, failure)
 }
 
 // censusInterval is how long a census stays fresh: the connections check
@@ -265,9 +405,11 @@ func (p *Manager) censusInterval() time.Duration {
 }
 
 // buildVHostCensus asks the Tenant Manager which vhost each active tenant of
-// the service is configured for. Tenants that cannot connect (not active, no
-// config, access denied, no RabbitMQ for the module) are left out; any other
-// failure fails the whole census, because a partial one could miss a sharer.
+// the service is configured for. Tenants that cannot connect (not active, not
+// found, access denied, suspended, no RabbitMQ for the module) are left out,
+// and so, with a WARN, is a tenant whose config cannot be read. The build
+// fails when the active tenants cannot be listed, the Tenant Manager's circuit
+// breaker is open, ctx ends, or no listed tenant's config could be read.
 func (p *Manager) buildVHostCensus(ctx context.Context) (map[string]vhostClaim, error) {
 	summaries, err := p.client.GetActiveTenantsByService(ctx, p.service)
 	if err != nil {
@@ -275,40 +417,69 @@ func (p *Manager) buildVHostCensus(ctx context.Context) (map[string]vhostClaim, 
 	}
 
 	var (
-		mu     sync.Mutex
-		claims = make(map[string]vhostClaim, len(summaries))
+		mu         sync.Mutex
+		claims     = make(map[string]vhostClaim, len(summaries))
+		read       int
+		unreadable = make(map[string]error)
 	)
 
-	group, groupCtx := errgroup.WithContext(ctx)
+	var group errgroup.Group
+
 	group.SetLimit(censusFetchConcurrency)
 
 	for _, tenantID := range activeTenantIDs(summaries) {
 		group.Go(func() error {
-			config, fetchErr := p.client.GetTenantConfig(groupCtx, tenantID, p.service, client.WithSkipCache())
+			config, fetchErr := p.client.GetTenantConfig(ctx, tenantID, p.service, client.WithSkipCache())
+
+			mu.Lock()
+			defer mu.Unlock()
 
 			switch {
 			case fetchErr == nil:
-			case errors.Is(fetchErr, core.ErrTenantNotFound), errors.Is(fetchErr, core.ErrTenantServiceAccessDenied):
+				read++
+			case cannotConnect(fetchErr):
+				read++
+
 				return nil
 			default:
-				return fmt.Errorf("tenant %s config: %w", tenantID, fetchErr)
-			}
+				unreadable[tenantID] = fetchErr
 
-			rabbitConfig := resolveRabbitMQConfig(config, p.module)
-			if rabbitConfig == nil {
 				return nil
 			}
 
-			mu.Lock()
-			claims[tenantID] = claimFor(rabbitConfig)
-			mu.Unlock()
+			if rabbitConfig := resolveRabbitMQConfig(config, p.module); rabbitConfig != nil {
+				claims[tenantID] = claimFor(rabbitConfig)
+			}
 
 			return nil
 		})
 	}
 
-	if err := group.Wait(); err != nil {
-		return nil, err
+	_ = group.Wait() // every task returns nil; failures are collected above
+
+	if len(unreadable) == 0 {
+		return claims, nil
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("read tenant configs: %w", err)
+	}
+
+	tenants := slices.Sorted(maps.Keys(unreadable))
+
+	for _, tenantID := range tenants {
+		if errors.Is(unreadable[tenantID], core.ErrCircuitBreakerOpen) {
+			return nil, fmt.Errorf("tenant %s config: %w", tenantID, unreadable[tenantID])
+		}
+	}
+
+	if read == 0 {
+		return nil, fmt.Errorf("no listed tenant config could be read; tenant %s config: %w", tenants[0], unreadable[tenants[0]])
+	}
+
+	if p.logger != nil {
+		p.logger.Warnf("rabbitmq vhost census leaves out tenants %s, whose config could not be read: %v",
+			strings.Join(tenants, ", "), unreadable[tenants[0]])
 	}
 
 	return claims, nil

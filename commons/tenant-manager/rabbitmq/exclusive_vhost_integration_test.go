@@ -165,6 +165,8 @@ func TestIntegration_ExclusiveVHosts_OwnershipFromConfiguration(t *testing.T) {
 		// vhost, so it is refused whether or not tenant-a is connected.
 		_, err = m.GetConnection(ctx, vhostTenantB)
 		require.ErrorIs(t, err, core.ErrVHostConflict)
+		assert.Contains(t, err.Error(), "held by tenant "+vhostTenantA)
+		assert.False(t, connA.IsClosed(), "tenant-b's refusal leaves the holder connected")
 
 		require.NoError(t, m.CloseConnection(ctx, vhostTenantA))
 
