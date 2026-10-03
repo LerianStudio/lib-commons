@@ -562,6 +562,7 @@ Extracted observability, systemplane, and streaming packages are not lib-commons
 | `redis` | `ConnectionOptions.MaxActiveConns` maps to go-redis's total active-connection cap. TLS with no custom CA uses the host system trust store; a supplied base64 PEM remains an explicit replacement trust store. |
 | `redis` | `NewRedisLockManager()` and `LockManager` interface |
 | `postgres` | `New(cfg Config)`; `Resolver(ctx)` (not `GetDB()`); `NewMigrator(cfg)` |
+| `postgres` | TLS posture is consumer-supplied (`Config.TLSPosture`/`MinSSLMode`, same on `MigrationConfig`); the library never reads `ENV_NAME`. The zero value keeps the default rule (require or stronger, `ALLOW_INSECURE_TLS` bypass). `TLSPostureHardened` refuses before dialing any sslmode below `MinSSLMode` (empty: verify-full), an absent sslmode or an unparseable DSN, and `ALLOW_INSECURE_TLS` never lifts it; `TLSPostureSaaS` requires verify-full. Refusals are `*WeakSSLModeError` (wraps `ErrWeakSSLMode`; names the setting and value, never the DSN); invalid pairs and `NewFromPools` with a posture are `ErrInvalidConfig`. `CheckSSLMode`/`CheckSSLModeValue` run the same check for pools opened elsewhere. |
 | `mongo` | `NewClient(ctx, cfg, opts...)` constructor |
 | `transaction` | `BuildIntentPlan()` + `ValidateBalanceEligibility()` + `ApplyPosting()` |
 | `rabbitmq` | `*Context()` variants for lifecycle; `HealthCheck()` returns `(bool, error)` |

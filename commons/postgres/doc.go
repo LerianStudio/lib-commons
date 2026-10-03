@@ -28,4 +28,23 @@
 // wherever a Client exists: it sends the read to the replica pool, which the
 // package-level one cannot do on its own. Read its own doc first — a replica
 // does not read your own writes.
+//
+// # TLS posture
+//
+// Config.TLSPosture (and MigrationConfig.TLSPosture) is the consumer's TLS
+// stance, decided by the consumer: the library never reads ENV_NAME. The zero
+// value, TLSPostureDefault, keeps the long-standing rule: sslmode must be
+// require or stronger unless ALLOW_INSECURE_TLS=true. TLSPostureHardened
+// refuses, before any dial, every sslmode weaker than Config.MinSSLMode
+// (require, verify-ca or verify-full; empty means verify-full), an absent
+// sslmode and an unparseable DSN; ALLOW_INSECURE_TLS never lifts that floor.
+// TLSPostureSaaS requires verify-full. New checks the primary and any distinct
+// replica, Migrator.Up checks before opening its database, and NewFromPools
+// refuses a posture it cannot verify.
+//
+// A refusal is a *WeakSSLModeError wrapping ErrWeakSSLMode. It names the
+// connection, the setting and the value as written, never the DSN. Only the
+// sslmode is judged: libpq treating require plus sslrootcert as verify-ca is
+// not credited. CheckSSLMode and CheckSSLModeValue run the same check for a
+// pool opened outside New.
 package postgres

@@ -165,6 +165,13 @@ type Config struct {
 	MaxIdleConnections int
 	ConnMaxLifetime    time.Duration
 	ConnMaxIdleTime    time.Duration
+	// TLSPosture is the consumer's TLS stance for every pool New opens (see
+	// TLSPosture). The zero value keeps the default rule, unchanged.
+	TLSPosture TLSPosture
+	// MinSSLMode is the hardened posture's floor (empty: verify-full). It is
+	// a config error with the default posture, and under the saas posture
+	// anything but empty or verify-full is too.
+	MinSSLMode SSLMode
 }
 
 func (c Config) withDefaults() Config {
@@ -219,7 +226,7 @@ func (c Config) validate() error {
 		}
 	}
 
-	return nil
+	return ValidateTLSPosture(c.TLSPosture, c.MinSSLMode)
 }
 
 // validateDSN checks structural validity of URL-format DSNs.
@@ -481,7 +488,7 @@ func New(cfg Config) (*Client, error) {
 	}
 
 	for _, dsn := range dsns {
-		if err := enforceTLSPolicy(context.Background(), cfg.Logger, dsn.label, dsn.value); err != nil {
+		if err := enforceConnTLS(context.Background(), cfg.Logger, dsn.label, dsn.value, cfg.TLSPosture, cfg.MinSSLMode); err != nil {
 			return nil, fmt.Errorf("postgres new: %w", err)
 		}
 	}
@@ -873,6 +880,10 @@ type MigrationConfig struct {
 	// intentionally have no migrations (e.g., worker-only services sharing a database).
 	AllowMissingMigrations bool
 	Logger                 obs.Logger
+	// TLSPosture and MinSSLMode have Config's meaning; Up applies them to
+	// PrimaryDSN before opening the migration database.
+	TLSPosture TLSPosture
+	MinSSLMode SSLMode
 }
 
 func (c MigrationConfig) withDefaults() MigrationConfig {
@@ -896,7 +907,7 @@ func (c MigrationConfig) validate() error {
 		return fmt.Errorf("%w: migrations_path or component is required", ErrInvalidConfig)
 	}
 
-	return nil
+	return ValidateTLSPosture(c.TLSPosture, c.MinSSLMode)
 }
 
 // Migrator runs schema migrations explicitly.
@@ -956,7 +967,7 @@ func (m *Migrator) Up(ctx context.Context) error {
 		return fmt.Errorf("postgres migrate_up: context already done: %w", err)
 	}
 
-	if err := enforceTLSPolicy(ctx, m.cfg.Logger, "primary", m.cfg.PrimaryDSN); err != nil {
+	if err := enforceConnTLS(ctx, m.cfg.Logger, "primary", m.cfg.PrimaryDSN, m.cfg.TLSPosture, m.cfg.MinSSLMode); err != nil {
 		libOpentelemetry.HandleSpanError(span, "Migration TLS policy blocked connection", err)
 
 		return fmt.Errorf("postgres migrate_up: %w", err)

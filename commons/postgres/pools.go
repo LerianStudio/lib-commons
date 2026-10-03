@@ -42,6 +42,11 @@ import (
 // the caller's handle is precisely what must not happen here. Query-level
 // telemetry the caller already applied to its own handle is untouched.
 //
+// NO TLS POSTURE — a cfg with a TLSPosture other than the default, or with a
+// MinSSLMode, is refused with ErrInvalidConfig: the posture judges the DSN a
+// pool is opened from, and these pools were opened elsewhere. Check the DSN
+// with CheckSSLMode where you open them.
+//
 // OWNERSHIP — Close() closes the injected pools, like it closes dialed ones.
 // Handing the pools over means handing over the responsibility for closing
 // them; after Close the client reports IsConnected false and Primary returns
@@ -51,6 +56,12 @@ import (
 func NewFromPools(primary, replica *sql.DB, cfg Config) (*Client, error) {
 	if primary == nil {
 		return nil, fmt.Errorf("postgres new from pools: %w", ErrNilPool)
+	}
+
+	// The posture judges the DSN a pool is opened from; an injected pool has
+	// none this client can see, so accepting a posture would be a false claim.
+	if cfg.TLSPosture != TLSPostureDefault || cfg.MinSSLMode != "" {
+		return nil, fmt.Errorf("postgres new from pools: %w: TLS posture cannot be verified for injected pools", ErrInvalidConfig)
 	}
 
 	// Registering one handle as both roles would make the resolver ping and
