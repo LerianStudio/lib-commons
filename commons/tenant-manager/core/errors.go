@@ -71,13 +71,22 @@ var ErrManagerClosed = errors.New("tenant connection manager is closed")
 
 // ErrVHostConflict is returned by a RabbitMQ manager built with
 // WithExclusiveVHosts when a tenant's config resolves to a broker vhost that
-// another tenant of the same manager already holds (its claim lasts until its
-// connection is released, a dropped connection included). Two tenants on one
-// vhost share every queue and exchange, so a consumer that derives tenant
-// identity from where a message arrived would attribute one tenant's messages
-// to the other. The wrapped message names the broker (host:port), the vhost,
-// the requesting tenant and the holding tenant, never credentials.
-var ErrVHostConflict = errors.New("rabbitmq vhost already held by another tenant")
+// the tenants' configuration assigns to more than one active tenant (every one
+// of them is refused, whatever the connection order), or that another tenant
+// of the same manager still holds through a live or dropped connection. Two
+// tenants on one vhost share every queue and exchange, so a consumer that
+// derives tenant identity from where a message arrived would attribute one
+// tenant's messages to the other. The wrapped message names the broker
+// (host:port), the vhost and the tenants involved, never credentials.
+var ErrVHostConflict = errors.New("rabbitmq vhost configured for more than one tenant")
+
+// ErrVHostCensusUnavailable is returned by a RabbitMQ manager built with
+// WithExclusiveVHosts when it cannot learn which vhost each active tenant is
+// configured for (the Tenant Manager is unreachable or answers with an error)
+// and has never learnt it. Nothing is dialed: without the census the manager
+// cannot tell whether the vhost is shared. Once a census has been built, a
+// failed refresh falls back to the last one instead.
+var ErrVHostCensusUnavailable = errors.New("rabbitmq vhost census unavailable")
 
 // ErrTenantContextRequired is returned when no tenant context is found for a database operation.
 // This error indicates that a request attempted to access the database without proper tenant identification.

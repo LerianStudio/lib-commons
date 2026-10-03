@@ -8,6 +8,7 @@ package rabbitmq
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -76,11 +77,25 @@ func startVHostBroker(t *testing.T) brokerEndpoint {
 }
 
 // sameVHostClient serves every tenant the same broker endpoint and the default
-// vhost, which is the misconfiguration WithExclusiveVHosts refuses.
-func sameVHostClient(t *testing.T, ep brokerEndpoint) *client.Client {
+// vhost, which is the misconfiguration WithExclusiveVHosts refuses, and lists
+// only the active tenants on /v1/tenants/active.
+func sameVHostClient(t *testing.T, ep brokerEndpoint, active ...string) *client.Client {
 	t.Helper()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tenants/active" {
+			listed := make([]map[string]string, 0, len(active))
+			for _, id := range active {
+				listed = append(listed, map[string]string{"id": id, "name": id, "status": "active"})
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(listed)
+
+			return
+		}
+
 		tenantID := ""
 
 		for _, id := range []string{vhostTenantA, vhostTenantB} {
@@ -116,12 +131,29 @@ func sameVHostClient(t *testing.T, ep brokerEndpoint) *client.Client {
 	return c
 }
 
-func TestIntegration_ExclusiveVHosts_RefusesSecondTenant(t *testing.T) {
+func TestIntegration_ExclusiveVHosts_OwnershipFromConfiguration(t *testing.T) {
 	ep := startVHostBroker(t)
 	ctx := context.Background()
 
-	t.Run("exclusive refuses until the holder lets go", func(t *testing.T) {
-		m := NewManager(sameVHostClient(t, ep), "ledger",
+	t.Run("a vhost configured for two active tenants refuses both", func(t *testing.T) {
+		for _, order := range [][]string{{vhostTenantA, vhostTenantB}, {vhostTenantB, vhostTenantA}} {
+			m := NewManager(sameVHostClient(t, ep, vhostTenantA, vhostTenantB), "ledger",
+				WithLogger(testutil.NewMockLogger()), WithExclusiveVHosts())
+			t.Cleanup(func() { assert.NoError(t, m.Close(context.Background())) })
+
+			for _, tenantID := range order {
+				_, err := m.GetConnection(ctx, tenantID)
+				require.ErrorIs(t, err, core.ErrVHostConflict, "tenant %s", tenantID)
+				assert.Contains(t, err.Error(), vhostTenantA+", "+vhostTenantB)
+				assert.NotContains(t, err.Error(), ep.pass+"@")
+			}
+
+			assert.Zero(t, m.Stats().TotalConnections)
+		}
+	})
+
+	t.Run("a vhost configured for one active tenant is that tenant's", func(t *testing.T) {
+		m := NewManager(sameVHostClient(t, ep, vhostTenantA), "ledger",
 			WithLogger(testutil.NewMockLogger()), WithExclusiveVHosts())
 		t.Cleanup(func() { assert.NoError(t, m.Close(context.Background())) })
 
@@ -129,49 +161,29 @@ func TestIntegration_ExclusiveVHosts_RefusesSecondTenant(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, connA.IsClosed())
 
+		// tenant-b is not active, but its own fresh config lands on tenant-a's
+		// vhost, so it is refused whether or not tenant-a is connected.
 		_, err = m.GetConnection(ctx, vhostTenantB)
 		require.ErrorIs(t, err, core.ErrVHostConflict)
-		assert.Contains(t, err.Error(), vhostTenantA)
-		assert.Contains(t, err.Error(), vhostTenantB)
-		assert.NotContains(t, err.Error(), ep.pass+"@")
 
 		require.NoError(t, m.CloseConnection(ctx, vhostTenantA))
 
-		connB, err := m.GetConnection(ctx, vhostTenantB)
-		require.NoError(t, err, "the vhost is free once its holder's connection is closed")
-		assert.False(t, connB.IsClosed())
-
-		_, err = m.GetConnection(ctx, vhostTenantA)
-		require.ErrorIs(t, err, core.ErrVHostConflict, "the claim now belongs to tenant-b")
-	})
-
-	t.Run("a dropped holder connection keeps the claim", func(t *testing.T) {
-		m := NewManager(sameVHostClient(t, ep), "ledger",
-			WithLogger(testutil.NewMockLogger()), WithExclusiveVHosts())
-		t.Cleanup(func() { assert.NoError(t, m.Close(context.Background())) })
-
-		connA, err := m.GetConnection(ctx, vhostTenantA)
-		require.NoError(t, err)
-
-		// Closed behind the manager's back, as a broker restart or network
-		// drop would: the manager still caches it and still records the claim.
-		require.NoError(t, connA.Close())
-		require.True(t, connA.IsClosed())
-
 		_, err = m.GetConnection(ctx, vhostTenantB)
-		require.ErrorIs(t, err, core.ErrVHostConflict, "tenant-b must not win the race to reconnect")
+		require.ErrorIs(t, err, core.ErrVHostConflict, "releasing tenant-a's connection does not hand tenant-b the vhost")
+
+		// A dropped connection reconnects to the tenant's own vhost.
+		connA, err = m.GetConnection(ctx, vhostTenantA)
+		require.NoError(t, err)
+		require.NoError(t, connA.Close())
 
 		reconnected, err := m.GetConnection(ctx, vhostTenantA)
-		require.NoError(t, err, "the holder reconnects to its own vhost")
+		require.NoError(t, err, "the owner reconnects to its own vhost")
 		assert.False(t, reconnected.IsClosed())
 		assert.NotSame(t, connA, reconnected)
-
-		_, err = m.GetConnection(ctx, vhostTenantB)
-		require.ErrorIs(t, err, core.ErrVHostConflict)
 	})
 
 	t.Run("default lets both tenants share the vhost", func(t *testing.T) {
-		m := NewManager(sameVHostClient(t, ep), "ledger", WithLogger(testutil.NewMockLogger()))
+		m := NewManager(sameVHostClient(t, ep, vhostTenantA, vhostTenantB), "ledger", WithLogger(testutil.NewMockLogger()))
 		t.Cleanup(func() { assert.NoError(t, m.Close(context.Background())) })
 
 		_, err := m.GetConnection(ctx, vhostTenantA)
@@ -180,6 +192,48 @@ func TestIntegration_ExclusiveVHosts_RefusesSecondTenant(t *testing.T) {
 		_, err = m.GetConnection(ctx, vhostTenantB)
 		require.NoError(t, err)
 	})
+}
+
+// TestIntegration_ExclusiveVHosts_ConcurrentTenantsBothRefused connects two
+// active tenants configured for one vhost at the same time: both are refused
+// and neither reaches the broker.
+func TestIntegration_ExclusiveVHosts_ConcurrentTenantsBothRefused(t *testing.T) {
+	ep := startVHostBroker(t)
+	proxy := startHoldingProxy(t, net.JoinHostPort(ep.host, strconv.Itoa(ep.port)))
+
+	viaProxy := ep
+	viaProxy.host = "127.0.0.1"
+	viaProxy.port = proxy.addr.Port
+
+	m := NewManager(sameVHostClient(t, viaProxy, vhostTenantA, vhostTenantB), "ledger",
+		WithLogger(testutil.NewMockLogger()), WithExclusiveVHosts())
+	t.Cleanup(func() { assert.NoError(t, m.Close(context.Background())) })
+
+	errs := make(chan error, 2)
+
+	for _, tenantID := range []string{vhostTenantA, vhostTenantB} {
+		go func() {
+			_, err := m.GetConnection(context.Background(), tenantID)
+			errs <- err
+		}()
+	}
+
+	for range 2 {
+		select {
+		case err := <-errs:
+			require.True(t, errors.Is(err, core.ErrVHostConflict), "got %v", err)
+		case <-time.After(30 * time.Second):
+			t.Fatal("GetConnection never returned")
+		}
+	}
+
+	select {
+	case <-proxy.held:
+		t.Fatal("a refused tenant dialed the broker")
+	default:
+	}
+
+	assert.Zero(t, m.Stats().TotalConnections)
 }
 
 // holdingProxy forwards TCP connections to a broker. The first connection it
@@ -290,9 +344,11 @@ func (hp *holdingProxy) forward(downstream net.Conn, upstream string, first bool
 }
 
 // TestIntegration_ExclusiveVHosts_ConcurrentDialLoserRefused drives the race the
-// pre-dial check cannot see: tenant-b passes it, tenant-a dials and stores its
-// connection while tenant-b's dial is held, then tenant-b's dial completes. The
-// write-locked recheck must refuse tenant-b and close its fresh connection.
+// pre-dial checks cannot see. Neither tenant is listed as active, so the
+// census sees no sharing and only the live-claim layer decides: tenant-b
+// passes the pre-dial checks, tenant-a dials and stores its connection while
+// tenant-b's dial is held, then tenant-b's dial completes. The write-locked
+// recheck must refuse tenant-b and close its fresh connection.
 func TestIntegration_ExclusiveVHosts_ConcurrentDialLoserRefused(t *testing.T) {
 	ep := startVHostBroker(t)
 	proxy := startHoldingProxy(t, net.JoinHostPort(ep.host, strconv.Itoa(ep.port)))

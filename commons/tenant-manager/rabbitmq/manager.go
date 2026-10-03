@@ -50,7 +50,8 @@ type Manager struct {
 	connections    map[string]*amqp.Connection
 	cachedURIs     map[string]string     // tenantID -> last known connection URI (for change detection)
 	vhosts         map[string]vhostClaim // tenantID -> broker vhost of the cached connection
-	exclusiveVHost bool                  // refuse a tenant whose vhost another live tenant holds
+	exclusiveVHost bool                  // refuse a tenant whose vhost is not configured for it alone
+	census         vhostCensus           // tenant -> configured vhost (WithExclusiveVHosts); has its own lock
 	closed         bool
 	maxConnections int                  // soft limit for pool size (0 = unlimited)
 	idleTimeout    time.Duration        // how long before a connection is eligible for eviction
@@ -283,14 +284,20 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 		return nil, core.ErrServiceNotConfigured
 	}
 
-	// Refuse a vhost another tenant holds before dialing (WithExclusiveVHosts).
+	// Refuse a vhost that is not this tenant's alone before dialing
+	// (WithExclusiveVHosts).
 	claim := claimFor(rabbitConfig)
 
-	if conflict := p.heldVHostConflict(tenantID, claim); conflict != nil {
-		logger.Errorf("refusing RabbitMQ connection: %v", conflict)
-		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "RabbitMQ vhost held by another tenant", conflict)
+	if refused := p.admitVHost(ctx, tenantID, claim); refused != nil {
+		logger.Errorf("refusing RabbitMQ connection for tenant %s: %v", tenantID, refused)
 
-		return nil, conflict
+		if errors.Is(refused, core.ErrVHostConflict) {
+			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "RabbitMQ vhost not exclusive to the tenant", refused)
+		} else {
+			libOpentelemetry.HandleSpanError(span, "RabbitMQ vhost census unavailable", refused)
+		}
+
+		return nil, refused
 	}
 
 	// Resolve TLS: per-tenant config takes precedence over global WithTLS() setting.
@@ -551,7 +558,7 @@ func (p *Manager) revalidatePoolSettings(tenantID string) {
 	}
 
 	// Detect connection-level config changes and trigger graceful reconnection.
-	p.detectAndReconnectRabbitMQ(tenantID, config)
+	p.detectAndReconnectRabbitMQ(revalidateCtx, tenantID, config)
 }
 
 // detectAndReconnectRabbitMQ compares the fresh RabbitMQ config against the cached
@@ -561,10 +568,25 @@ func (p *Manager) revalidatePoolSettings(tenantID string) {
 // The reconnection is graceful: the new connection is established first, and the
 // old one is replaced and closed only after the new one is ready. If the new
 // connection fails, the old one is kept to avoid breaking existing tenants.
-func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.TenantConfig) {
+//
+// With WithExclusiveVHosts, a fresh config that the census shows on a vhost
+// configured for another active tenant too closes the tenant's connection
+// instead, and a census that cannot be read keeps the current connection
+// without reconnecting.
+func (p *Manager) detectAndReconnectRabbitMQ(ctx context.Context, tenantID string, config *core.TenantConfig) {
 	rabbitConfig := resolveRabbitMQConfig(config, p.module)
 	if rabbitConfig == nil {
 		return
+	}
+
+	claim := claimFor(rabbitConfig)
+
+	if p.exclusiveVHost {
+		if refused := p.configuredVHostConflict(ctx, tenantID, claim); refused != nil {
+			p.dropOnConfiguredConflict(ctx, tenantID, refused)
+
+			return
+		}
 	}
 
 	useTLS := p.resolveTLS(rabbitConfig)
@@ -591,8 +613,6 @@ func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.Tenan
 
 	// A new config that lands on a vhost another tenant holds keeps the old
 	// connection and never dials (WithExclusiveVHosts).
-	claim := claimFor(rabbitConfig)
-
 	if conflict := p.heldVHostConflict(tenantID, claim); conflict != nil {
 		if p.logger != nil {
 			p.logger.Errorf("config change: refusing RabbitMQ reconnect for tenant %s, keeping old connection: %v", tenantID, conflict)
@@ -621,6 +641,29 @@ func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.Tenan
 	}
 
 	p.swapRabbitMQConnection(tenantID, newConn, freshKey, claim)
+}
+
+// dropOnConfiguredConflict handles a revalidation refused by
+// configuredVHostConflict: a vhost configured for more than one tenant closes
+// the tenant's connection and releases its claim; an unavailable census keeps
+// the current connection.
+// Caller must NOT hold p.mu.
+func (p *Manager) dropOnConfiguredConflict(ctx context.Context, tenantID string, refused error) {
+	if !errors.Is(refused, core.ErrVHostConflict) {
+		if p.logger != nil {
+			p.logger.Warnf("tenant %s: cannot confirm its RabbitMQ vhost is exclusive, keeping the current connection: %v", tenantID, refused)
+		}
+
+		return
+	}
+
+	if p.logger != nil {
+		p.logger.Errorf("tenant %s: RabbitMQ vhost is not exclusive to the tenant, closing its connection: %v", tenantID, refused)
+	}
+
+	if err := p.CloseConnection(ctx, tenantID); err != nil && p.logger != nil {
+		p.logger.Warnf("tenant %s: failed to close RabbitMQ connection on a shared vhost: %v", tenantID, err)
+	}
 }
 
 // canStoreRabbitMQConnection acquires the write lock and checks whether the
