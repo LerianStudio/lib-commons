@@ -75,9 +75,11 @@
 //	status, err := m.Status(ctx) // Version, Dirty, Applied
 //
 // The context bounds the dial, the wait for the migration lock and the run.
-// The lock wait is also capped by LockTimeout (zero: 15s) and fails with
-// ErrMigrationLockTimeout while another migrator holds the lock; the caller's
-// deadline instead yields context.DeadlineExceeded. golang-migrate cannot
+// LockTimeout, when set, also bounds the lock wait and fails it with
+// ErrMigrationLockTimeout while another migrator holds the lock; zero leaves
+// the wait to the context alone (the unbounded wait golang-migrate always
+// had), and the caller's deadline yields context.DeadlineExceeded. Migrations
+// apply one at a time, the context checked before each. golang-migrate cannot
 // interrupt a statement in flight, so a context that ends mid-run stops the
 // run between migrations: the database is left clean at the last finished
 // version and Up's error names it and wraps the context's error.

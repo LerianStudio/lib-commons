@@ -1571,6 +1571,19 @@ func TestMigrationSourceStats(t *testing.T) {
 		assert.Equal(t, 1, count)
 		assert.Equal(t, uint(7), max)
 	})
+
+	t.Run("counts every up file golang-migrate accepts, whatever the extension", func(t *testing.T) {
+		t.Parallel()
+
+		dir := writeFiles(t,
+			"000003_c.up.pgsql", "000003_c.down.pgsql",
+			"000004_d.up.sql",
+		)
+		count, max, err := migrationSourceStats(os.DirFS(dir), ".")
+		require.NoError(t, err)
+		assert.Equal(t, 2, count, "the pre-dial check must agree with the source driver")
+		assert.Equal(t, uint(4), max)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1722,6 +1735,36 @@ func TestValidateDSN(t *testing.T) {
 
 		assert.NoError(t, validateDSN(""))
 	})
+}
+
+// TestNew_MalformedDSNNeverEchoesPassword: url.Parse's error prints the whole
+// raw URL, so the config error must not carry it.
+func TestNew_MalformedDSNNeverEchoesPassword(t *testing.T) {
+	t.Parallel()
+
+	const valid = "postgres://app:pw@127.0.0.1:1/ledger?sslmode=require"
+
+	cases := map[string]Config{
+		"primary, bad escape": {PrimaryDSN: "postgres://app:S3cr%zzPw@127.0.0.1:1/ledger?sslmode=require"},
+		"primary, raw space":  {PrimaryDSN: "postgres://app:S3cr zzPw@127.0.0.1:1/ledger?sslmode=require"},
+		"replica, bad escape": {PrimaryDSN: valid, ReplicaDSN: "postgresql://app:S3cr%zzPw@127.0.0.1:2/ledger?sslmode=require"},
+		"replica, bad port":   {PrimaryDSN: valid, ReplicaDSN: "postgres://app:S3crzzPw@127.0.0.1:port/ledger"},
+		"primary, bad IPv6":   {PrimaryDSN: "postgres://app:S3crzzPw@[::1/ledger"},
+	}
+
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := New(cfg)
+			require.ErrorIs(t, err, ErrInvalidConfig)
+			assert.Contains(t, err.Error(), "malformed URL")
+
+			for _, fragment := range []string{"S3cr", "zzPw", "%zz"} {
+				assert.NotContains(t, err.Error(), fragment)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

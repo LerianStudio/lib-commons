@@ -16,7 +16,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	constant "github.com/LerianStudio/lib-observability/v4/constants"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
-	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/jackc/pgx/v5"
@@ -320,13 +319,11 @@ func openMigrationSession(ctx context.Context, db *sql.DB, run migrationRun) (*m
 	return session, nil
 }
 
+// acquireMigrationLock waits for the migration advisory lock under
+// migrationLockContext. A wait cut by LockTimeout is ErrMigrationLockTimeout;
+// one cut by ctx (its deadline coming first, or a cancel) is ctx's error.
 func acquireMigrationLock(ctx context.Context, conn *sql.Conn, lockID string, run migrationRun) error {
-	budget := migrationLockBudget(ctx, run.lockTimeout)
-	if budget <= 0 {
-		return fmt.Errorf("waiting for the migration lock: %w", context.DeadlineExceeded)
-	}
-
-	lockCtx, cancel := context.WithTimeout(ctx, budget)
+	lockCtx, cancel := migrationLockContext(ctx, run.lockTimeout)
 	defer cancel()
 
 	if _, err := conn.ExecContext(lockCtx, "SELECT pg_advisory_lock($1)", lockID); err != nil {
@@ -335,7 +332,7 @@ func acquireMigrationLock(ctx context.Context, conn *sql.Conn, lockID string, ru
 		}
 
 		if lockCtx.Err() != nil {
-			return fmt.Errorf("%w: waited %s", ErrMigrationLockTimeout, budget)
+			return fmt.Errorf("%w: waited %s", ErrMigrationLockTimeout, run.lockTimeout)
 		}
 
 		return run.redactor.sanitize(err, "failed to acquire migration lock")
@@ -344,25 +341,17 @@ func acquireMigrationLock(ctx context.Context, conn *sql.Conn, lockID string, ru
 	return nil
 }
 
-// migrationLockBudget is how long the migration lock may be waited for:
-// LockTimeout (golang-migrate's default when zero), never past ctx's deadline.
-// Zero means the deadline already passed.
-func migrationLockBudget(ctx context.Context, configured time.Duration) time.Duration {
-	budget := configured
-	if budget <= 0 {
-		budget = migrate.DefaultLockTimeout
+// migrationLockContext bounds the migration lock wait: by LockTimeout when it
+// is set, never past ctx's deadline. Zero adds no bound of its own: the wait
+// lasts until ctx ends, as golang-migrate's own lock (context.Background, no
+// limit) always waited, so a replica migrating at boot still waits for
+// another replica's long migration instead of failing.
+func migrationLockContext(ctx context.Context, lockTimeout time.Duration) (context.Context, context.CancelFunc) {
+	if lockTimeout <= 0 {
+		return context.WithCancel(ctx)
 	}
 
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return 0
-		}
-
-		budget = min(budget, remaining)
-	}
-
-	return budget
+	return context.WithTimeout(ctx, lockTimeout)
 }
 
 // unlock releases the session's migration lock. A failure is logged only:

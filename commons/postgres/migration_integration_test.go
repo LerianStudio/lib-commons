@@ -357,7 +357,7 @@ func TestIntegration_Migration_LockWaitIsBounded(t *testing.T) {
 	started = time.Now()
 	err = newMigrator(0).Up(deadlineCtx)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.Less(t, time.Since(started), 10*time.Second, "the default 15s lock wait is capped by the deadline")
+	assert.Less(t, time.Since(started), 10*time.Second, "with no LockTimeout the wait lasts until the caller's deadline")
 
 	_, err = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", lockID)
 	require.NoError(t, err)

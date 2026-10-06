@@ -446,23 +446,137 @@ func TestMigrationConfig_StandaloneValidation(t *testing.T) {
 	}
 }
 
-func TestMigrationLockBudget(t *testing.T) {
+// TestMigrationLockContext pins the lock wait's contract: LockTimeout bounds
+// it when set; zero leaves it to the caller's context alone, the unbounded
+// wait golang-migrate's own lock always had, so replicas migrating at boot
+// still wait for a long migration instead of failing after 15s.
+func TestMigrationLockContext(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, migrate.DefaultLockTimeout, migrationLockBudget(context.Background(), 0))
-	assert.Equal(t, time.Second, migrationLockBudget(context.Background(), time.Second))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	unbounded, cancel := migrationLockContext(context.Background(), 0)
 	defer cancel()
 
-	budget := migrationLockBudget(ctx, time.Hour)
-	assert.LessOrEqual(t, budget, 2*time.Second, "the lock wait never outlives the caller's deadline")
-	assert.Positive(t, budget)
+	_, hasDeadline := unbounded.Deadline()
+	assert.False(t, hasDeadline, "zero LockTimeout adds no bound of its own")
 
-	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancelExpired()
+	bounded, cancelBounded := migrationLockContext(context.Background(), time.Second)
+	defer cancelBounded()
 
-	assert.Zero(t, migrationLockBudget(expired, time.Hour))
+	deadline, hasDeadline := bounded.Deadline()
+	require.True(t, hasDeadline)
+	assert.LessOrEqual(t, time.Until(deadline), time.Second)
+
+	parent, cancelParent := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelParent()
+
+	capped, cancelCapped := migrationLockContext(parent, time.Hour)
+	defer cancelCapped()
+
+	deadline, hasDeadline = capped.Deadline()
+	require.True(t, hasDeadline)
+	assert.LessOrEqual(t, time.Until(deadline), 2*time.Second, "the lock wait never outlives the caller's deadline")
+
+	inherited, cancelInherited := migrationLockContext(parent, 0)
+	defer cancelInherited()
+
+	parentDeadline, _ := parent.Deadline()
+	deadline, hasDeadline = inherited.Deadline()
+	require.True(t, hasDeadline)
+	assert.Equal(t, parentDeadline, deadline, "zero LockTimeout waits until the caller's deadline")
+}
+
+// fakeStepper scripts golang-migrate's Steps(1) and Up results.
+type fakeStepper struct {
+	steps    []error
+	up       error
+	stepCall int
+	upCalls  int
+	onStep   func(call int)
+}
+
+func (f *fakeStepper) Steps(n int) error {
+	if n != 1 {
+		return fmt.Errorf("unexpected Steps(%d)", n)
+	}
+
+	f.stepCall++
+	if f.onStep != nil {
+		f.onStep(f.stepCall)
+	}
+
+	if f.stepCall > len(f.steps) {
+		return os.ErrNotExist
+	}
+
+	return f.steps[f.stepCall-1]
+}
+
+func (f *fakeStepper) Up() error {
+	f.upCalls++
+
+	return f.up
+}
+
+// TestApplyMigrations: migrations apply one at a time, the context is checked
+// between them, and the end of the source is classified by Up exactly as a
+// single Up always did. No GracefulStop is ever sent, so golang-migrate's
+// unsynchronised stop flag is only ever read.
+func TestApplyMigrations(t *testing.T) {
+	t.Parallel()
+
+	t.Run("applies every pending migration then reports success", func(t *testing.T) {
+		t.Parallel()
+
+		stepper := &fakeStepper{steps: []error{nil, nil}, up: migrate.ErrNoChange}
+
+		require.NoError(t, applyMigrations(context.Background(), stepper))
+		assert.Equal(t, 3, stepper.stepCall)
+		assert.Equal(t, 1, stepper.upCalls, "Up classifies the end of the source")
+	})
+
+	t.Run("nothing pending is ErrNoChange, as Up reported it", func(t *testing.T) {
+		t.Parallel()
+
+		stepper := &fakeStepper{up: migrate.ErrNoChange}
+
+		require.ErrorIs(t, applyMigrations(context.Background(), stepper), migrate.ErrNoChange)
+	})
+
+	t.Run("a version missing from the source keeps Up's error", func(t *testing.T) {
+		t.Parallel()
+
+		missing := fmt.Errorf("no migration found for version 9: %w", os.ErrNotExist)
+		stepper := &fakeStepper{steps: []error{missing}, up: missing}
+
+		require.ErrorIs(t, applyMigrations(context.Background(), stepper), os.ErrNotExist)
+	})
+
+	t.Run("a failed migration is returned without running Up", func(t *testing.T) {
+		t.Parallel()
+
+		boom := errors.New("syntax error")
+		stepper := &fakeStepper{steps: []error{nil, boom}}
+
+		require.ErrorIs(t, applyMigrations(context.Background(), stepper), boom)
+		assert.Zero(t, stepper.upCalls)
+	})
+
+	t.Run("a context that ends mid-migration stops before the next one", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		stepper := &fakeStepper{steps: []error{nil, nil, nil}, onStep: func(call int) {
+			if call == 1 {
+				cancel()
+			}
+		}}
+
+		require.NoError(t, applyMigrations(ctx, stepper), "the caller reports the stop with the version")
+		assert.Equal(t, 1, stepper.stepCall, "the migration in flight finishes; no other starts")
+		assert.Zero(t, stepper.upCalls)
+	})
 }
 
 func TestMigratorStatus_ContextAndNilSafety(t *testing.T) {

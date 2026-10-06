@@ -31,6 +31,7 @@ import (
 	// The migrator reads every source through iofs. The file source stays
 	// registered for consumers that open file:// sources through golang-migrate
 	// directly and have long received that registration from this import.
+	"github.com/golang-migrate/migrate/v4/source"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -242,13 +243,17 @@ func (c Config) validate() error {
 	return ValidateTLSPosture(c.TLSPosture, c.MinSSLMode)
 }
 
+// errMalformedDSNURL replaces url.Parse's error, whose text quotes the whole
+// raw URL, password included.
+var errMalformedDSNURL = errors.New("malformed URL (parser detail withheld: it would echo the credentials)")
+
 // validateDSN checks structural validity of URL-format DSNs.
 // Key-value format DSNs (without postgres:// prefix) are accepted without structural checks.
 func validateDSN(dsn string) error {
 	lower := strings.ToLower(strings.TrimSpace(dsn))
 	if strings.HasPrefix(lower, "postgres://") || strings.HasPrefix(lower, "postgresql://") {
 		if _, err := url.Parse(dsn); err != nil {
-			return fmt.Errorf("malformed URL: %w", err)
+			return errMalformedDSNURL
 		}
 	}
 
@@ -903,8 +908,11 @@ type MigrationConfig struct {
 	// A statement it cuts fails its migration, which golang-migrate leaves
 	// dirty like any other failed migration.
 	StatementTimeout time.Duration
-	// LockTimeout bounds the wait for the migration advisory lock; zero means
-	// golang-migrate's 15s. The caller's context deadline caps it.
+	// LockTimeout bounds the wait for the migration advisory lock and fails it
+	// with ErrMigrationLockTimeout. Zero adds no bound: the wait lasts until
+	// the context ends, as it always did, so a replica that migrates at boot
+	// still waits for another replica's long migration. The caller's context
+	// deadline caps it either way (and then yields the context's error).
 	LockTimeout time.Duration
 	// MigrationsTable names this migrator's version table; empty means
 	// golang-migrate's "schema_migrations". Modules (or scopes) that share a
@@ -1036,7 +1044,8 @@ func (m *Migrator) logAtLevel(ctx context.Context, level int, msg string, fields
 // Up applies every pending up migration.
 //
 // The context bounds the whole run: the dial, the wait for the migration
-// lock (also capped by LockTimeout) and the run itself. golang-migrate cannot
+// lock (also bounded by LockTimeout when set) and the run itself. Migrations
+// apply one at a time, the context checked before each. golang-migrate cannot
 // interrupt a statement in flight (StatementTimeout bounds one), so a context
 // that ends mid-run stops the run between migrations: the migration in flight
 // finishes, the database is left clean at that version, and Up returns an
@@ -1250,9 +1259,9 @@ type migrationVersionReader interface {
 // migrationSourceStats scans dir inside fsys and reports how many
 // up-migration files exist and the highest version present. A missing
 // directory is an empty source, (0, 0, nil); any other read failure is
-// returned, so an unreadable source is never mistaken for an empty one. Files
-// that do not match the golang-migrate "<version>_<name>.up.sql" convention
-// are ignored.
+// returned, so an unreadable source is never mistaken for an empty one. Names
+// are read with golang-migrate's own parser ("<version>_<name>.up.<ext>"), so
+// this pre-dial count agrees with the source driver; other files are ignored.
 func migrationSourceStats(fsys fs.FS, dir string) (count int, maxVersion uint, err error) {
 	entries, err := fs.ReadDir(fsys, dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -1264,28 +1273,18 @@ func migrationSourceStats(fsys fs.FS, dir string) (count int, maxVersion uint, e
 	}
 
 	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".up.sql") {
+		if entry.IsDir() {
 			continue
 		}
 
-		sep := strings.IndexByte(name, '_')
-		if sep <= 0 {
-			continue
-		}
-
-		// bitSize 0 = platform uint width, so values that would truncate on a
-		// 32-bit build are rejected here instead of silently wrapping below.
-		version, err := strconv.ParseUint(name[:sep], 10, 0)
-		if err != nil {
+		migration, err := source.DefaultParse(entry.Name())
+		if err != nil || migration.Direction != source.Up {
 			continue
 		}
 
 		count++
 
-		if uint(version) > maxVersion {
-			maxVersion = uint(version)
-		}
+		maxVersion = max(maxVersion, migration.Version)
 	}
 
 	return count, maxVersion, nil
@@ -1443,8 +1442,8 @@ func migrationLogAtLevel(ctx context.Context, logger obs.Logger, level int, msg 
 }
 
 // runMigrations applies run's source to db: it opens the source, takes the
-// migration lock on a connection bounded by ctx, and runs golang-migrate's Up,
-// asking it to stop between migrations once ctx is done.
+// migration lock on a connection bounded by ctx, and applies the pending
+// migrations one at a time, stopping between them once ctx is done.
 func runMigrations(ctx context.Context, db *sql.DB, run migrationRun) error {
 	if err := validateDBName(run.databaseName); err != nil {
 		migrationLogAtLevel(ctx, run.logger, obs.LevelError, "invalid primary database name", "error", err.Error())
@@ -1483,10 +1482,7 @@ func runMigrations(ctx context.Context, db *sql.DB, run migrationRun) error {
 
 	defer closeMigration(ctx, mig, session, run)
 
-	release := stopOnContextDone(ctx, mig, run.logger)
-	upErr := mig.Up()
-
-	release()
+	upErr := applyMigrations(ctx, mig)
 
 	if ctxErr := ctx.Err(); ctxErr != nil && (upErr == nil || errors.Is(upErr, migrate.ErrNoChange)) {
 		return stoppedEarly(ctx, mig, run, ctxErr)
@@ -1503,23 +1499,49 @@ func runMigrations(ctx context.Context, db *sql.DB, run migrationRun) error {
 	return nil
 }
 
-// stopOnContextDone asks mig to stop between migrations once ctx is done. The
-// returned release ends the watch; call it when the run returns.
-func stopOnContextDone(ctx context.Context, mig *migrate.Migrate, logger obs.Logger) (release func()) {
-	done := make(chan struct{})
+// migrationStepper is the part of *migrate.Migrate that applyMigrations
+// drives; the seam lets the stepping be unit-tested with a fake.
+type migrationStepper interface {
+	Steps(n int) error
+	Up() error
+}
 
-	runtime.SafeGo(logger, "postgres.migrate_stop_on_done", runtime.KeepRunning, func() {
-		select {
-		case <-ctx.Done():
-			select {
-			case mig.GracefulStop <- true:
-			default:
-			}
-		case <-done:
+// applyMigrations applies the pending migrations one at a time and checks ctx
+// before each, so a context that ends mid-run lets the migration in flight
+// finish and starts no other; it then returns nil and the caller reports the
+// stop. golang-migrate's GracefulStop channel would do the same inside one Up,
+// but its stop flag is written from two goroutines unsynchronised (a data race
+// in v4.19.1), so it is never used.
+//
+// Steps(1) reports os.ErrNotExist when nothing is ahead of the database's
+// version, and also when that version is absent from the source or the source
+// is empty. Up tells those apart exactly as a single Up always did: ErrNoChange
+// when up to date, otherwise its own error. ErrNoChange after migrations were
+// applied is success.
+func applyMigrations(ctx context.Context, mig migrationStepper) error {
+	applied := false
+
+	for ctx.Err() == nil {
+		err := mig.Steps(1)
+		if err == nil {
+			applied = true
+
+			continue
 		}
-	})
 
-	return func() { close(done) }
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+
+		err = mig.Up()
+		if applied && errors.Is(err, migrate.ErrNoChange) {
+			return nil
+		}
+
+		return err
+	}
+
+	return nil
 }
 
 // stoppedEarly reports a run that ended because ctx did. A run that still
