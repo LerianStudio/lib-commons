@@ -19,6 +19,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
+	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -50,6 +51,8 @@ type migrationRun struct {
 	allowMissing         bool
 	statementTimeout     time.Duration
 	lockTimeout          time.Duration
+	migrationsSchema     string
+	migrationsTable      string
 	logger               obs.Logger
 	redactor             migrationRedactor
 }
@@ -62,6 +65,8 @@ func (m *Migrator) baseRun() migrationRun {
 		allowMissing:         m.cfg.AllowMissingMigrations,
 		statementTimeout:     m.cfg.StatementTimeout,
 		lockTimeout:          m.cfg.LockTimeout,
+		migrationsSchema:     m.cfg.MigrationsSchema,
+		migrationsTable:      m.cfg.MigrationsTable,
 		logger:               m.cfg.Logger,
 		redactor:             m.redactor,
 	}
@@ -190,15 +195,65 @@ func (m *Migrator) status(ctx context.Context) (MigrationStatus, error) {
 	return MigrationStatus{Version: uint(version), Dirty: dirty, Applied: true}, nil
 }
 
-// migrationDriverConfig is the golang-migrate driver config for a run.
+// defaultMigrationsSchema holds the version table when MigrationsSchema is empty.
+const defaultMigrationsSchema = "public"
+
+// schema is the schema holding the run's version table.
+func (run migrationRun) schema() string {
+	return cmp.Or(run.migrationsSchema, defaultMigrationsSchema)
+}
+
+// table is the run's version table name, unqualified.
+func (run migrationRun) table() string {
+	return cmp.Or(run.migrationsTable, postgres.DefaultMigrationsTable)
+}
+
+// versionTable is the run's version table, schema-qualified, for messages.
+func (run migrationRun) versionTable() string {
+	return run.schema() + "." + run.table()
+}
+
+// migrationDriverConfig is the golang-migrate driver config for a run. The
+// table name is passed unquoted (MigrationsTableQuoted false): it was
+// validated as a plain identifier, never parsed as schema.table.
 func migrationDriverConfig(run migrationRun) *postgres.Config {
 	return &postgres.Config{
 		MultiStatementEnabled: run.allowMultiStatements,
 		DatabaseName:          run.databaseName,
-		SchemaName:            "public",
-		MigrationsTable:       postgres.DefaultMigrationsTable,
+		SchemaName:            run.schema(),
+		MigrationsTable:       run.table(),
 		StatementTimeout:      run.statementTimeout,
 	}
+}
+
+// ensureMigrationsSchema creates the schema that holds the version table when
+// it is not public and does not exist yet: golang-migrate creates the table,
+// never its schema. An existing schema is left alone, so a role without
+// CREATE on the database works once the schema is provisioned. Another
+// migrator creating the same schema at the same moment is not a failure.
+func ensureMigrationsSchema(ctx context.Context, conn *sql.Conn, run migrationRun) error {
+	schema := run.schema()
+	if schema == defaultMigrationsSchema {
+		return nil
+	}
+
+	var exists bool
+
+	err := conn.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", schema).Scan(&exists)
+	if err != nil {
+		return run.redactor.failure(ctx, err, "failed to look up migrations schema "+schema)
+	}
+
+	if exists {
+		return nil
+	}
+
+	_, err = conn.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+pgx.Identifier{schema}.Sanitize())
+	if err != nil && !matchesSQLState(err, uniqueViolation) && !matchesSQLState(err, duplicateSchema) {
+		return run.redactor.failure(ctx, err, "failed to create migrations schema "+schema)
+	}
+
+	return nil
 }
 
 // migrationSession is one dedicated connection holding the migration lock,
@@ -210,8 +265,10 @@ type migrationSession struct {
 }
 
 // openMigrationSession dials one connection under ctx, takes the migration
-// advisory lock on it under the lock budget, then builds the driver on that
-// same connection.
+// advisory lock on it under the lock budget, creates the version table's
+// schema when needed, then builds the driver on that same connection. The
+// lock is per version table (database, schema, table), as golang-migrate
+// derives it, so modules with their own tables never wait on each other.
 //
 // golang-migrate's own lock waits with context.Background() and no bound, and
 // its driver constructor takes it before any timeout applies. Taking the same
@@ -240,6 +297,14 @@ func openMigrationSession(ctx context.Context, db *sql.DB, run migrationRun) (*m
 	}
 
 	session := &migrationSession{conn: conn, lockID: lockID}
+
+	if err := ensureMigrationsSchema(ctx, conn, run); err != nil {
+		session.unlock(ctx, run)
+
+		_ = conn.Close()
+
+		return nil, err
+	}
 
 	driver, err := postgres.WithConnection(ctx, conn, cfg)
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v7/commons/errgroup"
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/golang-migrate/migrate/v4/database"
 
@@ -402,6 +403,187 @@ func TestIntegration_Migration_ContextStopsBetweenMigrations(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// One version table per module: several modules (or scopes) of one service
+// migrate the same database, each with its own version and its own lock.
+// ---------------------------------------------------------------------------
+
+// moduleMigrations writes one module's migrations: version N creates table
+// <prefix>_<N>.
+func moduleMigrations(t *testing.T, prefix string, versions int) string {
+	t.Helper()
+
+	dir := t.TempDir()
+
+	for v := 1; v <= versions; v++ {
+		name := fmt.Sprintf("%06d_%s_%d.up.sql", v, prefix, v)
+		body := fmt.Sprintf("CREATE TABLE %s_%d (id int);", prefix, v)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644))
+	}
+
+	return dir
+}
+
+func moduleMigrator(t *testing.T, dsn, dir, table, schema string, lockTimeout time.Duration) *Migrator {
+	t.Helper()
+
+	m, err := NewMigrator(MigrationConfig{
+		PrimaryDSN:       dsn,
+		DatabaseName:     "testdb",
+		MigrationsPath:   dir,
+		MigrationsTable:  table,
+		MigrationsSchema: schema,
+		LockTimeout:      lockTimeout,
+		Logger:           obs.Nop(),
+	})
+	require.NoError(t, err)
+
+	return m
+}
+
+func TestIntegration_Migration_ModulesKeepSeparateVersionTables(t *testing.T) {
+	dsn, cleanup := setupPostgresContainer(t)
+	t.Cleanup(cleanup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	moduleA := moduleMigrator(t, dsn, moduleMigrations(t, "mod_a", 3), "schema_migrations_a", "", 0)
+	moduleB := moduleMigrator(t, dsn, moduleMigrations(t, "mod_b", 1), "schema_migrations_b", "", 0)
+
+	require.NoError(t, moduleA.Up(ctx))
+	require.NoError(t, moduleB.Up(ctx), "module B's version 1 is not 'behind' module A's version 3")
+	require.NoError(t, moduleA.Up(ctx), "each module still has nothing to do on a second run")
+	require.NoError(t, moduleB.Up(ctx))
+
+	statusA, err := moduleA.Status(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, MigrationStatus{Version: 3, Applied: true}, statusA)
+
+	statusB, err := moduleB.Status(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, MigrationStatus{Version: 1, Applied: true}, statusB)
+
+	db, err := sql.Open("pgx", dsn)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = db.Close() })
+
+	for _, table := range []string{"schema_migrations_a", "schema_migrations_b", "mod_a_3", "mod_b_1"} {
+		assertTableExists(t, ctx, db, table)
+	}
+
+	assertTableAbsent(t, ctx, db, "public", "schema_migrations")
+}
+
+// TestIntegration_Migration_SharedDefaultTableReportsAhead is the control: two
+// modules on the default table collide, the failure the per-module table
+// prevents.
+func TestIntegration_Migration_SharedDefaultTableReportsAhead(t *testing.T) {
+	dsn, cleanup := setupPostgresContainer(t)
+	t.Cleanup(cleanup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	require.NoError(t, moduleMigrator(t, dsn, moduleMigrations(t, "mod_a", 3), "", "", 0).Up(ctx))
+
+	err := moduleMigrator(t, dsn, moduleMigrations(t, "mod_b", 1), "", "", 0).Up(ctx)
+	require.ErrorIs(t, err, ErrMigrationVersionAhead)
+	assert.Contains(t, err.Error(), "public.schema_migrations")
+}
+
+// TestIntegration_Migration_ModulesLockSeparately: each version table has its
+// own advisory lock, so one module's lock never blocks another, and the
+// modules migrate at the same time.
+func TestIntegration_Migration_ModulesLockSeparately(t *testing.T) {
+	dsn, cleanup := setupPostgresContainer(t)
+	t.Cleanup(cleanup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	dirA := moduleMigrations(t, "mod_a", 3)
+	dirB := moduleMigrations(t, "mod_b", 2)
+
+	holder, err := sql.Open("pgx", dsn)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = holder.Close() })
+
+	conn, err := holder.Conn(ctx)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = conn.Close() })
+
+	lockA, err := database.GenerateAdvisoryLockId("testdb", "public", "schema_migrations_a")
+	require.NoError(t, err)
+
+	_, err = conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", lockA)
+	require.NoError(t, err)
+
+	err = moduleMigrator(t, dsn, dirA, "schema_migrations_a", "", 500*time.Millisecond).Up(ctx)
+	require.ErrorIs(t, err, ErrMigrationLockTimeout, "module A's lock is held")
+
+	require.NoError(t, moduleMigrator(t, dsn, dirB, "schema_migrations_b", "", 500*time.Millisecond).Up(ctx),
+		"module B never waits on module A's lock")
+
+	_, err = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", lockA)
+	require.NoError(t, err)
+
+	moduleA := moduleMigrator(t, dsn, dirA, "schema_migrations_a", "", 0)
+	moduleB := moduleMigrator(t, dsn, dirB, "schema_migrations_b", "", 0)
+
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.Go(func() error { return moduleA.Up(groupCtx) })
+	group.Go(func() error { return moduleB.Up(groupCtx) })
+	require.NoError(t, group.Wait())
+
+	statusA, err := moduleA.Status(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, MigrationStatus{Version: 3, Applied: true}, statusA)
+}
+
+// TestIntegration_Migration_VersionTableInOwnSchema covers scopes (correios'
+// multi-tenant scopes, say): each scope keeps its version table in its own
+// schema, created on first use, while the migration SQL still runs in the
+// connection's search_path.
+func TestIntegration_Migration_VersionTableInOwnSchema(t *testing.T) {
+	dsn, cleanup := setupPostgresContainer(t)
+	t.Cleanup(cleanup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	scopeA := moduleMigrator(t, dsn, moduleMigrations(t, "scope_a", 2), "", "scope_a", 0)
+	scopeB := moduleMigrator(t, dsn, moduleMigrations(t, "scope_b", 1), "", "scope_b", 0)
+
+	status, err := scopeB.Status(ctx)
+	require.NoError(t, err, "Status creates the missing schema like Up")
+	assert.Equal(t, MigrationStatus{}, status)
+
+	require.NoError(t, scopeA.Up(ctx))
+	require.NoError(t, scopeB.Up(ctx))
+
+	statusA, err := scopeA.Status(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, MigrationStatus{Version: 2, Applied: true}, statusA)
+
+	statusB, err := scopeB.Status(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, MigrationStatus{Version: 1, Applied: true}, statusB)
+
+	db, err := sql.Open("pgx", dsn)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = db.Close() })
+
+	assertTableIn(t, ctx, db, "scope_a", "schema_migrations")
+	assertTableIn(t, ctx, db, "scope_b", "schema_migrations")
+	assertTableAbsent(t, ctx, db, "public", "schema_migrations")
+	assertTableExists(t, ctx, db, "scope_b_1")
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
@@ -422,4 +604,32 @@ func assertTableExists(t *testing.T, ctx context.Context, db *sql.DB, table stri
 	).Scan(&exists)
 	require.NoError(t, err, fmt.Sprintf("query for table %q existence should succeed", table))
 	assert.True(t, exists, fmt.Sprintf("table %q should exist in public schema", table))
+}
+
+// assertTableIn verifies that schema.table exists.
+func assertTableIn(t *testing.T, ctx context.Context, db *sql.DB, schema, table string) {
+	t.Helper()
+
+	assert.True(t, tableExists(t, ctx, db, schema, table), "table %s.%s should exist", schema, table)
+}
+
+// assertTableAbsent verifies that schema.table does not exist.
+func assertTableAbsent(t *testing.T, ctx context.Context, db *sql.DB, schema, table string) {
+	t.Helper()
+
+	assert.False(t, tableExists(t, ctx, db, schema, table), "table %s.%s should not exist", schema, table)
+}
+
+func tableExists(t *testing.T, ctx context.Context, db *sql.DB, schema, table string) bool {
+	t.Helper()
+
+	var exists bool
+
+	err := db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2)`,
+		schema, table,
+	).Scan(&exists)
+	require.NoError(t, err)
+
+	return exists
 }

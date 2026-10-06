@@ -127,6 +127,10 @@ var (
 	connectionStringPasswordPattern = regexp.MustCompile(`(?i)(password\s*=\s*)('(?:[^'\\]|\\.)*'?|\S+)`)
 	sslPathPattern                  = regexp.MustCompile(`(?i)(sslkey|sslcert|sslrootcert|sslpassword)=(\S+)`)
 	dbNamePattern                   = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`)
+	// migrationIdentifierPattern bounds MigrationsTable and MigrationsSchema.
+	// Lowercase only: golang-migrate quotes both, so a mixed-case name would
+	// silently become case-sensitive.
+	migrationIdentifierPattern = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 )
 
 // nilClientAssert fires a telemetry assertion for nil-receiver calls and returns ErrNilClient.
@@ -902,7 +906,19 @@ type MigrationConfig struct {
 	// LockTimeout bounds the wait for the migration advisory lock; zero means
 	// golang-migrate's 15s. The caller's context deadline caps it.
 	LockTimeout time.Duration
-	Logger      obs.Logger
+	// MigrationsTable names this migrator's version table; empty means
+	// golang-migrate's "schema_migrations". Modules (or scopes) that share a
+	// database each set their own: every table keeps its own version and its
+	// own migration lock, so one module's version never reads as "ahead" to
+	// another and the modules can migrate at the same time. Lowercase letters,
+	// digits and underscores, not starting with a digit, at most 63 bytes.
+	MigrationsTable string
+	// MigrationsSchema names the schema that holds the version table; empty
+	// means "public". Up and Status create it when it is missing. It moves only
+	// the version table: migration SQL still runs in the connection's
+	// search_path. Same identifier rules as MigrationsTable.
+	MigrationsSchema string
+	Logger           obs.Logger
 	// TLSPosture and MinSSLMode have Config's meaning; Up and Status apply
 	// them to PrimaryDSN before opening the migration database.
 	TLSPosture TLSPosture
@@ -947,7 +963,25 @@ func (c MigrationConfig) validate() error {
 		return fmt.Errorf("%w: lock_timeout cannot be negative", ErrInvalidConfig)
 	}
 
+	if err := validateMigrationIdentifier("migrations_table", c.MigrationsTable); err != nil {
+		return err
+	}
+
+	if err := validateMigrationIdentifier("migrations_schema", c.MigrationsSchema); err != nil {
+		return err
+	}
+
 	return ValidateTLSPosture(c.TLSPosture, c.MinSSLMode)
+}
+
+// validateMigrationIdentifier accepts an empty value (the default) or a
+// lowercase PostgreSQL identifier.
+func validateMigrationIdentifier(field, value string) error {
+	if value == "" || migrationIdentifierPattern.MatchString(value) {
+		return nil
+	}
+
+	return fmt.Errorf("%w: %s %q must match %s", ErrInvalidConfig, field, value, migrationIdentifierPattern)
 }
 
 func (c MigrationConfig) validateSource() error {
@@ -1196,13 +1230,15 @@ type migrationOutcome struct {
 // migrationState carries the database + source facts used to disambiguate an
 // os.ErrNotExist from golang-migrate, which covers both an empty/missing source
 // directory and a database pinned to a version the source no longer ships.
-// hasVersion is false when the database has no schema_migrations row yet.
+// hasVersion is false when the version table has no row yet; versionTable is
+// that table, schema-qualified.
 type migrationState struct {
 	currentVersion uint
 	hasVersion     bool
 	sourceCount    int
 	sourceMax      uint
 	sourcePath     string
+	versionTable   string
 }
 
 // migrationVersionReader is satisfied by *migrate.Migrate; the seam lets
@@ -1260,9 +1296,10 @@ func migrationSourceStats(fsys fs.FS, dir string) (count int, maxVersion uint, e
 // hasVersion false.
 func inspectMigrationState(versions migrationVersionReader, run migrationRun) migrationState {
 	state := migrationState{
-		sourcePath:  run.sourceLabel,
-		sourceCount: run.sourceCount,
-		sourceMax:   run.sourceMax,
+		sourcePath:   run.sourceLabel,
+		sourceCount:  run.sourceCount,
+		sourceMax:    run.sourceMax,
+		versionTable: run.versionTable(),
 	}
 
 	if versions != nil {
@@ -1289,14 +1326,15 @@ func versionNotInSourceOutcome(state migrationState) migrationOutcome {
 
 	return migrationOutcome{
 		err: fmt.Errorf("%w: database is pinned to version %d, which is not present in the migration source (%s); %s; "+
-			"reconcile schema_migrations or restore the missing migration file(s)",
-			ErrMigrationVersionAhead, state.currentVersion, state.sourcePath, cause),
+			"reconcile %s or restore the missing migration file(s)",
+			ErrMigrationVersionAhead, state.currentVersion, state.sourcePath, cause, state.versionTable),
 		level:   obs.LevelError,
 		message: "database version not present in migration source",
 		fields: []any{
 			"db_version", strconv.FormatUint(uint64(state.currentVersion), 10),
 			"source_max_version", strconv.FormatUint(uint64(state.sourceMax), 10),
 			"source_file_count", state.sourceCount,
+			"version_table", state.versionTable,
 		},
 	}
 }

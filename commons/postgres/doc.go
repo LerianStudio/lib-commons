@@ -95,4 +95,34 @@
 // errors.As. ErrMigrationDirty, ErrMigrationsNotFound,
 // ErrMigrationVersionAhead, ErrMigrationLockTimeout and context errors keep
 // their identity for errors.Is.
+//
+// # One version table per module
+//
+// Several modules of one service (or several scopes of one rail) can migrate
+// the same database, each with its own version. Give each its own version
+// table with MigrationConfig.MigrationsTable and, when it should live outside
+// public, MigrationsSchema; empty keeps golang-migrate's
+// public.schema_migrations. Without them, a module whose newest migration is
+// version 1 reads a sibling's version 3 as ErrMigrationVersionAhead.
+//
+//	payments, _ := postgres.NewMigrator(postgres.MigrationConfig{
+//		PrimaryDSN: dsn, DatabaseName: "rail",
+//		MigrationsFS: paymentsSQL, MigrationsPath: "migrations",
+//		MigrationsTable: "schema_migrations_payments",
+//	})
+//	receipts, _ := postgres.NewMigrator(postgres.MigrationConfig{
+//		PrimaryDSN: dsn, DatabaseName: "rail",
+//		MigrationsFS: receiptsSQL, MigrationsPath: "migrations",
+//		MigrationsTable: "schema_migrations_receipts",
+//	})
+//
+// golang-migrate keys its advisory lock on (database, schema, table), so each
+// version table has its own lock: the modules never wait on each other and can
+// migrate at the same time. Both names are lowercase identifiers
+// (^[a-z_][a-z0-9_]{0,62}$; anything else is ErrInvalidConfig), because
+// golang-migrate quotes them and a mixed-case name would turn case-sensitive.
+// Up and Status create a missing MigrationsSchema (and leave an existing one
+// alone). The schema moves only the version table: migration SQL still runs in
+// the connection's search_path, so a migration that belongs in that schema
+// names it.
 package postgres
