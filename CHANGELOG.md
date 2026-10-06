@@ -725,6 +725,16 @@ Contributors: @jeffersonrodrigues92, @lerian-studio.
 
 ## [Unreleased]
 
+- Features (`commons/postgres` migrator for standalone migration binaries; br-sfn ruling 37, BRSFN-212):
+  - `MigrationConfig.MigrationsFS` reads migrations from an `embed.FS` (or any `fs.FS`); `MigrationsPath` names the directory inside it (default `.`, must satisfy `fs.ValidPath`) and `Component` must be empty. Directory sources keep working as before; both are read through golang-migrate's `iofs` source.
+  - `MigrationConfig.StatementTimeout` bounds each migration statement and `MigrationConfig.LockTimeout` bounds the wait for the migration advisory lock (zero: golang-migrate's 15s), capped by the context deadline; a lock held elsewhere past it is `ErrMigrationLockTimeout`. Negative values are `ErrInvalidConfig`.
+  - `Migrator.Status(ctx) (MigrationStatus, error)` reports `Version`, `Dirty` and `Applied`, applying the TLS posture before it dials. golang-migrate creates the version table if it is missing.
+- Behavior changes (`commons/postgres` migrator):
+  - `Migrator.Up` now honors its context after it starts: the dial, the lock wait and the run are bounded by it; a context that ends mid-run stops between migrations (the database is left clean) and `Up` returns `stopped at version N` wrapping the context error. Before, only an already-done context was checked.
+  - A missing or empty migration source is classified before any database is opened. A missing directory under `AllowMissingMigrations` now returns nil, as documented; it used to fail while the migration instance was built.
+  - Migration driver, dial and run failures come back as `*SanitizedError` with the DSN password redacted by value (raw, percent-, query-, path- and keyword-escaped spellings) and by pattern; the original driver error (for example pgx's `*pgconn.ConnectError`, which carries the full connection config) is no longer reachable through `errors.As`. `ErrMigrationDirty`, `ErrMigrationsNotFound`, `ErrMigrationVersionAhead`, `ErrMigrationLockTimeout` and context errors keep their identity. Migrator log lines use fixed messages with sanitized error fields.
+  - The shared credential redaction now consumes a single-quoted keyword password whole (spaces and `\'` escapes included) and a URL password containing a raw `@`.
+
 - Fixes:
   - Multi-tenant event listener (`commons/tenant-manager/event.TenantEventListener`) now subscribes only to the env-scoped channel `tenant-events:{env}:` resolved via `commons.CurrentEnv()`. The previous wildcard `PSubscribe("tenant-events:*")` leaked events across environments (staging consumers receiving production events and vice versa) and defeated the env-scoped channel work shipped in v5.4.0.
     - Behavior change: `Start()` now requires `ENVIRONMENT_NAME` (or `ENV_NAME`) to be set in the multi-tenant consumer process. Apps that wire `NewTenantEventListener` but do not set either env var will fail to start with an error referencing both variable names. Single-tenant apps that never wire the listener are unaffected.

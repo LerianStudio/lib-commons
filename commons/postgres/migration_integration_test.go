@@ -5,13 +5,16 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	"github.com/golang-migrate/migrate/v4/database"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -133,6 +136,11 @@ ALTER TABLE nonexistent_table ADD COLUMN foo TEXT;`
 	require.NoError(t, err, "schema_migrations should have exactly one row")
 	assert.Equal(t, 1, version, "dirty version should be 1")
 	assert.True(t, dirty, "dirty flag should be true")
+
+	// Status reports the same dirty state a standalone migration job reads.
+	status, err := migrator2.Status(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, MigrationStatus{Version: 1, Dirty: true, Applied: true}, status)
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +260,145 @@ CREATE TABLE multi_b (id SERIAL PRIMARY KEY);`
 
 	assertTableExists(t, ctx, db, "multi_a")
 	assertTableExists(t, ctx, db, "multi_b")
+}
+
+// ---------------------------------------------------------------------------
+// Standalone migration binary: embed.FS source, Status, bounded lock wait,
+// context stop between migrations.
+// ---------------------------------------------------------------------------
+
+//go:embed testdata/embedded_migrations
+var embeddedMigrationsFS embed.FS
+
+func TestIntegration_Migration_EmbedFSAndStatus(t *testing.T) {
+	dsn, cleanup := setupPostgresContainer(t)
+	t.Cleanup(cleanup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	migrator, err := NewMigrator(MigrationConfig{
+		PrimaryDSN:     dsn,
+		DatabaseName:   "testdb",
+		MigrationsFS:   embeddedMigrationsFS,
+		MigrationsPath: "testdata/embedded_migrations",
+		Logger:         obs.Nop(),
+	})
+	require.NoError(t, err)
+
+	status, err := migrator.Status(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, MigrationStatus{}, status, "a database with no migration recorded is not Applied")
+
+	require.NoError(t, migrator.Up(ctx))
+
+	status, err = migrator.Status(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, MigrationStatus{Version: 2, Applied: true}, status)
+
+	require.NoError(t, migrator.Up(ctx), "a second Up has nothing to do")
+}
+
+// TestIntegration_Migration_LockWaitIsBounded: while another session holds the
+// migration lock, Up waits at most LockTimeout (ErrMigrationLockTimeout) and
+// never past the caller's deadline (context.DeadlineExceeded), where
+// golang-migrate alone would wait forever.
+func TestIntegration_Migration_LockWaitIsBounded(t *testing.T) {
+	dsn, cleanup := setupPostgresContainer(t)
+	t.Cleanup(cleanup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	holder, err := sql.Open("pgx", dsn)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = holder.Close() })
+
+	conn, err := holder.Conn(ctx)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = conn.Close() })
+
+	lockID, err := database.GenerateAdvisoryLockId("testdb", "public", "schema_migrations")
+	require.NoError(t, err)
+
+	_, err = conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", lockID)
+	require.NoError(t, err)
+
+	migDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(migDir, "000001_t.up.sql"), []byte("CREATE TABLE t (id int);"), 0o644))
+
+	newMigrator := func(lockTimeout time.Duration) *Migrator {
+		m, err := NewMigrator(MigrationConfig{
+			PrimaryDSN:     dsn,
+			DatabaseName:   "testdb",
+			MigrationsPath: migDir,
+			LockTimeout:    lockTimeout,
+			Logger:         obs.Nop(),
+		})
+		require.NoError(t, err)
+
+		return m
+	}
+
+	started := time.Now()
+	err = newMigrator(500 * time.Millisecond).Up(ctx)
+	require.ErrorIs(t, err, ErrMigrationLockTimeout)
+	assert.Less(t, time.Since(started), 10*time.Second)
+
+	_, err = newMigrator(500 * time.Millisecond).Status(ctx)
+	require.ErrorIs(t, err, ErrMigrationLockTimeout)
+
+	deadlineCtx, deadlineCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer deadlineCancel()
+
+	started = time.Now()
+	err = newMigrator(0).Up(deadlineCtx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(started), 10*time.Second, "the default 15s lock wait is capped by the deadline")
+
+	_, err = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", lockID)
+	require.NoError(t, err)
+
+	require.NoError(t, newMigrator(0).Up(ctx), "once the lock is free, Up proceeds")
+}
+
+// TestIntegration_Migration_ContextStopsBetweenMigrations: a deadline that
+// passes during migration 1 lets it finish, stops before migration 2, and
+// leaves the database clean at version 1.
+func TestIntegration_Migration_ContextStopsBetweenMigrations(t *testing.T) {
+	dsn, cleanup := setupPostgresContainer(t)
+	t.Cleanup(cleanup)
+
+	migDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(migDir, "000001_slow.up.sql"), []byte("SELECT pg_sleep(1.5);"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(migDir, "000002_next.up.sql"), []byte("CREATE TABLE next_step (id int);"), 0o644))
+
+	migrator, err := NewMigrator(MigrationConfig{
+		PrimaryDSN:     dsn,
+		DatabaseName:   "testdb",
+		MigrationsPath: migDir,
+		Logger:         obs.Nop(),
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err = migrator.Up(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Contains(t, err.Error(), "stopped at version 1")
+
+	status, err := migrator.Status(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, MigrationStatus{Version: 1, Applied: true}, status, "stopped clean, never dirty")
+
+	require.NoError(t, migrator.Up(context.Background()), "the next run resumes")
+
+	status, err = migrator.Status(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, MigrationStatus{Version: 2, Applied: true}, status)
 }
 
 // ---------------------------------------------------------------------------

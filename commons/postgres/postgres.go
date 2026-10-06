@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,8 +18,6 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	// File system migration source. We need to import it to be able to use it as source in migrate.NewWithSourceInstance
-
 	commons "github.com/LerianStudio/lib-commons/v7/commons"
 	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v7/commons/internal/otelscope"
@@ -29,8 +28,11 @@ import (
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/postgres"
+	// The migrator reads every source through iofs. The file source stays
+	// registered for consumers that open file:// sources through golang-migrate
+	// directly and have long received that registration from this import.
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -69,6 +71,9 @@ var (
 	// ErrMigrationsNotFound is returned when the migration source directory is missing or empty.
 	// Services that intentionally skip migrations can opt in via WithAllowMissingMigrations().
 	ErrMigrationsNotFound = errors.New("migration files not found")
+	// ErrMigrationLockTimeout is returned when the migration advisory lock was
+	// not acquired within MigrationConfig.LockTimeout: another migrator holds it.
+	ErrMigrationLockTimeout = errors.New("timed out waiting for the migration lock")
 	// ErrMigrationVersionAhead is returned when the database schema version is higher
 	// than (or absent from) the migration source — typically a rollback/downgrade where
 	// a newer migration file was removed. Distinct from ErrMigrationsNotFound: here the
@@ -114,10 +119,14 @@ var (
 
 	runMigrationsFn = runMigrations
 
-	connectionStringCredentialsPattern = regexp.MustCompile(`://[^@\s]+@`)
-	connectionStringPasswordPattern    = regexp.MustCompile(`(?i)(password=)(\S+)`)
-	sslPathPattern                     = regexp.MustCompile(`(?i)(sslkey|sslcert|sslrootcert|sslpassword)=(\S+)`)
-	dbNamePattern                      = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`)
+	// Greedy to the last "@" of the token, so a password holding a raw "@"
+	// is consumed whole.
+	connectionStringCredentialsPattern = regexp.MustCompile(`://\S*@`)
+	// A single-quoted value (with \' escapes, possibly unterminated) is
+	// consumed whole, spaces included; an unquoted one runs to whitespace.
+	connectionStringPasswordPattern = regexp.MustCompile(`(?i)(password\s*=\s*)('(?:[^'\\]|\\.)*'?|\S+)`)
+	sslPathPattern                  = regexp.MustCompile(`(?i)(sslkey|sslcert|sslrootcert|sslpassword)=(\S+)`)
+	dbNamePattern                   = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`)
 )
 
 // nilClientAssert fires a telemetry assertion for nil-receiver calls and returns ErrNilClient.
@@ -867,10 +876,17 @@ func closeDB(db *sql.DB) error {
 
 // MigrationConfig stores migration-only settings.
 type MigrationConfig struct {
-	PrimaryDSN     string
-	DatabaseName   string
+	PrimaryDSN   string
+	DatabaseName string
+	// MigrationsPath is the migrations directory on disk, or, when
+	// MigrationsFS is set, a directory inside that FS (default ".").
 	MigrationsPath string
 	Component      string
+	// MigrationsFS, when set, is the migration source: an embed.FS (or any
+	// fs.FS) that ships the SQL files inside the binary. MigrationsPath then
+	// names a directory inside it and must satisfy fs.ValidPath; Component
+	// must be empty.
+	MigrationsFS fs.FS
 	// AllowMultiStatements enables multi-statement execution in migrations.
 	// SECURITY: Only enable when migration files are from trusted, version-controlled sources.
 	// Multi-statement mode increases the blast radius of compromised migration files.
@@ -879,9 +895,16 @@ type MigrationConfig struct {
 	// when the migration source directory does not exist. Use this for services that
 	// intentionally have no migrations (e.g., worker-only services sharing a database).
 	AllowMissingMigrations bool
-	Logger                 obs.Logger
-	// TLSPosture and MinSSLMode have Config's meaning; Up applies them to
-	// PrimaryDSN before opening the migration database.
+	// StatementTimeout bounds each migration statement; zero means no bound.
+	// A statement it cuts fails its migration, which golang-migrate leaves
+	// dirty like any other failed migration.
+	StatementTimeout time.Duration
+	// LockTimeout bounds the wait for the migration advisory lock; zero means
+	// golang-migrate's 15s. The caller's context deadline caps it.
+	LockTimeout time.Duration
+	Logger      obs.Logger
+	// TLSPosture and MinSSLMode have Config's meaning; Up and Status apply
+	// them to PrimaryDSN before opening the migration database.
 	TLSPosture TLSPosture
 	MinSSLMode SSLMode
 }
@@ -894,6 +917,15 @@ func (c MigrationConfig) withDefaults() MigrationConfig {
 	return c
 }
 
+// fsPath is the source directory inside MigrationsFS.
+func (c MigrationConfig) fsPath() string {
+	if strings.TrimSpace(c.MigrationsPath) == "" {
+		return "."
+	}
+
+	return c.MigrationsPath
+}
+
 func (c MigrationConfig) validate() error {
 	if strings.TrimSpace(c.PrimaryDSN) == "" {
 		return fmt.Errorf("%w: primary dsn cannot be empty", ErrInvalidConfig)
@@ -903,16 +935,45 @@ func (c MigrationConfig) validate() error {
 		return fmt.Errorf("migration config: %w", err)
 	}
 
-	if strings.TrimSpace(c.MigrationsPath) == "" && strings.TrimSpace(c.Component) == "" {
-		return fmt.Errorf("%w: migrations_path or component is required", ErrInvalidConfig)
+	if err := c.validateSource(); err != nil {
+		return err
+	}
+
+	if c.StatementTimeout < 0 {
+		return fmt.Errorf("%w: statement_timeout cannot be negative", ErrInvalidConfig)
+	}
+
+	if c.LockTimeout < 0 {
+		return fmt.Errorf("%w: lock_timeout cannot be negative", ErrInvalidConfig)
 	}
 
 	return ValidateTLSPosture(c.TLSPosture, c.MinSSLMode)
 }
 
+func (c MigrationConfig) validateSource() error {
+	if c.MigrationsFS == nil {
+		if strings.TrimSpace(c.MigrationsPath) == "" && strings.TrimSpace(c.Component) == "" {
+			return fmt.Errorf("%w: migrations_path or component is required", ErrInvalidConfig)
+		}
+
+		return nil
+	}
+
+	if strings.TrimSpace(c.Component) != "" {
+		return fmt.Errorf("%w: migrations_fs and component cannot be combined", ErrInvalidConfig)
+	}
+
+	if !fs.ValidPath(c.fsPath()) {
+		return fmt.Errorf("%w: migrations_path %q is not a valid path inside migrations_fs", ErrInvalidConfig, c.MigrationsPath)
+	}
+
+	return nil
+}
+
 // Migrator runs schema migrations explicitly.
 type Migrator struct {
-	cfg MigrationConfig
+	cfg      MigrationConfig
+	redactor migrationRedactor
 }
 
 // NewMigrator creates a migrator with explicit migration config.
@@ -923,7 +984,7 @@ func NewMigrator(cfg MigrationConfig) (*Migrator, error) {
 		return nil, fmt.Errorf("postgres new_migrator: %w", err)
 	}
 
-	return &Migrator{cfg: cfg}, nil
+	return &Migrator{cfg: cfg, redactor: newMigrationRedactor(cfg.PrimaryDSN)}, nil
 }
 
 func (m *Migrator) logAtLevel(ctx context.Context, level int, msg string, fields ...any) {
@@ -938,11 +999,16 @@ func (m *Migrator) logAtLevel(ctx context.Context, level int, msg string, fields
 	m.cfg.Logger.Log(ctx, level, msg, fields...)
 }
 
-// Up runs all up migrations.
+// Up applies every pending up migration.
 //
-// Note: golang-migrate's m.Up() does not accept a context, so cancellation
-// cannot stop a migration in progress. This method checks context state
-// before starting but cannot interrupt a running migration.
+// The context bounds the whole run: the dial, the wait for the migration
+// lock (also capped by LockTimeout) and the run itself. golang-migrate cannot
+// interrupt a statement in flight (StatementTimeout bounds one), so a context
+// that ends mid-run stops the run between migrations: the migration in flight
+// finishes, the database is left clean at that version, and Up returns an
+// error naming the version that wraps the context's error. A missing or empty
+// source is reported (or, under AllowMissingMigrations, skipped) before any
+// database is opened.
 func (m *Migrator) Up(ctx context.Context) error {
 	if m == nil {
 		return nilMigratorAssert("migrate_up")
@@ -967,33 +1033,46 @@ func (m *Migrator) Up(ctx context.Context) error {
 		return fmt.Errorf("postgres migrate_up: context already done: %w", err)
 	}
 
-	if err := enforceConnTLS(ctx, m.cfg.Logger, "primary", m.cfg.PrimaryDSN, m.cfg.TLSPosture, m.cfg.MinSSLMode); err != nil {
+	if err := m.enforceTLS(ctx); err != nil {
 		libOpentelemetry.HandleSpanError(span, "Migration TLS policy blocked connection", err)
 
 		return fmt.Errorf("postgres migrate_up: %w", err)
 	}
 
-	db, err := dbOpenFn("pgx", m.cfg.PrimaryDSN)
+	run, err := m.newRun()
 	if err != nil {
-		sanitized := newSanitizedError(err, "failed to open migration database")
-		m.logAtLevel(ctx, obs.LevelError, "failed to open migration database", "error", sanitized)
+		m.logAtLevel(ctx, obs.LevelError, "failed to resolve migration source", "error", err.Error())
 
-		libOpentelemetry.HandleSpanError(span, "Failed to open migration database", sanitized)
-
-		return fmt.Errorf("postgres migrate_up: %w", sanitized)
-	}
-	defer db.Close()
-
-	migrationsPath, err := resolveMigrationsPath(m.cfg.MigrationsPath, m.cfg.Component)
-	if err != nil {
-		m.logAtLevel(ctx, obs.LevelError, "failed to resolve migration path", "error", err)
-
-		libOpentelemetry.HandleSpanError(span, "Failed to resolve migration path", err)
+		libOpentelemetry.HandleSpanError(span, "Failed to resolve migration source", err)
 
 		return fmt.Errorf("postgres migrate_up: %w", err)
 	}
 
-	if err := runMigrationsFn(ctx, db, migrationsPath, m.cfg.DatabaseName, m.cfg.AllowMultiStatements, m.cfg.AllowMissingMigrations, m.cfg.Logger); err != nil {
+	if run.sourceCount == 0 {
+		if m.cfg.AllowMissingMigrations {
+			m.logAtLevel(ctx, obs.LevelWarn, "no migration files found, skipping (AllowMissingMigrations=true)")
+
+			return nil
+		}
+
+		err := fmt.Errorf("%w: source directory missing or empty (%s)", ErrMigrationsNotFound, run.sourceLabel)
+
+		m.logAtLevel(ctx, obs.LevelError, "no migration files found")
+
+		libOpentelemetry.HandleSpanError(span, "No migration files found", err)
+
+		return fmt.Errorf("postgres migrate_up: %w", err)
+	}
+
+	db, err := m.openDatabase(ctx)
+	if err != nil {
+		libOpentelemetry.HandleSpanError(span, "Failed to open migration database", err)
+
+		return fmt.Errorf("postgres migrate_up: %w", err)
+	}
+	defer db.Close()
+
+	if err := runMigrationsFn(ctx, db, run); err != nil {
 		libOpentelemetry.HandleSpanError(span, "Migration up failed", err)
 
 		return fmt.Errorf("postgres migrate_up: %w", err)
@@ -1132,19 +1211,25 @@ type migrationVersionReader interface {
 	Version() (version uint, dirty bool, err error)
 }
 
-// migrationSourceStats scans the resolved migrations directory and reports how
-// many up-migration files exist and the highest version present. A missing or
-// unreadable directory yields (0, 0). Files that do not match the golang-migrate
-// "<version>_<name>.up.sql" convention are ignored.
-func migrationSourceStats(migrationsPath string) (count int, maxVersion uint) {
-	entries, err := os.ReadDir(migrationsPath)
+// migrationSourceStats scans dir inside fsys and reports how many
+// up-migration files exist and the highest version present. A missing
+// directory is an empty source, (0, 0, nil); any other read failure is
+// returned, so an unreadable source is never mistaken for an empty one. Files
+// that do not match the golang-migrate "<version>_<name>.up.sql" convention
+// are ignored.
+func migrationSourceStats(fsys fs.FS, dir string) (count int, maxVersion uint, err error) {
+	entries, err := fs.ReadDir(fsys, dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, 0, nil
+	}
+
 	if err != nil {
-		return 0, 0
+		return 0, 0, fmt.Errorf("failed to read migration source: %w", err)
 	}
 
 	for _, entry := range entries {
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".up.sql") {
+		if entry.IsDir() || !strings.HasSuffix(name, ".up.sql") {
 			continue
 		}
 
@@ -1167,13 +1252,18 @@ func migrationSourceStats(migrationsPath string) (count int, maxVersion uint) {
 		}
 	}
 
-	return count, maxVersion
+	return count, maxVersion, nil
 }
 
-// inspectMigrationState gathers the DB version and source stats used to classify
-// a failed migration. A nil reader or a Version() error leaves hasVersion false.
-func inspectMigrationState(versions migrationVersionReader, migrationsPath string) migrationState {
-	state := migrationState{sourcePath: migrationsPath}
+// inspectMigrationState gathers the DB version and the run's source stats used
+// to classify a failed migration. A nil reader or a Version() error leaves
+// hasVersion false.
+func inspectMigrationState(versions migrationVersionReader, run migrationRun) migrationState {
+	state := migrationState{
+		sourcePath:  run.sourceLabel,
+		sourceCount: run.sourceCount,
+		sourceMax:   run.sourceMax,
+	}
 
 	if versions != nil {
 		if version, _, err := versions.Version(); err == nil {
@@ -1181,8 +1271,6 @@ func inspectMigrationState(versions migrationVersionReader, migrationsPath strin
 			state.hasVersion = true
 		}
 	}
-
-	state.sourceCount, state.sourceMax = migrationSourceStats(migrationsPath)
 
 	return state
 }
@@ -1218,8 +1306,10 @@ func versionNotInSourceOutcome(state migrationState) migrationOutcome {
 // When allowMissing is true, ErrNotExist is treated as benign (nil error); otherwise
 // it returns ErrMigrationsNotFound (empty source) or ErrMigrationVersionAhead (the
 // database is pinned to a version not present in a populated source), using state to
-// tell those two os.ErrNotExist cases apart.
-func classifyMigrationError(err error, allowMissing bool, state migrationState) migrationOutcome {
+// tell those two os.ErrNotExist cases apart. Any other failure comes back as a
+// *SanitizedError redacted by redactor: the driver's error never stays
+// reachable, since it may carry the connection string.
+func classifyMigrationError(err error, allowMissing bool, state migrationState, redactor migrationRedactor) migrationOutcome {
 	if err == nil {
 		return migrationOutcome{}
 	}
@@ -1274,11 +1364,13 @@ func classifyMigrationError(err error, allowMissing bool, state migrationState) 
 		}
 	}
 
+	sanitized := redactor.sanitize(err, "migration failed")
+
 	return migrationOutcome{
-		err:     fmt.Errorf("migration failed: %w", err),
+		err:     sanitized,
 		level:   obs.LevelError,
 		message: "migration failed",
-		fields:  []any{"error", err},
+		fields:  []any{"error", sanitized.Error()},
 	}
 }
 
@@ -1312,80 +1404,121 @@ func migrationLogAtLevel(ctx context.Context, logger obs.Logger, level int, msg 
 	logger.Log(ctx, level, msg, fields...)
 }
 
-// resolveMigrationSource parses the migrations path into a file:// URL.
-func resolveMigrationSource(migrationsPath string) (*url.URL, error) {
-	primaryURL, err := url.Parse(filepath.ToSlash(migrationsPath))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse migrations url: %w", err)
-	}
-
-	primaryURL.Scheme = "file"
-
-	return primaryURL, nil
-}
-
-// createMigrationInstance creates the postgres driver and migration instance.
-func createMigrationInstance(dbPrimary *sql.DB, sourceURL, primaryDBName string, allowMultiStatements bool) (*migrate.Migrate, error) {
-	primaryDriver, err := postgres.WithInstance(dbPrimary, &postgres.Config{
-		MultiStatementEnabled: allowMultiStatements,
-		DatabaseName:          primaryDBName,
-		SchemaName:            "public",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create postgres driver instance: %w", err)
-	}
-
-	mig, err := migrate.NewWithDatabaseInstance(sourceURL, primaryDBName, primaryDriver)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create migration instance: %w", err)
-	}
-
-	return mig, nil
-}
-
-// closeMigration releases source and database driver resources. Errors are logged
-// but not propagated since the migration itself already ran (or failed).
-func closeMigration(ctx context.Context, mig *migrate.Migrate, logger obs.Logger) {
-	sourceErr, dbErr := mig.Close()
-	if sourceErr != nil {
-		migrationLogAtLevel(ctx, logger, obs.LevelWarn, "failed to close migration source driver", "error", sourceErr)
-	}
-
-	if dbErr != nil {
-		migrationLogAtLevel(ctx, logger, obs.LevelWarn, "failed to close migration database driver", "error", dbErr)
-	}
-}
-
-func runMigrations(ctx context.Context, dbPrimary *sql.DB, migrationsPath, primaryDBName string, allowMultiStatements, allowMissingMigrations bool, logger obs.Logger) error {
-	if err := validateDBName(primaryDBName); err != nil {
-		migrationLogAtLevel(ctx, logger, obs.LevelError, "invalid primary database name", "error", err)
+// runMigrations applies run's source to db: it opens the source, takes the
+// migration lock on a connection bounded by ctx, and runs golang-migrate's Up,
+// asking it to stop between migrations once ctx is done.
+func runMigrations(ctx context.Context, db *sql.DB, run migrationRun) error {
+	if err := validateDBName(run.databaseName); err != nil {
+		migrationLogAtLevel(ctx, run.logger, obs.LevelError, "invalid primary database name", "error", err.Error())
 
 		return fmt.Errorf("migrations: %w", err)
 	}
 
-	primaryURL, err := resolveMigrationSource(migrationsPath)
+	sourceDriver, err := iofs.New(run.sourceFS, run.sourceDir)
 	if err != nil {
-		migrationLogAtLevel(ctx, logger, obs.LevelError, "failed to parse migrations url", "error", err)
+		sanitized := run.redactor.sanitize(err, "failed to open migration source")
+		migrationLogAtLevel(ctx, run.logger, obs.LevelError, "failed to open migration source", "error", sanitized.Error())
+
+		return sanitized
+	}
+
+	session, err := openMigrationSession(ctx, db, run)
+	if err != nil {
+		_ = sourceDriver.Close()
+
+		migrationLogAtLevel(ctx, run.logger, obs.LevelError, "failed to open migration database session", "error", err.Error())
 
 		return err
 	}
 
-	mig, err := createMigrationInstance(dbPrimary, primaryURL.String(), primaryDBName, allowMultiStatements)
+	mig, err := migrate.NewWithInstance("iofs", sourceDriver, run.databaseName, session.driver)
 	if err != nil {
-		migrationLogAtLevel(ctx, logger, obs.LevelError, err.Error())
+		_ = sourceDriver.Close()
 
-		return err
+		session.close(ctx, run)
+
+		sanitized := run.redactor.sanitize(err, "failed to create migration instance")
+		migrationLogAtLevel(ctx, run.logger, obs.LevelError, "failed to create migration instance", "error", sanitized.Error())
+
+		return sanitized
 	}
 
-	defer closeMigration(ctx, mig, logger)
+	defer closeMigration(ctx, mig, session, run)
 
-	if err := mig.Up(); err != nil {
-		outcome := classifyMigrationError(err, allowMissingMigrations, inspectMigrationState(mig, migrationsPath))
+	release := stopOnContextDone(ctx, mig, run.logger)
+	upErr := mig.Up()
 
-		migrationLogAtLevel(ctx, logger, outcome.level, outcome.message, outcome.fields...)
+	release()
+
+	if ctxErr := ctx.Err(); ctxErr != nil && (upErr == nil || errors.Is(upErr, migrate.ErrNoChange)) {
+		return stoppedEarly(ctx, mig, run, ctxErr)
+	}
+
+	if upErr != nil {
+		outcome := classifyMigrationError(upErr, run.allowMissing, inspectMigrationState(mig, run), run.redactor)
+
+		migrationLogAtLevel(ctx, run.logger, outcome.level, outcome.message, outcome.fields...)
 
 		return outcome.err
 	}
 
 	return nil
+}
+
+// stopOnContextDone asks mig to stop between migrations once ctx is done. The
+// returned release ends the watch; call it when the run returns.
+func stopOnContextDone(ctx context.Context, mig *migrate.Migrate, logger obs.Logger) (release func()) {
+	done := make(chan struct{})
+
+	runtime.SafeGo(logger, "postgres.migrate_stop_on_done", runtime.KeepRunning, func() {
+		select {
+		case <-ctx.Done():
+			select {
+			case mig.GracefulStop <- true:
+			default:
+			}
+		case <-done:
+		}
+	})
+
+	return func() { close(done) }
+}
+
+// stoppedEarly reports a run that ended because ctx did. A run that still
+// reached the newest bundled version, clean, is complete and returns nil.
+func stoppedEarly(ctx context.Context, mig migrationVersionReader, run migrationRun, ctxErr error) error {
+	version, dirty, err := mig.Version()
+	if err != nil && !errors.Is(err, migrate.ErrNilVersion) {
+		sanitized := run.redactor.sanitize(err, "failed to read migration version")
+		migrationLogAtLevel(ctx, run.logger, obs.LevelError, "migration stopped by context; version unknown", "error", sanitized.Error())
+
+		return fmt.Errorf("stopped at an unknown version (%w): %w", sanitized, ctxErr)
+	}
+
+	if !dirty && version >= run.sourceMax {
+		return nil
+	}
+
+	migrationLogAtLevel(ctx, run.logger, obs.LevelWarn, "migration stopped by context",
+		"version", strconv.FormatUint(uint64(version), 10), "dirty", dirty)
+
+	return fmt.Errorf("stopped at version %d: %w", version, ctxErr)
+}
+
+// closeMigration releases the migration lock, then the source and the database
+// driver. Errors are logged, never propagated: the run already succeeded or
+// failed, and the connection's end releases the lock regardless.
+func closeMigration(ctx context.Context, mig *migrate.Migrate, session *migrationSession, run migrationRun) {
+	session.unlock(ctx, run)
+
+	sourceErr, dbErr := mig.Close()
+	if sourceErr != nil {
+		migrationLogAtLevel(ctx, run.logger, obs.LevelWarn, "failed to close migration source driver",
+			"error", run.redactor.redact(sourceErr.Error()))
+	}
+
+	if dbErr != nil {
+		migrationLogAtLevel(ctx, run.logger, obs.LevelWarn, "failed to close migration database driver",
+			"error", run.redactor.redact(dbErr.Error()))
+	}
 }

@@ -339,7 +339,7 @@ func TestMigratorUp_PostureRefusesBeforeOpen(t *testing.T) {
 			return nil, errors.New("must not open")
 		},
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return nil, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+		func(context.Context, *sql.DB, migrationRun) error { return nil },
 	)
 
 	m, err := NewMigrator(MigrationConfig{
@@ -365,13 +365,13 @@ func TestMigratorUp_PostureAdmitsStrongMode(t *testing.T) {
 			return testDB(t), nil
 		},
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return nil, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+		func(context.Context, *sql.DB, migrationRun) error { return nil },
 	)
 
 	m, err := NewMigrator(MigrationConfig{
 		PrimaryDSN:     urlDSN("verify-full"),
 		DatabaseName:   "ledger",
-		MigrationsPath: "/migrations",
+		MigrationsPath: writeMigrationDir(t, "000001_init.up.sql"),
 		TLSPosture:     TLSPostureSaaS,
 	})
 	require.NoError(t, err)

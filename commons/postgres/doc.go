@@ -39,12 +39,60 @@
 // (require, verify-ca or verify-full; empty means verify-full), an absent
 // sslmode and an unparseable DSN; ALLOW_INSECURE_TLS never lifts that floor.
 // TLSPostureSaaS requires verify-full. New checks the primary and any distinct
-// replica, Migrator.Up checks before opening its database, and NewFromPools
-// refuses a posture it cannot verify.
+// replica, Migrator.Up and Migrator.Status check before opening their database,
+// and NewFromPools refuses a posture it cannot verify.
 //
 // A refusal is a *WeakSSLModeError wrapping ErrWeakSSLMode. It names the
 // connection, the setting and the value as written, never the DSN. Only the
 // sslmode is judged: libpq treating require plus sslrootcert as verify-ca is
 // not credited. CheckSSLMode and CheckSSLModeValue run the same check for a
 // pool opened outside New.
+//
+// # Standalone migration binary
+//
+// Migrator is built to be the whole of a small migration binary, the kind a
+// Kubernetes Job runs before a rollout. Ship the SQL inside the binary with
+// MigrationConfig.MigrationsFS (an embed.FS; MigrationsPath then names the
+// directory inside it), give Up a context with a deadline, and map the result
+// to an exit code yourself: the library never exits.
+//
+//	//go:embed migrations
+//	var migrations embed.FS
+//
+//	m, err := postgres.NewMigrator(postgres.MigrationConfig{
+//		PrimaryDSN:       dsn,
+//		DatabaseName:     "ledger",
+//		MigrationsFS:     migrations,
+//		MigrationsPath:   "migrations",
+//		LockTimeout:      time.Minute,
+//		StatementTimeout: 10 * time.Minute,
+//		TLSPosture:       postgres.TLSPostureHardened,
+//	})
+//	...
+//	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+//	defer cancel()
+//	if err := m.Up(ctx); err != nil { ... exit non-zero ... }
+//	status, err := m.Status(ctx) // Version, Dirty, Applied
+//
+// The context bounds the dial, the wait for the migration lock and the run.
+// The lock wait is also capped by LockTimeout (zero: 15s) and fails with
+// ErrMigrationLockTimeout while another migrator holds the lock; the caller's
+// deadline instead yields context.DeadlineExceeded. golang-migrate cannot
+// interrupt a statement in flight, so a context that ends mid-run stops the
+// run between migrations: the database is left clean at the last finished
+// version and Up's error names it and wraps the context's error.
+// StatementTimeout bounds one statement; a statement it cuts fails its
+// migration, which golang-migrate leaves dirty like any other failure.
+//
+// Up classifies a missing or empty source (ErrMigrationsNotFound, or nil under
+// AllowMissingMigrations) before opening any database. Up and Status apply the
+// TLS posture before dialing, exactly as New does.
+//
+// Neither ever returns or logs PrimaryDSN's password: the migrator redacts it
+// by value, in every spelling a driver might print, and every driver or dial
+// error comes back as a *SanitizedError, so a driver error that carries the
+// connection config (pgx's *pgconn.ConnectError) is not reachable through
+// errors.As. ErrMigrationDirty, ErrMigrationsNotFound,
+// ErrMigrationVersionAhead, ErrMigrationLockTimeout and context errors keep
+// their identity for errors.Is.
 package postgres
