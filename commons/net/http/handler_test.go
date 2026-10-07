@@ -25,3 +25,21 @@ func TestFileHandler(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
+
+func TestExtractTokenFromAuthorization(t *testing.T) {
+	t.Parallel()
+
+	for header, want := range map[string]string{
+		"Bearer my-jwt":      "my-jwt",
+		"bearer my-jwt":      "my-jwt",
+		"  Bearer   my-jwt ": "my-jwt",
+		"raw-token":          "raw-token",
+		"":                   "",
+		"   ":                "",
+		"Bearer":             "",
+		"Bearer a b":         "",
+		"Basic abc":          "",
+	} {
+		assert.Equal(t, want, ExtractTokenFromAuthorization(header), "header %q", header)
+	}
+}

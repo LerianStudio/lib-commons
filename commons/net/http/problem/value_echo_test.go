@@ -90,6 +90,21 @@ func TestInstallWithoutValueEcho_DropsRawBodyFromMalformedBodyDetail(t *testing.
 	assert.Equal(t, rawBody, carried.Value, "the caller's detail is copied, never modified")
 }
 
+func TestInstallWithoutValueEcho_StillBoundsLocationAndMessage(t *testing.T) {
+	dropValueEchoForTest(t)
+
+	long := strings.Repeat("x", maxMessageLen+10)
+	carried := &huma.ErrorDetail{Message: long, Location: long, Value: cpf}
+
+	d := asDetail(t, newError(http.StatusUnprocessableEntity, "validation failed", &detailErr{d: carried}))
+
+	require.Len(t, d.Errors, 1)
+	assert.Len(t, d.Errors[0].Message, maxMessageLen)
+	assert.Len(t, d.Errors[0].Location, maxEchoLen)
+	assert.Nil(t, d.Errors[0].Value)
+	assert.Equal(t, long, carried.Location, "the caller's detail is copied, never modified")
+}
+
 func TestInstall_KeepsValueEchoByDefault(t *testing.T) {
 	// NOT parallel: reads the process-global flag other tests in this file set.
 	installForTest(t)

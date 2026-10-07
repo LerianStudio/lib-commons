@@ -1,5 +1,36 @@
 # Lib-commons Changelog
 
+## [7.14.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.14.0)
+
+Features:
+- Add `GetTenantPrincipals` client method to enhance tenant management capabilities. (@fredcamaral)
+
+Fixes:
+- Ensure `GetTenantPrincipals` remains nil-safe when used on a bare Client to prevent potential errors. (@fredcamaral)
+
+Improvements:
+- Refine `GetTenantPrincipals` implementation following a review to streamline its functionality. (@fredcamaral)
+- Remove the obsolete metrics factory from the PostgreSQL integration test configuration for cleaner test setups. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.13.2...v7.14.0)
+
+---
+
+## [7.13.2](https://github.com/LerianStudio/lib-commons/releases/tag/v7.13.2)
+
+Fixes:
+- Cap the echoed problem message in network-related operations to prevent excessive output. (@fredcamaral)
+- Cut the echoed location on a rune boundary to ensure proper string handling in network operations. (@fredcamaral)
+- Limit the problem error count and location length in network responses to improve clarity and prevent overflow. (@fredcamaral)
+- Stop echoing request bodies in problem details to enhance security and reduce unnecessary data exposure. (@fredcamaral)
+
+Improvements:
+- Allow a manual run of the release workflow to provide more flexibility in the release process. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.13.1...v7.13.2)
+
+---
+
 ## [7.13.1](https://github.com/LerianStudio/lib-commons/releases/tag/v7.13.1)
 
 Fixes:

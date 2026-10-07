@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/danielgtaylor/huma/v2"
 )
@@ -76,9 +77,9 @@ var installMu sync.Mutex
 //     the direct-huma.Error5xx(rawErr) info-leak that br-sfn's old override left
 //     open by passing the raw msg/errs straight through.
 //   - status  < 500: msg is passed through and errs are folded into Errors[] in
-//     order (skip nil, honor huma.ErrorDetailer) — exactly like the stock
+//     order (skip nil, honor huma.ErrorDetailer) — like the stock
 //     huma.NewError, so native 422 validation errors keep their per-field
-//     errors[] list.
+//     errors[] list, within the caps on fold.
 //   - at ANY status, an *Upstream, an Extensions or a PublicDetail found in errs
 //     is lifted onto the body instead of being folded (see curated). They are
 //     the only exceptions to the >=500 scrub, and each is carried by its TYPE,
@@ -194,15 +195,18 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 	return pd
 }
 
-// fold renders errs as errors[] exactly like the stock huma.NewError: nil errs
-// are skipped and a huma.ErrorDetailer contributes its own detail. Under
-// InstallWithoutValueEcho a detail carrying a value is folded as a copy with no
-// value; the caller's (or Huma's) detail is never modified.
+// fold renders errs as errors[] like the stock huma.NewError: nil errs are
+// skipped and a huma.ErrorDetailer contributes its own detail, through bounded.
+// Under InstallWithoutValueEcho every detail is folded with no value.
 func fold(errs []error) []*huma.ErrorDetail {
 	dropValue := dropValueEcho.Load()
-	details := make([]*huma.ErrorDetail, 0, len(errs))
+	details := make([]*huma.ErrorDetail, 0, min(len(errs), maxErrorDetails))
 
 	for _, e := range errs {
+		if len(details) == maxErrorDetails {
+			break
+		}
+
 		if e == nil {
 			continue
 		}
@@ -211,13 +215,13 @@ func fold(errs []error) []*huma.ErrorDetail {
 			// ErrorDetail() may return a nil *huma.ErrorDetail; appending it
 			// would serialize a null entry into errors[]. Skip the nil one.
 			if d := converted.ErrorDetail(); d != nil {
-				details = append(details, withoutValue(d, dropValue))
+				details = append(details, bounded(d, dropValue))
 			}
 
 			continue
 		}
 
-		details = append(details, &huma.ErrorDetail{Message: e.Error()})
+		details = append(details, &huma.ErrorDetail{Message: truncate(e.Error(), maxMessageLen)})
 	}
 
 	if len(details) == 0 {
@@ -227,15 +231,57 @@ func fold(errs []error) []*huma.ErrorDetail {
 	return details
 }
 
-// withoutValue returns d unchanged unless drop is set and d carries a value, in
-// which case it returns a copy of d with no value.
-func withoutValue(d *huma.ErrorDetail, drop bool) *huma.ErrorDetail {
-	if !drop || d.Value == nil {
+// Huma echoes request-sized data into errors[]: a detail per failing item or key,
+// that key in Location, a rejected URI or duration in Message, the parent object
+// or raw body in Value. These caps size a 4xx by its errors, never the request.
+const (
+	maxErrorDetails = 100
+	maxEchoLen      = 256
+	maxMessageLen   = 1024
+)
+
+// bounded returns d with Location and Message truncated to their caps and Value
+// kept only when echoable and dropValue is unset. It copies, never mutates: an
+// ErrorDetailer may return a shared detail.
+func bounded(d *huma.ErrorDetail, dropValue bool) *huma.ErrorDetail {
+	keepValue := !dropValue && echoable(d.Value)
+
+	if len(d.Location) <= maxEchoLen && len(d.Message) <= maxMessageLen && (keepValue || d.Value == nil) {
 		return d
 	}
 
-	stripped := *d
-	stripped.Value = nil
+	trimmed := *d
+	trimmed.Location = truncate(d.Location, maxEchoLen)
+	trimmed.Message = truncate(d.Message, maxMessageLen)
 
-	return &stripped
+	if !keepValue {
+		trimmed.Value = nil
+	}
+
+	return &trimmed
+}
+
+// truncate cuts s to at most n bytes on a rune boundary, so it stays valid UTF-8.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+
+	return s[:n]
+}
+
+// echoable admits nil, a bool, a number, or a string within maxEchoLen bytes.
+func echoable(v any) bool {
+	switch v := v.(type) {
+	case nil, bool, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return true
+	case string:
+		return len(v) <= maxEchoLen
+	default:
+		return false
+	}
 }
