@@ -16,9 +16,11 @@
 //
 // InstallWithoutValueEcho is the opt-in variant of Install for APIs that receive
 // personal data: it also drops the value member from every errors[] entry of a
-// <500 document, so Huma's echo of the rejected input (a field value, a raw
-// parameter, or the whole raw request body when it is not valid JSON) never
-// comes back in an error body. Once installed it stays on for the process.
+// <500 document, so Huma's echo of the rejected input in that member (a field
+// value, a raw parameter, or the whole raw request body when it is not valid
+// JSON) never comes back in an error body. It does not rewrite messages: a
+// parser message that quotes the rejected input passes through, bounded in
+// length. Once installed it stays on for the process.
 //
 // This package is platform glue shared by every Lerian service; it must not
 // import any bounded-context package.
