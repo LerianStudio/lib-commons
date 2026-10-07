@@ -1,0 +1,563 @@
+package outbound
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"net"
+	"net/netip"
+	"net/url"
+	"strconv"
+	"strings"
+	"syscall"
+
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/security/ssrf"
+	"golang.org/x/net/http/httpproxy"
+	"golang.org/x/net/idna"
+)
+
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+)
+
+// WithProxy sends every request through the forward proxy at proxyURL: an
+// https target through a CONNECT tunnel, with TLS end to end to the target,
+// and an http target (only under a plaintext allowance) in absolute form, so
+// the proxy then sees that request, credentials included, in the clear.
+//
+// proxyURL is cloned when WithProxy is called, and a nil URL is ignored. It
+// must be an http:// or https:// URL with an ASCII host, an optional port, no
+// path but an optional "/", and no query or fragment; userinfo becomes the Proxy-Authorization credentials. Anything
+// else, or combining it with [WithProxyFromEnvironment], fails construction
+// with [ErrInvalidOption]. A proxy at a link-local (cloud metadata),
+// unspecified or multicast address is refused, at construction for an IP
+// literal and at connect time for a name ([ssrf.ErrBlocked]); loopback and
+// private proxies, such as a sidecar or a corporate proxy, are allowed. An
+// https:// proxy is verified with the client's TLS config (roots, client
+// certificate, TLS floor) under the proxy's own host, whatever ServerName that
+// config sets for targets, and is always spoken to in HTTP/1.1, so a proxy
+// that also offers h2 still receives a plain CONNECT.
+//
+// Behind a proxy the client still refuses, before contacting the proxy, a
+// non-https scheme without an allowance, a blocked hostname, a blocked IP
+// literal and a target name that resolves, through the client's own resolver
+// ([WithLookupFunc] when given), to any blocked address. A target name the
+// client cannot resolve is refused ([ssrf.ErrDNSFailed]) unless
+// [WithProxyUnresolvedTargets] is set. What the client cannot check is the
+// address the proxy itself resolves and connects to: a DNS answer that
+// changes between the two lookups (DNS rebinding) is the proxy's to police,
+// so a proxied client should be given target URLs from configuration or
+// vetted sources, never raw user input. [WithAllowPrivateNetwork] turns the
+// target resolution off along with the IP-range blocklist. The client logs
+// WARN "outbound forward proxy active" (feature outbound_forward_proxy, with
+// the target_ip_check in force) when it is built.
+func WithProxy(proxyURL *url.URL) Option {
+	if proxyURL == nil {
+		return func(*config) {}
+	}
+
+	snapshot := *proxyURL
+
+	return func(c *config) {
+		clone := snapshot
+		c.proxyURL = &clone
+	}
+}
+
+// WithProxyFromEnvironment selects the forward proxy from HTTPS_PROXY (https
+// targets), HTTP_PROXY (http targets) and NO_PROXY, lowercase names taking
+// precedence, with the semantics of [net/http.ProxyFromEnvironment]: a value
+// without a scheme is read as http://, and a host NO_PROXY matches is dialed
+// directly with the full dial-time SSRF check.
+//
+// The environment is read once, when the client is built; later changes have
+// no effect on it. Each proxy value is validated as [WithProxy] describes and
+// a bad one fails construction with [ErrInvalidOption]; when neither proxy
+// variable is set the client uses no proxy. The posture change described at
+// [WithProxy] applies to every proxied request.
+func WithProxyFromEnvironment() Option {
+	return func(c *config) { c.proxyFromEnvironment = true }
+}
+
+// WithProxyUnresolvedTargets lets a proxied request whose target name the
+// client cannot resolve go to the proxy, for egress where only the proxy has
+// DNS for external names. A target name that does resolve is still refused
+// when any answer is blocked. It needs [WithProxy] or
+// [WithProxyFromEnvironment] ([ErrInvalidOption] otherwise), and the forward
+// proxy audit line records it.
+func WithProxyUnresolvedTargets() Option {
+	return func(c *config) { c.proxyUnresolvedTargets = true }
+}
+
+// proxyFunc returns the proxy for a target URL as configured (an https://
+// proxy keeps its scheme), or nil to dial the target directly.
+type proxyFunc func(target *url.URL) (*url.URL, error)
+
+// configureProxy returns the transport's proxy function (nil without a proxy)
+// and its dial function, which sends a dial to a proxy address through the
+// proxy dialer and every other dial through direct. tlsConfig is the client's
+// resolved TLS config, cloned for every https:// proxy.
+func configureProxy(ctx context.Context, cfg *config, tlsConfig *tls.Config, base *net.Dialer, direct ssrf.DialFunc) (proxyFunc, ssrf.DialFunc, error) {
+	switch {
+	case cfg.proxyURL != nil && cfg.proxyFromEnvironment:
+		return nil, nil, fmt.Errorf("%w: WithProxy and WithProxyFromEnvironment are mutually exclusive", ErrInvalidOption)
+	case cfg.proxyUnresolvedTargets && cfg.proxyURL == nil && !cfg.proxyFromEnvironment:
+		return nil, nil, fmt.Errorf("%w: WithProxyUnresolvedTargets needs WithProxy or WithProxyFromEnvironment", ErrInvalidOption)
+	case cfg.proxyURL != nil:
+		return optionProxy(ctx, cfg, tlsConfig, base, direct)
+	case cfg.proxyFromEnvironment:
+		return environmentProxy(ctx, cfg, tlsConfig, base, direct)
+	default:
+		return nil, direct, nil
+	}
+}
+
+func optionProxy(ctx context.Context, cfg *config, tlsConfig *tls.Config, base *net.Dialer, direct ssrf.DialFunc) (proxyFunc, ssrf.DialFunc, error) {
+	proxyURL := cfg.proxyURL
+	proxyURL.Scheme = strings.ToLower(proxyURL.Scheme)
+
+	if err := validateProxyURL(proxyURL); err != nil {
+		return nil, nil, err
+	}
+
+	route, err := newProxyRoute(base, direct, tlsConfig, proxyURL)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	logProxy(ctx, cfg, "option", proxyURL, "http,https")
+
+	return func(*url.URL) (*url.URL, error) { return proxyURL, nil }, route.dial, nil
+}
+
+func environmentProxy(ctx context.Context, cfg *config, tlsConfig *tls.Config, base *net.Dialer, direct ssrf.DialFunc) (proxyFunc, ssrf.DialFunc, error) {
+	env := httpproxy.FromEnvironment()
+
+	httpsProxy, err := parseEnvironmentProxy(env.HTTPSProxy, "HTTPS_PROXY")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	httpProxy, err := parseEnvironmentProxy(env.HTTPProxy, "HTTP_PROXY")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if httpsProxy == nil && httpProxy == nil {
+		return nil, direct, nil
+	}
+
+	route, err := newProxyRoute(base, direct, tlsConfig, httpsProxy, httpProxy)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	logEnvironmentProxies(ctx, cfg, httpsProxy, httpProxy)
+
+	choose := env.ProxyFunc()
+
+	return func(target *url.URL) (*url.URL, error) {
+		proxyURL, err := choose(target)
+		if err != nil {
+			return nil, fmt.Errorf("outbound: proxy selection: %w", err)
+		}
+
+		if proxyURL != nil {
+			return proxyURL, nil
+		}
+
+		// A direct dial to a proxy's own address would take the proxy dialer
+		// and skip the target's dial-time check.
+		if route.isProxyAddr(targetAddr(target)) {
+			return nil, fmt.Errorf("%w: direct request to the forward proxy's address %s", ssrf.ErrBlocked, target.Host)
+		}
+
+		return nil, nil
+	}, route.dial, nil
+}
+
+// parseEnvironmentProxy parses one proxy variable with httpproxy's rule (a
+// value that does not parse with a scheme and host is retried with http://)
+// and validates it. Errors never repeat the raw value, which may carry
+// credentials.
+func parseEnvironmentProxy(raw, name string) (*url.URL, error) {
+	if raw == "" {
+		return nil, nil //nolint:nilnil // an unset variable selects no proxy, which is not an error
+	}
+
+	proxyURL, err := url.Parse(raw)
+	if err != nil || proxyURL.Scheme == "" || proxyURL.Host == "" {
+		if prefixed, prefixErr := url.Parse("http://" + raw); prefixErr == nil {
+			proxyURL, err = prefixed, nil
+		}
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s is not a valid proxy URL", ErrInvalidOption, name)
+	}
+
+	if err := validateProxyURL(proxyURL); err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+
+	return proxyURL, nil
+}
+
+// validateProxyURL accepts an http or https URL with an ASCII host, a valid
+// optional port and nothing after the authority but an optional "/". An IP
+// literal must also pass the proxy address check.
+func validateProxyURL(u *url.URL) error {
+	where := describeProxy(u)
+
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != schemeHTTP && scheme != schemeHTTPS {
+		return fmt.Errorf("%w: proxy %s: scheme must be http or https", ErrInvalidOption, where)
+	}
+
+	switch {
+	case u.Opaque != "":
+		return fmt.Errorf("%w: proxy %s: opaque URL", ErrInvalidOption, where)
+	case u.Path != "" && u.Path != "/":
+		return fmt.Errorf("%w: proxy %s: URL must have no path", ErrInvalidOption, where)
+	case u.RawQuery != "" || u.ForceQuery:
+		return fmt.Errorf("%w: proxy %s: URL must have no query", ErrInvalidOption, where)
+	case u.Fragment != "":
+		return fmt.Errorf("%w: proxy %s: URL must have no fragment", ErrInvalidOption, where)
+	}
+
+	if err := validateProxyHost(u.Hostname()); err != nil {
+		return fmt.Errorf("%w: proxy %s: %w", ErrInvalidOption, where, err)
+	}
+
+	if err := validateProxyPort(u); err != nil {
+		return fmt.Errorf("%w: proxy %s: %w", ErrInvalidOption, where, err)
+	}
+
+	return nil
+}
+
+var (
+	errProxyHost = errors.New("host must be an ASCII hostname or an IP literal")
+	errProxyPort = errors.New("port must be a number from 1 to 65535")
+)
+
+func validateProxyHost(host string) error {
+	if host == "" {
+		return errProxyHost
+	}
+
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if isForbiddenProxyAddr(addr) {
+			return fmt.Errorf("%w: proxy IP %s is link-local, unspecified or multicast", ssrf.ErrBlocked, host)
+		}
+
+		return nil
+	}
+
+	for _, r := range host {
+		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		isDigit := r >= '0' && r <= '9'
+
+		if !isLetter && !isDigit && r != '-' && r != '.' && r != '_' {
+			return errProxyHost
+		}
+	}
+
+	return nil
+}
+
+// validateProxyPort checks the port after the host's last colon, which
+// url.URL.Port hides when it is not numeric.
+func validateProxyPort(u *url.URL) error {
+	host := u.Host
+	if end := strings.LastIndexByte(host, ']'); end >= 0 {
+		host = host[end+1:]
+	}
+
+	colon := strings.LastIndexByte(host, ':')
+	if colon < 0 {
+		return nil
+	}
+
+	port, err := strconv.Atoi(host[colon+1:])
+	if err != nil || port < 1 || port > 65535 {
+		return errProxyPort
+	}
+
+	return nil
+}
+
+// describeProxy names a proxy in errors and logs by scheme and host only: no
+// userinfo, and no path or query, which a malformed value may have taken
+// credentials into.
+func describeProxy(u *url.URL) string {
+	if u.User != nil {
+		return u.Scheme + "://[redacted]@" + u.Host
+	}
+
+	return u.Scheme + "://" + u.Host
+}
+
+func logProxy(ctx context.Context, cfg *config, source string, proxyURL *url.URL, targets string) {
+	cfg.logger.Log(ctx, obs.LevelWarn, "outbound forward proxy active",
+		"feature", "outbound_forward_proxy",
+		"source", source,
+		"proxy", describeProxy(proxyURL),
+		"targets", targets,
+		"target_ip_check", describeTargetCheck(cfg),
+	)
+}
+
+// describeTargetCheck names, for the audit line, how a proxied target's
+// resolved addresses are checked.
+func describeTargetCheck(cfg *config) string {
+	switch {
+	case cfg.allowPrivate:
+		return "off: private network allowed"
+	case cfg.proxyUnresolvedTargets:
+		return "resolved by the client; unresolved names delegated to the proxy"
+	default:
+		return "resolved by the client, fail-closed"
+	}
+}
+
+func logEnvironmentProxies(ctx context.Context, cfg *config, httpsProxy, httpProxy *url.URL) {
+	switch {
+	case httpsProxy != nil && httpProxy != nil && httpsProxy.String() == httpProxy.String():
+		logProxy(ctx, cfg, "environment", httpsProxy, "http,https")
+	default:
+		if httpsProxy != nil {
+			logProxy(ctx, cfg, "environment", httpsProxy, schemeHTTPS)
+		}
+
+		if httpProxy != nil {
+			logProxy(ctx, cfg, "environment", httpProxy, schemeHTTP)
+		}
+	}
+}
+
+// admitProxiedTarget resolves a target that will go through the proxy and
+// refuses it when any answer is blocked, or when the name does not resolve and
+// unresolved targets are not delegated. A direct target, an IP literal (judged
+// by ssrf.ValidateURL) and a client with private networks allowed are not
+// resolved here.
+func (e *egress) admitProxiedTarget(ctx context.Context, target *url.URL) error {
+	if e.proxy == nil || e.allowPrivate {
+		return nil
+	}
+
+	if _, err := netip.ParseAddr(strings.TrimRight(target.Hostname(), ".")); err == nil {
+		return nil
+	}
+
+	proxyURL, err := e.proxy(target)
+	if err != nil || proxyURL == nil {
+		return err
+	}
+
+	_, err = ssrf.ResolveAndValidate(ctx, target.String(), e.ssrfOpts...)
+	if err != nil && e.proxyUnresolvedTargets && errors.Is(err, ssrf.ErrDNSFailed) {
+		return nil
+	}
+
+	return err
+}
+
+// proxyRoute dials the configured proxy addresses through the proxy dialer
+// and every other address through the SSRF-checked direct dialer. It also
+// speaks TLS to an https:// proxy itself: net/http is handed that proxy as
+// http://, so it sends the CONNECT (or an absolute-form request) as HTTP/1.1
+// over the TLS connection the route returns. Left to net/http, the handshake
+// would use the client's TLS config, whose ALPN offers h2, and a proxy that
+// accepts h2 would then receive an HTTP/1.1 CONNECT it cannot read.
+type proxyRoute struct {
+	addrs  map[string]*tls.Config // proxy address -> TLS to it; nil for an http:// proxy
+	proxy  ssrf.DialFunc
+	direct ssrf.DialFunc
+}
+
+func newProxyRoute(base *net.Dialer, direct ssrf.DialFunc, tlsConfig *tls.Config, proxies ...*url.URL) (*proxyRoute, error) {
+	addrs := make(map[string]*tls.Config, len(proxies))
+
+	for _, proxyURL := range proxies {
+		if proxyURL == nil {
+			continue
+		}
+
+		var proxyTLS *tls.Config
+
+		if strings.EqualFold(proxyURL.Scheme, schemeHTTPS) {
+			proxyTLS = tlsConfig.Clone()
+			proxyTLS.ServerName = proxyURL.Hostname()
+			proxyTLS.NextProtos = []string{"http/1.1"}
+		}
+
+		addr := targetAddr(proxyURL)
+
+		if prev, seen := addrs[addr]; seen && (prev == nil) != (proxyTLS == nil) {
+			return nil, fmt.Errorf("%w: proxy address %s is named as both an http:// and an https:// proxy", ErrInvalidOption, addr)
+		}
+
+		addrs[addr] = proxyTLS
+	}
+
+	dialer := *base
+	dialer.ControlContext = func(_ context.Context, _, address string, _ syscall.RawConn) error {
+		return checkProxyConnectAddr(address)
+	}
+
+	return &proxyRoute{addrs: addrs, proxy: dialer.DialContext, direct: direct}, nil
+}
+
+func (r *proxyRoute) dial(ctx context.Context, network, address string) (net.Conn, error) {
+	proxyTLS, isProxy := r.proxyConfig(address)
+	if !isProxy {
+		return r.direct(ctx, network, address)
+	}
+
+	conn, err := r.proxy(ctx, network, address)
+	if err != nil || proxyTLS == nil {
+		return conn, err
+	}
+
+	return handshakeProxy(ctx, conn, proxyTLS, address)
+}
+
+// handshakeProxy runs the TLS handshake with an https:// proxy, bounded by the
+// transport's TLS handshake timeout, and closes conn when it fails.
+func handshakeProxy(ctx context.Context, conn net.Conn, proxyTLS *tls.Config, address string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, defaultTLSHandshakeTimeout)
+	defer cancel()
+
+	tlsConn := tls.Client(conn, proxyTLS)
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		_ = conn.Close()
+
+		return nil, fmt.Errorf("outbound: TLS handshake with forward proxy %s: %w", address, err)
+	}
+
+	return tlsConn, nil
+}
+
+func (r *proxyRoute) isProxyAddr(address string) bool {
+	_, ok := r.proxyConfig(address)
+
+	return ok
+}
+
+// proxyConfig reports whether address is a proxy's and returns the TLS config
+// for it, nil for an http:// proxy.
+func (r *proxyRoute) proxyConfig(address string) (*tls.Config, bool) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, false
+	}
+
+	proxyTLS, ok := r.addrs[addrKey(host, port)]
+
+	return proxyTLS, ok
+}
+
+// netHTTPProxyURL is the proxy URL handed to net/http: an https:// proxy
+// becomes http:// with its port made explicit, because proxyRoute's dial
+// already returns the TLS connection to it.
+func netHTTPProxyURL(proxyURL *url.URL) *url.URL {
+	if !strings.EqualFold(proxyURL.Scheme, schemeHTTPS) {
+		return proxyURL
+	}
+
+	plain := *proxyURL
+	plain.Scheme = schemeHTTP
+	plain.Host = targetAddr(proxyURL)
+
+	return &plain
+}
+
+// targetAddr is the host:port net/http dials for u: the port defaults by
+// scheme, and the host is in ASCII form.
+func targetAddr(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if strings.EqualFold(u.Scheme, schemeHTTPS) {
+			port = "443"
+		}
+	}
+
+	return addrKey(u.Hostname(), port)
+}
+
+// addrKey normalizes host:port for comparison: lowercase, and a non-ASCII
+// name in the IDNA form net/http dials.
+func addrKey(host, port string) string {
+	if !isASCII(host) {
+		if ascii, err := idna.Lookup.ToASCII(host); err == nil {
+			host = ascii
+		}
+	}
+
+	return net.JoinHostPort(strings.ToLower(host), port)
+}
+
+func isASCII(s string) bool {
+	for i := range len(s) {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+
+	return true
+}
+
+// checkProxyConnectAddr judges the address the proxy dialer is about to
+// connect to. An address it cannot parse is refused.
+func checkProxyConnectAddr(address string) error {
+	addrPort, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return fmt.Errorf("%w: proxy connect address %q is not an IP: %w", ssrf.ErrBlocked, address, err)
+	}
+
+	if isForbiddenProxyAddr(addrPort.Addr()) {
+		return fmt.Errorf("%w: proxy connect address %s is link-local, unspecified or multicast", ssrf.ErrBlocked, address)
+	}
+
+	return nil
+}
+
+var (
+	awsMetadataIPv6 = netip.MustParseAddr("fd00:ec2::254")
+	nat64WellKnown  = netip.MustParsePrefix("64:ff9b::/96")
+	sixToFour       = netip.MustParsePrefix("2002::/16")
+)
+
+// isForbiddenProxyAddr is the proxy's address rule, narrower than the SSRF
+// blocklist: loopback and private proxies are legitimate, while link-local
+// (169.254.169.254 and every other cloud metadata endpoint in that range,
+// fe80::/10), the AWS IPv6 metadata address, unspecified and multicast
+// addresses are not. IPv4-mapped, NAT64 and 6to4 forms are judged by the
+// IPv4 address they reach.
+func isForbiddenProxyAddr(addr netip.Addr) bool {
+	if !addr.IsValid() {
+		return true
+	}
+
+	addr = addr.Unmap().WithZone("")
+
+	raw := addr.As16()
+
+	switch {
+	case nat64WellKnown.Contains(addr):
+		addr = netip.AddrFrom4([4]byte(raw[12:16]))
+	case sixToFour.Contains(addr):
+		addr = netip.AddrFrom4([4]byte(raw[2:6]))
+	}
+
+	return addr == awsMetadataIPv6 ||
+		addr.IsLinkLocalUnicast() ||
+		addr.IsLinkLocalMulticast() ||
+		addr.IsMulticast() ||
+		addr.IsUnspecified()
+}

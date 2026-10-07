@@ -53,24 +53,6 @@ func TestMigrationLogAtLevel_NopLogger(t *testing.T) {
 	})
 }
 
-// TestResolveMigrationSource covers valid and invalid path parsing.
-func TestResolveMigrationSource_ValidPath(t *testing.T) {
-	t.Parallel()
-
-	u, err := resolveMigrationSource("/migrations/sql")
-	require.NoError(t, err)
-	assert.Equal(t, "file", u.Scheme)
-	assert.Contains(t, u.Path, "migrations")
-}
-
-func TestResolveMigrationSource_RelativePath(t *testing.T) {
-	t.Parallel()
-
-	u, err := resolveMigrationSource("./migrations")
-	require.NoError(t, err)
-	assert.Equal(t, "file", u.Scheme)
-}
-
 // TestSanitizedCause covers the sanitizedCause function.
 func TestSanitizedCause_NilError(t *testing.T) {
 	t.Parallel()

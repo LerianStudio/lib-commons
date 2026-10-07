@@ -148,7 +148,7 @@ func withPatchedDependencies(
 	t *testing.T,
 	openFn func(string, string) (*sql.DB, error),
 	resolverFn func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error),
-	migrateFn func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error,
+	migrateFn func(context.Context, *sql.DB, migrationRun) error,
 ) {
 	t.Helper()
 
@@ -221,7 +221,7 @@ func TestConnectSanitizesSensitiveError(t *testing.T) {
 			return nil, errors.New("parse postgres://alice:supersecret@db.internal:5432/main failed password=supersecret")
 		},
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return nil, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+		func(context.Context, *sql.DB, migrationRun) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -246,7 +246,7 @@ func TestConnectAtomicSwapKeepsOldOnFailure(t *testing.T) {
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return newResolver, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+		func(context.Context, *sql.DB, migrationRun) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -268,7 +268,7 @@ func TestConnectAtomicSwapClosesPreviousOnSuccess(t *testing.T) {
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return newResolver, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+		func(context.Context, *sql.DB, migrationRun) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -292,7 +292,7 @@ func TestDBLazyConnect(t *testing.T) {
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return resolver, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+		func(context.Context, *sql.DB, migrationRun) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -344,7 +344,7 @@ func TestMigratorUpRunsExplicitly(t *testing.T) {
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error {
+		func(context.Context, *sql.DB, migrationRun) error {
 			migrationCalls.Add(1)
 			return nil
 		},
@@ -353,7 +353,7 @@ func TestMigratorUpRunsExplicitly(t *testing.T) {
 	migrator, err := NewMigrator(MigrationConfig{
 		PrimaryDSN:     "postgres://postgres:secret@localhost:5432/postgres?sslmode=disable",
 		DatabaseName:   "postgres",
-		MigrationsPath: "components/ledger/migrations",
+		MigrationsPath: writeMigrationDir(t, "000001_init.up.sql"),
 	})
 	require.NoError(t, err)
 
@@ -563,7 +563,7 @@ func TestConnectDbOpenError(t *testing.T) {
 				return nil, errors.New("connection refused")
 			},
 			func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-			func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+			func(context.Context, *sql.DB, migrationRun) error { return nil },
 		)
 
 		client, err := New(validConfig())
@@ -588,7 +588,7 @@ func TestConnectDbOpenError(t *testing.T) {
 				return nil, errors.New("replica down")
 			},
 			func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-			func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+			func(context.Context, *sql.DB, migrationRun) error { return nil },
 		)
 
 		client, err := New(validConfig())
@@ -606,7 +606,7 @@ func TestConnectDbOpenError(t *testing.T) {
 			func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) {
 				return nil, errors.New("resolver error")
 			},
-			func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+			func(context.Context, *sql.DB, migrationRun) error { return nil },
 		)
 
 		client, err := New(validConfig())
@@ -629,7 +629,7 @@ func TestResolverCachesResolver(t *testing.T) {
 		t,
 		func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return resolver, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+		func(context.Context, *sql.DB, migrationRun) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -789,7 +789,7 @@ func TestMigratorUpDbOpenError(t *testing.T) {
 			return nil, errors.New("parse postgres://alice:supersecret@db:5432/main failed")
 		},
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return nil, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+		func(context.Context, *sql.DB, migrationRun) error { return nil },
 	)
 
 	m, err := NewMigrator(MigrationConfig{
@@ -807,12 +807,16 @@ func TestMigratorUpDbOpenError(t *testing.T) {
 func TestMigratorUpResolvesPathFromComponent(t *testing.T) {
 	var capturedPath string
 
+	t.Chdir(t.TempDir())
+	require.NoError(t, os.MkdirAll(filepath.Join("components", "ledger", "migrations"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join("components", "ledger", "migrations", "000001_init.up.sql"), []byte("SELECT 1;"), 0o600))
+
 	withPatchedDependencies(
 		t,
 		func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-		func(_ context.Context, _ *sql.DB, path, _ string, _, _ bool, _ obs.Logger) error {
-			capturedPath = path
+		func(_ context.Context, _ *sql.DB, run migrationRun) error {
+			capturedPath = run.sourceLabel
 			return nil
 		},
 	)
@@ -836,7 +840,7 @@ func TestMigratorUpMigrationError(t *testing.T) {
 		t,
 		func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-		func(_ context.Context, _ *sql.DB, _, _ string, _, _ bool, _ obs.Logger) error {
+		func(context.Context, *sql.DB, migrationRun) error {
 			return errors.New("migration failed")
 		},
 	)
@@ -844,7 +848,7 @@ func TestMigratorUpMigrationError(t *testing.T) {
 	m, err := NewMigrator(MigrationConfig{
 		PrimaryDSN:     "postgres://localhost/db",
 		DatabaseName:   "ledger",
-		MigrationsPath: "/migrations",
+		MigrationsPath: writeMigrationDir(t, "000001_init.up.sql"),
 	})
 	require.NoError(t, err)
 
@@ -1093,7 +1097,7 @@ func TestConnectLockedOldResolverCloseError(t *testing.T) {
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return newResolver, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+		func(context.Context, *sql.DB, migrationRun) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -1119,7 +1123,7 @@ func TestResolverLazyConnectError(t *testing.T) {
 			return nil, errors.New("cannot connect")
 		},
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+		func(context.Context, *sql.DB, migrationRun) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -1141,7 +1145,7 @@ func TestResolverDoubleCheckReturnsExisting(t *testing.T) {
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return resolver, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+		func(context.Context, *sql.DB, migrationRun) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -1172,7 +1176,7 @@ func TestPrimaryReturnsDBWhenConnected(t *testing.T) {
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+		func(context.Context, *sql.DB, migrationRun) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -1197,7 +1201,7 @@ func TestMigratorUpResolveMigrationsPathError(t *testing.T) {
 		t,
 		func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+		func(context.Context, *sql.DB, migrationRun) error { return nil },
 	)
 
 	m, err := NewMigrator(MigrationConfig{
@@ -1335,14 +1339,14 @@ func TestClassifyMigrationError(t *testing.T) {
 	t.Run("nil error returns zero outcome", func(t *testing.T) {
 		t.Parallel()
 
-		outcome := classifyMigrationError(nil, false, migrationState{})
+		outcome := classifyMigrationError(nil, false, migrationState{}, migrationRedactor{})
 		assert.Nil(t, outcome.err)
 	})
 
 	t.Run("ErrNoChange returns nil error with info level", func(t *testing.T) {
 		t.Parallel()
 
-		outcome := classifyMigrationError(migrate.ErrNoChange, false, migrationState{})
+		outcome := classifyMigrationError(migrate.ErrNoChange, false, migrationState{}, migrationRedactor{})
 		assert.Nil(t, outcome.err)
 		assert.Equal(t, obs.LevelInfo, outcome.level)
 		assert.NotEmpty(t, outcome.message)
@@ -1351,7 +1355,7 @@ func TestClassifyMigrationError(t *testing.T) {
 	t.Run("ErrNotExist with empty source returns ErrMigrationsNotFound by default", func(t *testing.T) {
 		t.Parallel()
 
-		outcome := classifyMigrationError(os.ErrNotExist, false, migrationState{})
+		outcome := classifyMigrationError(os.ErrNotExist, false, migrationState{}, migrationRedactor{})
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, ErrMigrationsNotFound)
 		assert.Equal(t, obs.LevelError, outcome.level)
@@ -1361,7 +1365,7 @@ func TestClassifyMigrationError(t *testing.T) {
 	t.Run("ErrNotExist returns nil error when allowMissing is true", func(t *testing.T) {
 		t.Parallel()
 
-		outcome := classifyMigrationError(os.ErrNotExist, true, migrationState{})
+		outcome := classifyMigrationError(os.ErrNotExist, true, migrationState{}, migrationRedactor{})
 		assert.Nil(t, outcome.err)
 		assert.Equal(t, obs.LevelWarn, outcome.level)
 		assert.NotEmpty(t, outcome.message)
@@ -1376,7 +1380,7 @@ func TestClassifyMigrationError(t *testing.T) {
 			sourceCount:    16,
 			sourceMax:      16,
 			sourcePath:     "/app/migrations",
-		})
+		}, migrationRedactor{})
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, ErrMigrationVersionAhead)
 		assert.NotErrorIs(t, outcome.err, ErrMigrationsNotFound)
@@ -1403,7 +1407,7 @@ func TestClassifyMigrationError(t *testing.T) {
 			sourceCount:    17,
 			sourceMax:      18,
 			sourcePath:     "/app/migrations",
-		})
+		}, migrationRedactor{})
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, ErrMigrationVersionAhead)
 		// Must NOT claim the DB is ahead when the source ships a higher version.
@@ -1419,7 +1423,7 @@ func TestClassifyMigrationError(t *testing.T) {
 		// signal; it must not be swallowed as "source missing/empty".
 		outcome := classifyMigrationError(os.ErrNotExist, false, migrationState{
 			currentVersion: 16, hasVersion: true, sourceCount: 16, sourceMax: 16, sourcePath: "/m",
-		})
+		}, migrationRedactor{})
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, ErrMigrationVersionAhead)
 	})
@@ -1429,7 +1433,7 @@ func TestClassifyMigrationError(t *testing.T) {
 
 		outcome := classifyMigrationError(os.ErrNotExist, false, migrationState{
 			hasVersion: false, sourceCount: 16, sourceMax: 16, sourcePath: "/app/migrations",
-		})
+		}, migrationRedactor{})
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, ErrMigrationsNotFound)
 		assert.NotErrorIs(t, outcome.err, ErrMigrationVersionAhead)
@@ -1442,7 +1446,7 @@ func TestClassifyMigrationError(t *testing.T) {
 
 		outcome := classifyMigrationError(os.ErrNotExist, false, migrationState{
 			currentVersion: 5, hasVersion: true, sourceCount: 0,
-		})
+		}, migrationRedactor{})
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, ErrMigrationsNotFound)
 		assert.NotErrorIs(t, outcome.err, ErrMigrationVersionAhead)
@@ -1454,7 +1458,7 @@ func TestClassifyMigrationError(t *testing.T) {
 
 		outcome := classifyMigrationError(os.ErrNotExist, true, migrationState{
 			currentVersion: 17, hasVersion: true, sourceCount: 16, sourceMax: 16,
-		})
+		}, migrationRedactor{})
 		assert.Nil(t, outcome.err)
 		assert.Equal(t, obs.LevelWarn, outcome.level)
 	})
@@ -1462,7 +1466,7 @@ func TestClassifyMigrationError(t *testing.T) {
 	t.Run("ErrDirty returns wrapped sentinel with version", func(t *testing.T) {
 		t.Parallel()
 
-		outcome := classifyMigrationError(migrate.ErrDirty{Version: 42}, false, migrationState{})
+		outcome := classifyMigrationError(migrate.ErrDirty{Version: 42}, false, migrationState{}, migrationRedactor{})
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, ErrMigrationDirty)
 		assert.Contains(t, outcome.err.Error(), "42")
@@ -1470,13 +1474,18 @@ func TestClassifyMigrationError(t *testing.T) {
 		assert.NotEmpty(t, outcome.fields)
 	})
 
-	t.Run("generic error returns wrapped error", func(t *testing.T) {
+	t.Run("generic error returns a sanitized error that no longer reaches the cause", func(t *testing.T) {
 		t.Parallel()
 
-		cause := errors.New("disk full")
-		outcome := classifyMigrationError(cause, false, migrationState{})
+		cause := errors.New("disk full at postgres://app:hunter2@db/ledger")
+		outcome := classifyMigrationError(cause, false, migrationState{}, newMigrationRedactor("postgres://app:hunter2@db/ledger"))
 		require.Error(t, outcome.err)
-		assert.ErrorIs(t, outcome.err, cause)
+		assert.NotErrorIs(t, outcome.err, cause)
+		assert.Contains(t, outcome.err.Error(), "migration failed: disk full")
+		assert.NotContains(t, outcome.err.Error(), "hunter2")
+
+		var sanitized *SanitizedError
+		assert.ErrorAs(t, outcome.err, &sanitized)
 		assert.Equal(t, obs.LevelError, outcome.level)
 	})
 }
@@ -1517,7 +1526,8 @@ func TestMigrationSourceStats(t *testing.T) {
 	t.Run("missing directory yields zero", func(t *testing.T) {
 		t.Parallel()
 
-		count, max := migrationSourceStats(filepath.Join(t.TempDir(), "does-not-exist"))
+		count, max, err := migrationSourceStats(os.DirFS(filepath.Join(t.TempDir(), "does-not-exist")), ".")
+		require.NoError(t, err)
 		assert.Equal(t, 0, count)
 		assert.Equal(t, uint(0), max)
 	})
@@ -1525,7 +1535,8 @@ func TestMigrationSourceStats(t *testing.T) {
 	t.Run("empty directory yields zero", func(t *testing.T) {
 		t.Parallel()
 
-		count, max := migrationSourceStats(t.TempDir())
+		count, max, err := migrationSourceStats(os.DirFS(t.TempDir()), ".")
+		require.NoError(t, err)
 		assert.Equal(t, 0, count)
 		assert.Equal(t, uint(0), max)
 	})
@@ -1539,7 +1550,8 @@ func TestMigrationSourceStats(t *testing.T) {
 			"000016_p.up.sql", "000016_p.down.sql",
 			"000010_j.up.sql", "000010_j.down.sql",
 		)
-		count, max := migrationSourceStats(dir)
+		count, max, err := migrationSourceStats(os.DirFS(dir), ".")
+		require.NoError(t, err)
 		assert.Equal(t, 4, count, "down.sql and duplicates must not inflate the count")
 		assert.Equal(t, uint(16), max)
 	})
@@ -1554,9 +1566,23 @@ func TestMigrationSourceStats(t *testing.T) {
 			"abc_nonnumeric.up.sql",      // ParseUint fails -> skipped
 			"000007_ok.up.sql",           // the only valid one
 		)
-		count, max := migrationSourceStats(dir)
+		count, max, err := migrationSourceStats(os.DirFS(dir), ".")
+		require.NoError(t, err)
 		assert.Equal(t, 1, count)
 		assert.Equal(t, uint(7), max)
+	})
+
+	t.Run("counts every up file golang-migrate accepts, whatever the extension", func(t *testing.T) {
+		t.Parallel()
+
+		dir := writeFiles(t,
+			"000003_c.up.pgsql", "000003_c.down.pgsql",
+			"000004_d.up.sql",
+		)
+		count, max, err := migrationSourceStats(os.DirFS(dir), ".")
+		require.NoError(t, err)
+		assert.Equal(t, 2, count, "the pre-dial check must agree with the source driver")
+		assert.Equal(t, uint(4), max)
 	})
 }
 
@@ -1576,45 +1602,34 @@ func (f fakeVersionReader) Version() (uint, bool, error) { return f.version, f.d
 func TestInspectMigrationState(t *testing.T) {
 	t.Parallel()
 
-	dirWith := func(t *testing.T, names ...string) string {
-		t.Helper()
+	run := migrationRun{sourceLabel: "/srv/migrations", sourceCount: 2, sourceMax: 2}
 
-		dir := t.TempDir()
-		for _, n := range names {
-			require.NoError(t, os.WriteFile(filepath.Join(dir, n), []byte("-- noop"), 0o600))
-		}
-
-		return dir
-	}
-
-	t.Run("reads version and source stats", func(t *testing.T) {
+	t.Run("reads version and carries the run's source stats", func(t *testing.T) {
 		t.Parallel()
 
-		dir := dirWith(t, "000001_a.up.sql", "000002_b.up.sql")
-		state := inspectMigrationState(fakeVersionReader{version: 17}, dir)
+		state := inspectMigrationState(fakeVersionReader{version: 17}, run)
 
 		assert.True(t, state.hasVersion)
 		assert.Equal(t, uint(17), state.currentVersion)
 		assert.Equal(t, 2, state.sourceCount)
 		assert.Equal(t, uint(2), state.sourceMax)
-		assert.Equal(t, dir, state.sourcePath)
+		assert.Equal(t, "/srv/migrations", state.sourcePath)
 	})
 
 	t.Run("Version error leaves hasVersion false", func(t *testing.T) {
 		t.Parallel()
 
-		dir := dirWith(t, "000001_a.up.sql")
-		state := inspectMigrationState(fakeVersionReader{err: migrate.ErrNilVersion}, dir)
+		state := inspectMigrationState(fakeVersionReader{err: migrate.ErrNilVersion}, run)
 
 		assert.False(t, state.hasVersion)
 		assert.Equal(t, uint(0), state.currentVersion)
-		assert.Equal(t, 1, state.sourceCount)
+		assert.Equal(t, 2, state.sourceCount)
 	})
 
 	t.Run("nil reader leaves hasVersion false", func(t *testing.T) {
 		t.Parallel()
 
-		state := inspectMigrationState(nil, t.TempDir())
+		state := inspectMigrationState(nil, migrationRun{})
 		assert.False(t, state.hasVersion)
 		assert.Equal(t, 0, state.sourceCount)
 	})
@@ -1720,6 +1735,36 @@ func TestValidateDSN(t *testing.T) {
 
 		assert.NoError(t, validateDSN(""))
 	})
+}
+
+// TestNew_MalformedDSNNeverEchoesPassword: url.Parse's error prints the whole
+// raw URL, so the config error must not carry it.
+func TestNew_MalformedDSNNeverEchoesPassword(t *testing.T) {
+	t.Parallel()
+
+	const valid = "postgres://app:pw@127.0.0.1:1/ledger?sslmode=require"
+
+	cases := map[string]Config{
+		"primary, bad escape": {PrimaryDSN: "postgres://app:S3cr%zzPw@127.0.0.1:1/ledger?sslmode=require"},
+		"primary, raw space":  {PrimaryDSN: "postgres://app:S3cr zzPw@127.0.0.1:1/ledger?sslmode=require"},
+		"replica, bad escape": {PrimaryDSN: valid, ReplicaDSN: "postgresql://app:S3cr%zzPw@127.0.0.1:2/ledger?sslmode=require"},
+		"replica, bad port":   {PrimaryDSN: valid, ReplicaDSN: "postgres://app:S3crzzPw@127.0.0.1:port/ledger"},
+		"primary, bad IPv6":   {PrimaryDSN: "postgres://app:S3crzzPw@[::1/ledger"},
+	}
+
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := New(cfg)
+			require.ErrorIs(t, err, ErrInvalidConfig)
+			assert.Contains(t, err.Error(), "malformed URL")
+
+			for _, fragment := range []string{"S3cr", "zzPw", "%zz"} {
+				assert.NotContains(t, err.Error(), fragment)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1883,7 +1928,7 @@ func TestMigratorUpBlocksPlaintextBeforeOpen(t *testing.T) {
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) {
 			return nil, nil
 		},
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error {
+		func(context.Context, *sql.DB, migrationRun) error {
 			return nil
 		},
 	)
@@ -1917,7 +1962,7 @@ func TestMigratorUpAllowsSecureDSN(t *testing.T) {
 		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) {
 			return nil, nil
 		},
-		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error {
+		func(context.Context, *sql.DB, migrationRun) error {
 			migrateCalled = true
 			return nil
 		},
@@ -1926,7 +1971,7 @@ func TestMigratorUpAllowsSecureDSN(t *testing.T) {
 	m, err := NewMigrator(MigrationConfig{
 		PrimaryDSN:     "postgres://localhost/db?sslmode=require",
 		DatabaseName:   "ledger",
-		MigrationsPath: "/migrations",
+		MigrationsPath: writeMigrationDir(t, "000001_init.up.sql"),
 		Logger:         obs.Nop(),
 	})
 	require.NoError(t, err)
@@ -1949,7 +1994,7 @@ func TestCloseDefensiveCleanup(t *testing.T) {
 			t,
 			func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
 			func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return resolver, nil },
-			func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
+			func(context.Context, *sql.DB, migrationRun) error { return nil },
 		)
 
 		client, err := New(validConfig())

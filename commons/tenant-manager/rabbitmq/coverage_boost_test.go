@@ -146,7 +146,7 @@ func TestSwapRabbitMQConnection_UpdatesCache(t *testing.T) {
 	m.lastAccessed["tenant-swap"] = time.Now().Add(-1 * time.Hour)
 
 	freshKey := "amqp://user:pass@newhost:5672//"
-	m.swapRabbitMQConnection("tenant-swap", nil, freshKey)
+	m.swapRabbitMQConnection("tenant-swap", nil, freshKey, vhostClaim{broker: "newhost:5672", vhost: "/"})
 
 	m.mu.RLock()
 	cachedURI := m.cachedURIs["tenant-swap"]
@@ -329,7 +329,7 @@ func TestDetectAndReconnectRabbitMQ_NilRabbitConfig(t *testing.T) {
 
 	// Should not panic
 	assert.NotPanics(t, func() {
-		m.detectAndReconnectRabbitMQ("tenant-1", cfg)
+		m.detectAndReconnectRabbitMQ(context.Background(), "tenant-1", cfg)
 	})
 }
 
@@ -353,7 +353,7 @@ func TestDetectAndReconnectRabbitMQ_NoCachedURI(t *testing.T) {
 
 	// No cached URI for this tenant → should return early without panic
 	assert.NotPanics(t, func() {
-		m.detectAndReconnectRabbitMQ("tenant-nocache", cfg)
+		m.detectAndReconnectRabbitMQ(context.Background(), "tenant-nocache", cfg)
 	})
 }
 
@@ -382,7 +382,7 @@ func TestDetectAndReconnectRabbitMQ_ConfigUnchanged(t *testing.T) {
 
 	// Config unchanged → should return early, no reconnection attempt
 	assert.NotPanics(t, func() {
-		m.detectAndReconnectRabbitMQ("tenant-same", cfg)
+		m.detectAndReconnectRabbitMQ(context.Background(), "tenant-same", cfg)
 	})
 
 	// Connection should still exist

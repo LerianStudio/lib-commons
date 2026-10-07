@@ -48,7 +48,10 @@ type Manager struct {
 
 	mu             sync.RWMutex
 	connections    map[string]*amqp.Connection
-	cachedURIs     map[string]string // tenantID -> last known connection URI (for change detection)
+	cachedURIs     map[string]string     // tenantID -> last known connection URI (for change detection)
+	vhosts         map[string]vhostClaim // tenantID -> broker vhost of the cached connection
+	exclusiveVHost bool                  // refuse a tenant whose vhost is not configured for it alone
+	census         vhostCensus           // tenant -> configured vhost (WithExclusiveVHosts); has its own lock
 	closed         bool
 	maxConnections int                  // soft limit for pool size (0 = unlimited)
 	idleTimeout    time.Duration        // how long before a connection is eligible for eviction
@@ -138,6 +141,7 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 		logger:                   logcompat.New(nil),
 		connections:              make(map[string]*amqp.Connection),
 		cachedURIs:               make(map[string]string),
+		vhosts:                   make(map[string]vhostClaim),
 		lastAccessed:             make(map[string]time.Time),
 		lastConnectionsCheck:     make(map[string]time.Time),
 		connectionsCheckInterval: defaultConnectionsCheckInterval,
@@ -280,6 +284,22 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 		return nil, core.ErrServiceNotConfigured
 	}
 
+	// Refuse a vhost that is not this tenant's alone before dialing
+	// (WithExclusiveVHosts).
+	claim := claimFor(rabbitConfig)
+
+	if refused := p.admitVHost(ctx, tenantID, claim); refused != nil {
+		logger.Errorf("refusing RabbitMQ connection for tenant %s: %v", tenantID, refused)
+
+		if errors.Is(refused, core.ErrVHostConflict) {
+			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "RabbitMQ vhost not exclusive to the tenant", refused)
+		} else {
+			libOpentelemetry.HandleSpanError(span, "RabbitMQ vhost census unavailable", refused)
+		}
+
+		return nil, refused
+	}
+
 	// Resolve TLS: per-tenant config takes precedence over global WithTLS() setting.
 	useTLS := p.resolveTLS(rabbitConfig)
 	uri := buildRabbitMQURI(rabbitConfig, useTLS)
@@ -295,6 +315,30 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 	}
 
 	// Step 3: Re-acquire lock — evict LRU, cache connection (with race-loss check).
+	stored, err := p.storeConnection(tenantID, conn, connectionKey(uri, rabbitConfig.TLSCAFile), claim, logger)
+	if err != nil {
+		if errors.Is(err, core.ErrVHostConflict) {
+			logger.Errorf("refusing RabbitMQ connection: %v", err)
+			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "RabbitMQ vhost held by another tenant", err)
+		}
+
+		return nil, err
+	}
+
+	if stored == conn {
+		logger.Infof("RabbitMQ connection created: tenant=%s, vhost=%s", tenantID, rabbitConfig.VHost)
+	}
+
+	return stored, nil
+}
+
+// storeConnection caches conn, freshly dialed for tenantID, under the write
+// lock. It discards conn and returns ErrManagerClosed when the manager closed
+// during the dial, returns the connection another goroutine cached for the
+// tenant meanwhile, and refuses with ErrVHostConflict when another tenant
+// claimed the vhost meanwhile (WithExclusiveVHosts).
+// Caller must NOT hold p.mu.
+func (p *Manager) storeConnection(tenantID string, conn *amqp.Connection, key string, claim vhostClaim, logger *logcompat.Logger) (*amqp.Connection, error) {
 	p.mu.Lock()
 
 	// If manager was closed while we were dialing, discard the new connection.
@@ -321,25 +365,39 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 		return cached, nil
 	}
 
+	// Another tenant may have claimed the vhost while we were dialing.
+	if conflict := p.vhostConflict(tenantID, claim); conflict != nil {
+		p.mu.Unlock()
+
+		if closeErr := conn.Close(); closeErr != nil {
+			logger.Errorf("failed to close refused RabbitMQ connection for tenant %s: %v", tenantID, closeErr)
+		}
+
+		return nil, conflict
+	}
+
 	// Evict least recently used connection if pool is full
 	p.evictLRU(logger.Base())
 
-	// Cache our new connection and its URI for config change detection.
-	// Include TLSCAFile in the cached key so CA file changes trigger reconnection.
-	cachedKey := uri
-	if rabbitConfig.TLSCAFile != "" {
-		cachedKey += "|ca=" + rabbitConfig.TLSCAFile
-	}
-
 	p.connections[tenantID] = conn
-	p.cachedURIs[tenantID] = cachedKey
+	p.cachedURIs[tenantID] = key
+	p.vhosts[tenantID] = claim
 	p.lastAccessed[tenantID] = time.Now()
 
 	p.mu.Unlock()
 
-	logger.Infof("RabbitMQ connection created: tenant=%s, vhost=%s", tenantID, rabbitConfig.VHost)
-
 	return conn, nil
+}
+
+// connectionKey is the cached change-detection key for a connection: its URI
+// plus the TLS CA file path, which the URI does not carry, so a CA file change
+// also triggers reconnection.
+func connectionKey(uri, tlsCAFile string) string {
+	if tlsCAFile == "" {
+		return uri
+	}
+
+	return uri + "|ca=" + tlsCAFile
 }
 
 // evictLRU removes the least recently used idle connection when the pool reaches the
@@ -368,6 +426,7 @@ func (p *Manager) evictLRU(logger obs.Logger) {
 
 		delete(p.connections, candidateID)
 		delete(p.cachedURIs, candidateID)
+		delete(p.vhosts, candidateID)
 		delete(p.lastAccessed, candidateID)
 		delete(p.lastConnectionsCheck, candidateID)
 	}
@@ -413,6 +472,7 @@ func (p *Manager) Close(_ context.Context) error {
 
 		delete(p.connections, tenantID)
 		delete(p.cachedURIs, tenantID)
+		delete(p.vhosts, tenantID)
 		delete(p.lastAccessed, tenantID)
 		delete(p.lastConnectionsCheck, tenantID)
 	}
@@ -444,6 +504,7 @@ func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 
 	delete(p.connections, tenantID)
 	delete(p.cachedURIs, tenantID)
+	delete(p.vhosts, tenantID)
 	delete(p.lastAccessed, tenantID)
 	delete(p.lastConnectionsCheck, tenantID)
 
@@ -497,7 +558,7 @@ func (p *Manager) revalidatePoolSettings(tenantID string) {
 	}
 
 	// Detect connection-level config changes and trigger graceful reconnection.
-	p.detectAndReconnectRabbitMQ(tenantID, config)
+	p.detectAndReconnectRabbitMQ(revalidateCtx, tenantID, config)
 }
 
 // detectAndReconnectRabbitMQ compares the fresh RabbitMQ config against the cached
@@ -507,9 +568,23 @@ func (p *Manager) revalidatePoolSettings(tenantID string) {
 // The reconnection is graceful: the new connection is established first, and the
 // old one is replaced and closed only after the new one is ready. If the new
 // connection fails, the old one is kept to avoid breaking existing tenants.
-func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.TenantConfig) {
+//
+// With WithExclusiveVHosts, the fresh config's vhost goes through the same
+// admission as a new connection (see WithExclusiveVHosts). A refusal, or a
+// census that cannot be read, keeps the current connection without
+// reconnecting; a tenant that holds its vhost is never closed because the
+// configuration names that vhost for another tenant too.
+func (p *Manager) detectAndReconnectRabbitMQ(ctx context.Context, tenantID string, config *core.TenantConfig) {
 	rabbitConfig := resolveRabbitMQConfig(config, p.module)
 	if rabbitConfig == nil {
+		return
+	}
+
+	claim := claimFor(rabbitConfig)
+
+	if refused := p.admitVHost(ctx, tenantID, claim); refused != nil {
+		p.logRefusedRevalidation(tenantID, refused)
+
 		return
 	}
 
@@ -527,13 +602,9 @@ func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.Tenan
 
 	p.mu.RUnlock()
 
-	// The URI covers host, port, vhost, credentials, and TLS scheme. The TLS CA
-	// file path is not part of the URI, so we compare it separately by appending
-	// a sentinel to the cached key. This way, a CA file change triggers reconnection.
-	freshKey := freshURI
-	if rabbitConfig.TLSCAFile != "" {
-		freshKey += "|ca=" + rabbitConfig.TLSCAFile
-	}
+	// The URI covers host, port, vhost, credentials, and TLS scheme; the key
+	// adds the TLS CA file path so a CA file change triggers reconnection.
+	freshKey := connectionKey(freshURI, rabbitConfig.TLSCAFile)
 
 	if cachedURI == freshKey {
 		return // no connection-level change
@@ -558,7 +629,24 @@ func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.Tenan
 		return
 	}
 
-	p.swapRabbitMQConnection(tenantID, newConn, freshKey)
+	p.swapRabbitMQConnection(tenantID, newConn, freshKey, claim)
+}
+
+// logRefusedRevalidation logs a revalidation that admitVHost refused: ERROR for
+// a vhost that is not the tenant's alone, WARN for a census that cannot be
+// read. The tenant keeps its current connection either way.
+func (p *Manager) logRefusedRevalidation(tenantID string, refused error) {
+	if p.logger == nil {
+		return
+	}
+
+	if errors.Is(refused, core.ErrVHostConflict) {
+		p.logger.Errorf("config change: refusing RabbitMQ reconnect for tenant %s, keeping old connection: %v", tenantID, refused)
+
+		return
+	}
+
+	p.logger.Warnf("tenant %s: cannot confirm its RabbitMQ vhost is exclusive, keeping the current connection: %v", tenantID, refused)
 }
 
 // canStoreRabbitMQConnection acquires the write lock and checks whether the
@@ -588,14 +676,28 @@ func (p *Manager) canStoreRabbitMQConnection(tenantID string, newConn *amqp.Conn
 }
 
 // swapRabbitMQConnection replaces the cached connection with newConn under
-// write lock and closes the old connection after releasing the lock.
+// write lock and closes the old connection after releasing the lock. When
+// another tenant claimed the new vhost while newConn was dialing, it keeps the
+// old connection and discards newConn instead.
 // Caller must NOT hold p.mu.
-func (p *Manager) swapRabbitMQConnection(tenantID string, newConn *amqp.Connection, freshKey string) {
+func (p *Manager) swapRabbitMQConnection(tenantID string, newConn *amqp.Connection, freshKey string, claim vhostClaim) {
 	p.mu.Lock()
+
+	if conflict := p.vhostConflict(tenantID, claim); conflict != nil {
+		p.mu.Unlock()
+		p.closeRabbitMQConn(newConn, "config change: failed to close refused RabbitMQ connection for tenant %s", tenantID)
+
+		if p.logger != nil {
+			p.logger.Errorf("config change: refusing RabbitMQ reconnect for tenant %s, keeping old connection: %v", tenantID, conflict)
+		}
+
+		return
+	}
 
 	oldConn := p.connections[tenantID]
 	p.connections[tenantID] = newConn
 	p.cachedURIs[tenantID] = freshKey
+	p.vhosts[tenantID] = claim
 	p.lastAccessed[tenantID] = time.Now()
 
 	p.mu.Unlock()
