@@ -76,7 +76,9 @@ const defaultVHost = "/"
 // caches it for 30s) and rebuilt lazily by the first caller that finds it
 // stale, one rebuild at a time; every caller waits for it on its own context.
 // A rebuild costs one active-tenants call plus one config call per active
-// tenant, at most eight at once. A tenant whose config the census cannot read
+// tenant, at most eight at once, and must finish within 30 seconds: about 240
+// seconds of config-call time, so 5,000 active tenants at 50ms a config call
+// already exceed it and no census is built. A tenant whose config the census cannot read
 // is left out of it with a WARN; the holder layer and the connecting tenant's
 // own fresh config still keep it off another tenant's vhost in this manager.
 // A rebuild fails when the active tenants cannot be listed, the Tenant
@@ -348,23 +350,7 @@ func (p *Manager) vhostCensus(ctx context.Context) (map[string]vhostClaim, error
 	}
 
 	rebuilt := c.group.DoChan(censusKey, func() (any, error) {
-		buildCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), censusBuildTimeout)
-		defer cancel()
-
-		claims, err := p.buildVHostCensus(buildCtx)
-
-		c.mu.Lock()
-		defer c.mu.Unlock()
-
-		if err != nil {
-			c.retryAt, c.lastErr = time.Now().Add(censusRetryBackoff), err
-
-			return nil, err
-		}
-
-		c.claims, c.builtAt, c.retryAt, c.lastErr = claims, time.Now(), time.Time{}, nil
-
-		return claims, nil
+		return p.rebuildVHostCensus(ctx)
 	})
 
 	select {
@@ -382,6 +368,54 @@ func (p *Manager) vhostCensus(ctx context.Context) (map[string]vhostClaim, error
 
 		return censusFallback(last, res.Err)
 	}
+}
+
+// rebuildVHostCensus is the body of the single in-flight census rebuild. It
+// first rechecks the census under the lock: a caller that read a stale census
+// can reach it only after another rebuild finished, and then reuses that census,
+// or, when that rebuild failed, honours its backoff, instead of calling the
+// Tenant Manager again.
+func (p *Manager) rebuildVHostCensus(ctx context.Context) (map[string]vhostClaim, error) {
+	c := &p.census
+
+	c.mu.Lock()
+
+	switch {
+	case c.claims != nil && time.Since(c.builtAt) < p.censusInterval():
+		claims := c.claims
+		c.mu.Unlock()
+
+		return claims, nil
+	case time.Now().Before(c.retryAt):
+		claims, lastErr := c.claims, c.lastErr
+		c.mu.Unlock()
+
+		if claims != nil {
+			return claims, nil
+		}
+
+		return nil, lastErr
+	}
+
+	c.mu.Unlock()
+
+	buildCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), censusBuildTimeout)
+	defer cancel()
+
+	claims, err := p.buildVHostCensus(buildCtx)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err != nil {
+		c.retryAt, c.lastErr = time.Now().Add(censusRetryBackoff), err
+
+		return nil, err
+	}
+
+	c.claims, c.builtAt, c.retryAt, c.lastErr = claims, time.Now(), time.Time{}, nil
+
+	return claims, nil
 }
 
 // censusFallback returns last when there is one, and otherwise

@@ -976,6 +976,52 @@ func TestExclusiveVHosts_CensusCachedWithinInterval(t *testing.T) {
 	assert.Equal(t, int32(1), dir.activeHits.Load())
 }
 
+// TestExclusiveVHosts_RebuildRechecksCensusState covers a caller that read a
+// stale census, was descheduled while another caller's rebuild finished, and
+// only then started its own: that late rebuild reuses the fresh census, or
+// honours the backoff a failed rebuild set, instead of calling the Tenant
+// Manager again.
+func TestExclusiveVHosts_RebuildRechecksCensusState(t *testing.T) {
+	t.Parallel()
+
+	own := core.RabbitMQConfig{Host: unreachableHost, Port: unreachablePort, VHost: "own"}
+
+	t.Run("fresh census", func(t *testing.T) {
+		t.Parallel()
+
+		dir, c := newTenantDirectory(t, map[string]core.RabbitMQConfig{vhostHolder: own})
+		m := NewManager(c, "ledger", WithLogger(testutil.NewMockLogger()),
+			WithExclusiveVHosts(), WithConnectionsCheckInterval(longInterval))
+
+		built, err := m.vhostCensus(context.Background())
+		require.NoError(t, err)
+
+		late, err := m.rebuildVHostCensus(context.Background())
+		require.NoError(t, err)
+
+		assert.Equal(t, built, late)
+		assert.Equal(t, int32(1), dir.activeHits.Load())
+	})
+
+	t.Run("backing off", func(t *testing.T) {
+		t.Parallel()
+
+		dir, c := newTenantDirectory(t, map[string]core.RabbitMQConfig{vhostHolder: own})
+		dir.setActiveDown(true)
+
+		m := NewManager(c, "ledger", WithLogger(testutil.NewMockLogger()),
+			WithExclusiveVHosts(), WithConnectionsCheckInterval(alwaysStale))
+
+		_, err := m.vhostCensus(context.Background())
+		require.ErrorIs(t, err, core.ErrVHostCensusUnavailable)
+
+		_, err = m.rebuildVHostCensus(context.Background())
+		require.Error(t, err)
+
+		assert.Equal(t, int32(1), dir.activeHits.Load())
+	})
+}
+
 // TestExclusiveVHosts_CensusWaitHonoursCallerContext covers a stalled Tenant
 // Manager: a caller whose context ends stops waiting for the census.
 func TestExclusiveVHosts_CensusWaitHonoursCallerContext(t *testing.T) {
