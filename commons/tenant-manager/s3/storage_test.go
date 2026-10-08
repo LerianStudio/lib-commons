@@ -38,6 +38,7 @@ type fakeObjectAPI struct {
 	lastHeadKey        string
 	lastBucket         string
 	lastPutIfNoneMatch string
+	lastPutSeekable    bool
 	lastListPrefix     string
 
 	putErr    error
@@ -83,6 +84,7 @@ func (f *fakeObjectAPI) PutObject(_ context.Context, in *awss3.PutObjectInput, _
 	f.lastBucket = deref(in.Bucket)
 	f.lastPutKey = deref(in.Key)
 	f.lastPutIfNoneMatch = deref(in.IfNoneMatch)
+	_, f.lastPutSeekable = in.Body.(io.Seeker)
 
 	if f.putErr != nil {
 		return nil, f.putErr
@@ -499,6 +501,32 @@ func TestStorage_Upload_NilBody(t *testing.T) {
 	err = storage.Upload(multiTenantCtx("org_01ABC"), "x.xsd", nil, "application/xml")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "body")
+}
+
+// S3 answers 411 MissingContentLength to a PutObject whose body cannot seek, so a
+// stream (a hashing io.TeeReader, say) must reach the client buffered.
+func TestStorage_Writes_HandS3ASeekableBody(t *testing.T) {
+	t.Parallel()
+
+	writes := map[string]func(Storage, context.Context, string, io.Reader, string) error{
+		"Upload": Storage.Upload,
+		"Create": Storage.Create,
+	}
+	for name, write := range writes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fake := newFakeObjectAPI()
+			storage, err := NewStorage(fake, testBucket)
+			require.NoError(t, err)
+
+			stream := io.MultiReader(bytes.NewReader([]byte("payload")))
+			require.NoError(t, write(storage, context.Background(), "k", stream, "text/plain"))
+
+			assert.True(t, fake.lastPutSeekable)
+			assert.Equal(t, []byte("payload"), fake.objects["k"])
+		})
+	}
 }
 
 func TestStorage_Create_FreshKey_SetsIfNoneMatchAndStores(t *testing.T) {
