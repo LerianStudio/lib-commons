@@ -129,13 +129,14 @@ func TestRetainedStorage_CreateRetained_UsesConditionalComplianceWriteAndReturns
 	metadata, err := store.CreateRetained(
 		multiTenantCtx("org_01ABC"),
 		"contracts/123/signed-ccb.pdf",
-		bytes.NewReader([]byte("payload")),
+		io.MultiReader(bytes.NewReader([]byte("payload"))),
 		"application/pdf",
 		Retention{Mode: RetentionModeCompliance, RetainUntil: retainUntil},
 	)
 	require.NoError(t, err)
 
 	require.NotNil(t, fake.putInput)
+	assert.Implements(t, (*io.Seeker)(nil), fake.putInput.Body, "S3 refuses an unseekable body with 411")
 	assert.Equal(t, "retained-bucket", aws.ToString(fake.putInput.Bucket))
 	assert.Equal(t, "org_01ABC/contracts/123/signed-ccb.pdf", aws.ToString(fake.putInput.Key))
 	assert.Equal(t, "*", aws.ToString(fake.putInput.IfNoneMatch))
