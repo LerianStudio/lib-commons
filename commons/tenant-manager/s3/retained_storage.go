@@ -218,7 +218,7 @@ func (s *retainedStorage) CreateRetained(
 		return ObjectMetadata{}, newRetainedStorageError("create", nil, err)
 	}
 
-	body, release, err := seekableBody(body)
+	body, release, err := seekableBody(ctx, body)
 	if err != nil {
 		return ObjectMetadata{}, newRetainedStorageError("create", nil, err)
 	}

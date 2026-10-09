@@ -126,7 +126,7 @@ func (s *storage) Upload(ctx context.Context, key string, body io.Reader, conten
 		return fmt.Errorf("resolve storage key: %w", err)
 	}
 
-	body, release, err := seekableBody(body)
+	body, release, err := seekableBody(ctx, body)
 	if err != nil {
 		return fmt.Errorf("upload object %q: %w", resolvedKey, err)
 	}
@@ -166,7 +166,7 @@ func (s *storage) Create(ctx context.Context, key string, body io.Reader, conten
 		return fmt.Errorf("resolve storage key: %w", err)
 	}
 
-	body, release, err := seekableBody(body)
+	body, release, err := seekableBody(ctx, body)
 	if err != nil {
 		return fmt.Errorf("create object %q: %w", resolvedKey, err)
 	}
