@@ -141,6 +141,13 @@ func TestCurrentEnv(t *testing.T) {
 					t.Errorf("CurrentEnv() error = %q, want substring %q", err.Error(), tt.errContains)
 				}
 
+				// Every refusal names the full accepted set.
+				for _, accepted := range []string{EnvDevelopment, EnvStaging, EnvProduction} {
+					if !strings.Contains(err.Error(), `"`+accepted+`"`) {
+						t.Errorf("CurrentEnv() error = %q, want it to list %q", err.Error(), accepted)
+					}
+				}
+
 				return
 			}
 
