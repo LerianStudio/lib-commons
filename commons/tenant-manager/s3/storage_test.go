@@ -39,6 +39,7 @@ type fakeObjectAPI struct {
 	lastBucket         string
 	lastPutIfNoneMatch string
 	lastPutSeekable    bool
+	lastPutBody        io.Reader
 	lastListPrefix     string
 
 	putErr    error
@@ -85,6 +86,7 @@ func (f *fakeObjectAPI) PutObject(_ context.Context, in *awss3.PutObjectInput, _
 	f.lastPutKey = deref(in.Key)
 	f.lastPutIfNoneMatch = deref(in.IfNoneMatch)
 	_, f.lastPutSeekable = in.Body.(io.Seeker)
+	f.lastPutBody = in.Body
 
 	if f.putErr != nil {
 		return nil, f.putErr

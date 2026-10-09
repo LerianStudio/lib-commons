@@ -218,10 +218,11 @@ func (s *retainedStorage) CreateRetained(
 		return ObjectMetadata{}, newRetainedStorageError("create", nil, err)
 	}
 
-	body, err = seekableBody(body)
+	body, release, err := seekableBody(body)
 	if err != nil {
 		return ObjectMetadata{}, newRetainedStorageError("create", nil, err)
 	}
+	defer release()
 
 	retainUntil := canonicalObjectLockTime(retention.RetainUntil)
 
