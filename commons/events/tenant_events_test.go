@@ -1,6 +1,9 @@
 package events
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestTenantEventsChannel(t *testing.T) {
 	tests := []struct {
@@ -19,6 +22,11 @@ func TestTenantEventsChannel(t *testing.T) {
 			want: "tenant-events:production:",
 		},
 		{
+			name: "development produces env-scoped channel",
+			env:  "development",
+			want: "tenant-events:development:",
+		},
+		{
 			// Documents that this function does NOT validate. Callers must
 			// validate the env upstream via commons.CurrentEnv() — passing
 			// an empty string here yields a malformed channel name.
@@ -35,6 +43,26 @@ func TestTenantEventsChannel(t *testing.T) {
 				t.Errorf("TenantEventsChannel(%q) = %q, want %q", tt.env, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestTenantEventsChannel_EnvironmentsAreIsolated pins that no environment's
+// channel is a prefix of another's, so a development subscriber can never
+// receive staging or production events.
+func TestTenantEventsChannel_EnvironmentsAreIsolated(t *testing.T) {
+	envs := []string{"development", "staging", "production"}
+
+	for _, a := range envs {
+		for _, b := range envs {
+			if a == b {
+				continue
+			}
+
+			ca, cb := TenantEventsChannel(a), TenantEventsChannel(b)
+			if strings.HasPrefix(cb, ca) {
+				t.Errorf("channel %q is a prefix of %q", ca, cb)
+			}
+		}
 	}
 }
 

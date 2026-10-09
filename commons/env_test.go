@@ -36,6 +36,21 @@ func TestCurrentEnv(t *testing.T) {
 			want:           "production",
 		},
 		{
+			name:           "reads ENVIRONMENT_NAME for development",
+			environmentVar: "development",
+			want:           "development",
+		},
+		{
+			name:       "accepts ENV_NAME for development",
+			envNameVar: "development",
+			want:       "development",
+		},
+		{
+			name:           "case-insensitive development",
+			environmentVar: "Development",
+			want:           "development",
+		},
+		{
 			name:       "accepts ENV_NAME for production",
 			envNameVar: "production",
 			want:       "production",
@@ -97,6 +112,12 @@ func TestCurrentEnv(t *testing.T) {
 			errContains:    "invalid environment",
 		},
 		{
+			name:           "rejects unknown value 'develop' (must be full word)",
+			environmentVar: "develop",
+			wantErr:        true,
+			errContains:    "invalid environment",
+		},
+		{
 			name:           "rejects unknown value 'prod' (must be full word)",
 			environmentVar: "prod",
 			wantErr:        true,
@@ -118,6 +139,13 @@ func TestCurrentEnv(t *testing.T) {
 
 				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
 					t.Errorf("CurrentEnv() error = %q, want substring %q", err.Error(), tt.errContains)
+				}
+
+				// Every refusal names the full accepted set.
+				for _, accepted := range []string{EnvDevelopment, EnvStaging, EnvProduction} {
+					if !strings.Contains(err.Error(), `"`+accepted+`"`) {
+						t.Errorf("CurrentEnv() error = %q, want it to list %q", err.Error(), accepted)
+					}
 				}
 
 				return
