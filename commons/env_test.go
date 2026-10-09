@@ -36,6 +36,21 @@ func TestCurrentEnv(t *testing.T) {
 			want:           "production",
 		},
 		{
+			name:           "reads ENVIRONMENT_NAME for development",
+			environmentVar: "development",
+			want:           "development",
+		},
+		{
+			name:       "accepts ENV_NAME for development",
+			envNameVar: "development",
+			want:       "development",
+		},
+		{
+			name:           "case-insensitive development",
+			environmentVar: "Development",
+			want:           "development",
+		},
+		{
 			name:       "accepts ENV_NAME for production",
 			envNameVar: "production",
 			want:       "production",
@@ -93,6 +108,12 @@ func TestCurrentEnv(t *testing.T) {
 		{
 			name:           "rejects unknown value 'local'",
 			environmentVar: "local",
+			wantErr:        true,
+			errContains:    "invalid environment",
+		},
+		{
+			name:           "rejects unknown value 'develop' (must be full word)",
+			environmentVar: "develop",
 			wantErr:        true,
 			errContains:    "invalid environment",
 		},
