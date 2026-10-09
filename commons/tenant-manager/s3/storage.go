@@ -5,7 +5,6 @@
 package s3
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -127,10 +126,11 @@ func (s *storage) Upload(ctx context.Context, key string, body io.Reader, conten
 		return fmt.Errorf("resolve storage key: %w", err)
 	}
 
-	body, err = seekableBody(body)
+	body, release, err := seekableBody(body)
 	if err != nil {
 		return fmt.Errorf("upload object %q: %w", resolvedKey, err)
 	}
+	defer release()
 
 	input := &awss3.PutObjectInput{
 		Bucket: &s.bucket,
@@ -166,10 +166,11 @@ func (s *storage) Create(ctx context.Context, key string, body io.Reader, conten
 		return fmt.Errorf("resolve storage key: %w", err)
 	}
 
-	body, err = seekableBody(body)
+	body, release, err := seekableBody(body)
 	if err != nil {
 		return fmt.Errorf("create object %q: %w", resolvedKey, err)
 	}
+	defer release()
 
 	input := &awss3.PutObjectInput{
 		Bucket:      &s.bucket,
@@ -191,22 +192,6 @@ func (s *storage) Create(ctx context.Context, key string, body io.Reader, conten
 	}
 
 	return nil
-}
-
-// seekableBody returns body as an io.ReadSeeker: S3 refuses a PutObject without
-// Content-Length (HTTP 411), and the SDK learns the length only by seeking.
-// ponytail: an unseekable body is buffered whole; use the multipart uploader if objects outgrow memory.
-func seekableBody(body io.Reader) (io.Reader, error) {
-	if _, ok := body.(io.ReadSeeker); ok {
-		return body, nil
-	}
-
-	data, err := io.ReadAll(body)
-	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
-	}
-
-	return bytes.NewReader(data), nil
 }
 
 // Download returns a reader for the object at the tenant-resolved key.
