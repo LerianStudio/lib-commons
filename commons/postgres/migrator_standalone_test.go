@@ -425,6 +425,16 @@ func TestMigrationConfig_StandaloneValidation(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	t.Run("lock retries need no lock timeout: the session lock_timeout refuses too", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := base()
+		cfg.LockRetries = 3
+
+		_, err := NewMigrator(cfg)
+		require.NoError(t, err)
+	})
+
 	invalid := map[string]func(*MigrationConfig){
 		"fs with component":          func(c *MigrationConfig) { c.Component = "ledger" },
 		"fs path escaping the root":  func(c *MigrationConfig) { c.MigrationsPath = "../sql" },
@@ -437,7 +447,6 @@ func TestMigrationConfig_StandaloneValidation(t *testing.T) {
 		"negative lock retry backoff": func(c *MigrationConfig) {
 			c.LockTimeout, c.LockRetries, c.LockRetryBackoff = time.Second, 1, -time.Second
 		},
-		"lock retries without a lock timeout": func(c *MigrationConfig) { c.LockRetries = 3 },
 	}
 
 	for name, mutate := range invalid {

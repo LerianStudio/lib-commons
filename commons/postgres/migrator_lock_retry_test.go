@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -101,6 +102,36 @@ func TestLockedMigrationConn_Retries(t *testing.T) {
 
 		err := lock(context.Background(), db, migrationRun{lockTimeout: 20 * time.Millisecond})
 		require.ErrorIs(t, err, ErrMigrationLockTimeout)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a wait the session lock_timeout refused is retried, with no LockTimeout", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := lockDB(t, func(mock sqlmock.Sqlmock) {
+			mock.ExpectExec(advisoryLockQuery).WithArgs(lockRetryTestID).
+				WillReturnError(&pgconn.PgError{Code: "55P03", Message: "canceling statement due to lock timeout"})
+			expectGranted(mock)
+		})
+
+		run := migrationRun{lockRetries: 1, lockRetryBackoff: time.Millisecond}
+
+		require.NoError(t, lock(context.Background(), db, run))
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("a refusal by the session lock_timeout that exhausts retries is ErrMigrationLockTimeout", func(t *testing.T) {
+		t.Parallel()
+
+		refused := &pgconn.PgError{Code: "55P03", Message: "canceling statement due to lock timeout"}
+
+		db, mock := lockDB(t, func(mock sqlmock.Sqlmock) {
+			mock.ExpectExec(advisoryLockQuery).WithArgs(lockRetryTestID).WillReturnError(refused)
+		})
+
+		err := lock(context.Background(), db, migrationRun{})
+		require.ErrorIs(t, err, ErrMigrationLockTimeout)
+		assert.Contains(t, err.Error(), "1 attempts")
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
 

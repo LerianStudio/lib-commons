@@ -402,9 +402,9 @@ func TestIntegration_Migration_LockRetries(t *testing.T) {
 	migDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(migDir, "000001_t.up.sql"), []byte("CREATE TABLE t (id int);"), 0o644))
 
-	newMigrator := func(lockTimeout time.Duration, retries int, pause time.Duration) *Migrator {
+	newMigratorOn := func(primaryDSN string, lockTimeout time.Duration, retries int, pause time.Duration) *Migrator {
 		m, err := NewMigrator(MigrationConfig{
-			PrimaryDSN:       dsn,
+			PrimaryDSN:       primaryDSN,
 			DatabaseName:     "testdb",
 			MigrationsPath:   migDir,
 			LockTimeout:      lockTimeout,
@@ -415,6 +415,10 @@ func TestIntegration_Migration_LockRetries(t *testing.T) {
 		require.NoError(t, err)
 
 		return m
+	}
+
+	newMigrator := func(lockTimeout time.Duration, retries int, pause time.Duration) *Migrator {
+		return newMigratorOn(dsn, lockTimeout, retries, pause)
 	}
 
 	t.Run("retries run out", func(t *testing.T) {
@@ -463,6 +467,27 @@ func TestIntegration_Migration_LockRetries(t *testing.T) {
 		status, err := m.Status(ctx)
 		require.NoError(t, err)
 		assert.Equal(t, MigrationStatus{Version: 1, Applied: true}, status)
+	})
+
+	// The session's own lock_timeout (a DSN startup parameter, as consumers
+	// set it) refuses pg_advisory_lock with SQLSTATE 55P03 before LockTimeout
+	// cuts the wait: that refusal is the same contention and is retried.
+	t.Run("the session lock_timeout refusing the wait is retried", func(t *testing.T) {
+		hold()
+
+		released := make(chan struct{})
+		time.AfterFunc(time.Second, func() {
+			defer close(released)
+
+			_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", lockID)
+		})
+
+		bounded := dsn + "&options=-c%20lock_timeout%3D200ms"
+
+		m := newMigratorOn(bounded, time.Minute, 10, 100*time.Millisecond)
+		_, err := m.Status(ctx)
+		require.NoError(t, err, "Status waits out the holder through the session's refusals")
+		<-released
 	})
 }
 

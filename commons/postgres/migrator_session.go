@@ -317,12 +317,13 @@ func openMigrationSession(ctx context.Context, db *sql.DB, run migrationRun) (*m
 }
 
 // lockedMigrationConn dials a connection and waits on it for the migration
-// lock under migrationLockContext. After a wait LockTimeout cut it closes that
-// connection (the driver kills a connection whose query is cancelled), pauses
-// per migrationLockRetryPause holding none, and dials again, up to lockRetries
-// more times. Exhausted retries are ErrMigrationLockTimeout; a dial, wait or
-// pause cut by ctx (its deadline coming first, or a cancel) is ctx's error;
-// any other failure returns at once.
+// lock under migrationLockContext. After a wait LockTimeout cut, or the
+// session's lock_timeout refused, it closes that connection (the driver kills
+// a connection whose query is cancelled), pauses per migrationLockRetryPause
+// holding none, and dials again, up to lockRetries more times. Exhausted
+// retries are ErrMigrationLockTimeout; a dial, wait or pause cut by ctx (its
+// deadline coming first, or a cancel) is ctx's error; any other failure
+// returns at once.
 func lockedMigrationConn(ctx context.Context, db *sql.DB, lockID string, run migrationRun) (*sql.Conn, error) {
 	for retry := 0; ; retry++ {
 		conn, err := db.Conn(ctx)
@@ -342,7 +343,7 @@ func lockedMigrationConn(ctx context.Context, db *sql.DB, lockID string, run mig
 		}
 
 		if retry == run.lockRetries {
-			return nil, fmt.Errorf("%w: waited %s, %d attempts", ErrMigrationLockTimeout, run.lockTimeout, retry+1)
+			return nil, fmt.Errorf("%w: %d attempts", ErrMigrationLockTimeout, retry+1)
 		}
 
 		pause := migrationLockRetryPause(run.lockRetryBackoff, retry+1)
@@ -357,7 +358,9 @@ func lockedMigrationConn(ctx context.Context, db *sql.DB, lockID string, run mig
 }
 
 // waitMigrationLock is one bounded wait for the migration lock. A wait cut by
-// LockTimeout is ErrMigrationLockTimeout; one cut by ctx is ctx's error.
+// LockTimeout, or refused by the session's lock_timeout (SQLSTATE 55P03, as a
+// DSN startup parameter sets it), is ErrMigrationLockTimeout; one cut by ctx
+// is ctx's error.
 func waitMigrationLock(ctx context.Context, conn *sql.Conn, lockID string, run migrationRun) error {
 	lockCtx, cancel := migrationLockContext(ctx, run.lockTimeout)
 	defer cancel()
@@ -367,7 +370,7 @@ func waitMigrationLock(ctx context.Context, conn *sql.Conn, lockID string, run m
 			return fmt.Errorf("waiting for the migration lock: %w", ctxErr)
 		}
 
-		if lockCtx.Err() != nil {
+		if lockCtx.Err() != nil || matchesSQLState(err, lockNotAvailable) {
 			return ErrMigrationLockTimeout
 		}
 

@@ -83,15 +83,16 @@
 // had), and the caller's deadline yields context.DeadlineExceeded.
 //
 // A migration Job can race another one (a second replica, a re-run Job) for
-// the lock. LockRetries, opt-in and zero by default, makes a wait LockTimeout
-// cut wait again instead of failing the Job on the first contention: the
+// the lock. LockRetries, opt-in and zero by default, makes a lock wait that
+// ended without the lock wait again instead of failing the Job on the first
+// contention, whether LockTimeout cut it or the session's own lock_timeout
+// (SQLSTATE 55P03, as a DSN startup parameter sets it) refused it: the
 // migrator closes that connection, pauses LockRetryBackoff (doubled before
 // each next retry) holding no connection, logs a WARN, dials again and waits
-// another LockTimeout, up to LockRetries more times. Only a lock timeout is
-// retried: any other failure returns at once, a context that ends during a
-// wait or a pause stops the retrying with the context's error, and exhausted
-// retries return ErrMigrationLockTimeout. LockRetries requires LockTimeout
-// (ErrInvalidConfig otherwise). Status retries the same way.
+// again, up to LockRetries more times. Only a lock wait is retried: any other
+// failure returns at once, a context that ends during a wait or a pause stops
+// the retrying with the context's error, and exhausted retries return
+// ErrMigrationLockTimeout. Status retries the same way.
 //
 // Migrations apply one at a time, the context checked before each.
 // golang-migrate cannot interrupt a statement in flight, so a context that
