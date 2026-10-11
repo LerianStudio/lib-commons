@@ -133,7 +133,9 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 	return cors.New(config)
 }
 
-// AllowFullOptionsWithCORS set r.Use(WithCORS) and allow every request to use OPTION method.
+// AllowFullOptionsWithCORS set r.Use(WithCORS) and answers every OPTIONS request with 204.
+// OPTIONS is answered in middleware, not by an OPTIONS /* route: a catch-all route makes
+// Fiber answer 405 instead of 404 to any other method on an unknown path.
 func AllowFullOptionsWithCORS(app *fiber.App, opts ...CORSOption) {
 	if app == nil {
 		return
@@ -141,8 +143,12 @@ func AllowFullOptionsWithCORS(app *fiber.App, opts ...CORSOption) {
 
 	app.Use(WithCORS(opts...))
 
-	app.Options("/*", func(c fiber.Ctx) error {
-		return c.SendStatus(fiber.StatusNoContent)
+	app.Use(func(c fiber.Ctx) error {
+		if c.Method() == fiber.MethodOptions {
+			return c.SendStatus(fiber.StatusNoContent)
+		}
+
+		return c.Next()
 	})
 }
 
