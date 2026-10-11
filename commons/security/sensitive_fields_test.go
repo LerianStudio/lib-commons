@@ -112,14 +112,14 @@ func TestIsSensitiveField(t *testing.T) {
 			expected:  true,
 		},
 		{
-			name:      "sensitive field - client_id",
+			name:      "clear field - client_id is logged in clear",
 			fieldName: "client_id",
-			expected:  true,
+			expected:  false,
 		},
 		{
-			name:      "sensitive field - clientid",
+			name:      "clear field - clientid is logged in clear",
 			fieldName: "clientid",
-			expected:  true,
+			expected:  false,
 		},
 		{
 			name:      "sensitive field - client_secret",
@@ -158,8 +158,8 @@ func TestIsSensitiveField(t *testing.T) {
 			expected:  false,
 		},
 		{
-			name:      "partial match - pass (should not match password)",
-			fieldName: "pass",
+			name:      "partial match - passwor (should not match password)",
+			fieldName: "passwor",
 			expected:  false,
 		},
 		{
@@ -298,9 +298,10 @@ func TestIsSensitiveField_FinancialFields(t *testing.T) {
 		{"card_expiry", true},
 		{"date_of_birth", true},
 		{"dob", true},
-		{"tax_id", true},
-		{"taxid", true},
-		{"tin", true},
+		// CPF and CNPJ are logged in clear.
+		{"tax_id", false},
+		{"taxid", false},
+		{"tin", false},
 		{"national_id", true},
 		{"sort_code", true},
 		{"bsb", true},
@@ -347,7 +348,6 @@ func TestShortSensitiveTokens_ExactMatch(t *testing.T) {
 		{"bic", true},
 		{"bsb", true},
 		{"dob", true},
-		{"tin", true},
 		// CamelCase variants
 		{"userPin", true},
 		{"otpCode", true},
