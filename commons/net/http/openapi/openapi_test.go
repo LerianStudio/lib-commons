@@ -14,11 +14,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/net/http/problem"
+	obslog "github.com/LerianStudio/lib-observability/v4/log"
+	"github.com/LerianStudio/lib-observability/v4/middleware"
 	"github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/gofiber/fiber/v3"
@@ -1232,6 +1235,71 @@ func TestInstance_CarriesTheTraceID(t *testing.T) {
 				"an OpenTelemetry trace id, which encodes nothing about the tenant or the host")
 		})
 	}
+}
+
+// accessLine keeps the fields of the last line the access-log middleware wrote.
+type accessLine struct {
+	mu     sync.Mutex
+	fields map[string]any
+}
+
+func (l *accessLine) Log(_ context.Context, _ int, _ string, fields ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.fields = map[string]any{}
+	for _, field := range obslog.Fields(fields...) {
+		l.fields[field.Key] = field.Value
+	}
+}
+
+func (l *accessLine) last() map[string]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.fields
+}
+
+// TestAccessLine_LogsTheRefusalAndTheHiddenCause drives real requests through
+// lib-observability's access log and this wrapper: a 5xx body stays scrubbed
+// while the line carries the cause, and a schema 422 line carries the refusal.
+func TestAccessLine_LogsTheRefusalAndTheHiddenCause(t *testing.T) {
+	// NOT parallel: problem.Install mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	problem.Install()
+
+	line := &accessLine{}
+	app := fiber.New()
+	app.Use(middleware.WithHTTPLogging(middleware.WithCustomLogger(line)))
+
+	api := New(app, app.Group("/"), testConfig())
+	registerFailing(api, errors.New("pq: connection refused"))
+	registerEcho(api)
+
+	t.Run("a plain handler error", func(t *testing.T) {
+		status, body := doReq(t, app, http.MethodGet, "/fail")
+
+		assert.Equal(t, http.StatusInternalServerError, status)
+		assert.JSONEq(t, `{"title":"Internal Server Error","status":500,"detail":"internal error"}`, body)
+		assert.Equal(t, "unexpected error occurred: pq: connection refused", line.last()["error"])
+	})
+
+	t.Run("a schema refusal", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(`{"name":5}`))
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := app.Test(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+
+		got := line.last()
+		assert.Equal(t, http.StatusUnprocessableEntity, got["http_status_code"])
+		assert.Equal(t, "validation failed", got["problem_detail"])
+		assert.Equal(t, []string{"body.name: expected string value=5"}, got["problem_errors"])
+		assert.NotContains(t, got, "error", "a 4xx records no cause: its reason is the body")
+	})
 }
 
 // TestInstance_AbsentWithoutATrace proves that with no span on the request the

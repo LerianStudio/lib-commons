@@ -257,6 +257,63 @@ func TestMapError_NoUpstream_OmitsMember(t *testing.T) {
 	}
 }
 
+// TestMapError_KeepsTheCauseOffTheWireAtServerStatus proves a >=500 keeps the
+// mapped error as its cause, for the access line, with the body bytes unchanged.
+// A <500 shows its reason in the body and keeps none.
+func TestMapError_KeepsTheCauseOffTheWireAtServerStatus(t *testing.T) {
+	t.Parallel()
+
+	domainErr := errors.New("pq: deadlock detected")
+	codedAs := func(status int) func(string) int { return func(string) int { return status } }
+	coded := func(error) (string, string, bool) { return "GW-9001", "raw db cause", true }
+
+	tests := []struct {
+		name     string
+		err      error
+		codeOf   func(error) (string, string, bool)
+		statusOf func(string) int
+		cause    error
+		body     string
+	}{
+		{
+			name:     "unrecognized error",
+			err:      domainErr,
+			codeOf:   neverCodeOf,
+			statusOf: staticStatusOf,
+			cause:    domainErr,
+			body:     `{"type":"https://errors.lerian.studio/v1/GW-0000","title":"Internal Server Error","status":500,"detail":"internal error","code":"GW-0000"}`,
+		},
+		{
+			name:     "coded server error",
+			err:      domainErr,
+			codeOf:   coded,
+			statusOf: codedAs(http.StatusServiceUnavailable),
+			cause:    domainErr,
+			body:     `{"type":"https://errors.lerian.studio/v1/GW-9001","title":"Service Unavailable","status":503,"detail":"internal error","code":"GW-9001"}`,
+		},
+		{
+			name:     "coded client error",
+			err:      domainErr,
+			codeOf:   coded,
+			statusOf: codedAs(http.StatusNotFound),
+			body:     `{"type":"https://errors.lerian.studio/v1/GW-9001","title":"Not Found","status":404,"detail":"raw db cause","code":"GW-9001"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := mapErrDetail(t, MapError(tt.err, tt.codeOf, tt.statusOf, "GW-0000"))
+			assert.Equal(t, tt.cause, d.cause)
+
+			raw, err := json.Marshal(Body(d))
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.body, string(raw))
+		})
+	}
+}
+
 // TestMapError_Upstream_JSON is the wire-level proof for this seam: the body a
 // client receives has `upstream` as a top-level RFC 9457 extension member.
 func TestMapError_Upstream_JSON(t *testing.T) {
