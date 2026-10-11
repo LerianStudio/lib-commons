@@ -65,6 +65,8 @@
 //		MigrationsFS:     migrations,
 //		MigrationsPath:   "migrations",
 //		LockTimeout:      time.Minute,
+//		LockRetries:      5,
+//		LockRetryBackoff: 2 * time.Second,
 //		StatementTimeout: 10 * time.Minute,
 //		TLSPosture:       postgres.TLSPostureHardened,
 //	})
@@ -78,11 +80,24 @@
 // LockTimeout, when set, also bounds the lock wait and fails it with
 // ErrMigrationLockTimeout while another migrator holds the lock; zero leaves
 // the wait to the context alone (the unbounded wait golang-migrate always
-// had), and the caller's deadline yields context.DeadlineExceeded. Migrations
-// apply one at a time, the context checked before each. golang-migrate cannot
-// interrupt a statement in flight, so a context that ends mid-run stops the
-// run between migrations: the database is left clean at the last finished
-// version and Up's error names it and wraps the context's error.
+// had), and the caller's deadline yields context.DeadlineExceeded.
+//
+// A migration Job can race another one (a second replica, a re-run Job) for
+// the lock. LockRetries, opt-in and zero by default, makes a wait LockTimeout
+// cut wait again instead of failing the Job on the first contention: the
+// migrator closes that connection, pauses LockRetryBackoff (doubled before
+// each next retry) holding no connection, logs a WARN, dials again and waits
+// another LockTimeout, up to LockRetries more times. Only a lock timeout is
+// retried: any other failure returns at once, a context that ends during a
+// wait or a pause stops the retrying with the context's error, and exhausted
+// retries return ErrMigrationLockTimeout. LockRetries requires LockTimeout
+// (ErrInvalidConfig otherwise). Status retries the same way.
+//
+// Migrations apply one at a time, the context checked before each.
+// golang-migrate cannot interrupt a statement in flight, so a context that
+// ends mid-run stops the run between migrations: the database is left clean
+// at the last finished version and Up's error names it and wraps the
+// context's error.
 // StatementTimeout bounds one statement; a statement it cuts fails its
 // migration, which golang-migrate leaves dirty like any other failure.
 //

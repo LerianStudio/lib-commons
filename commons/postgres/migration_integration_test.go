@@ -365,6 +365,107 @@ func TestIntegration_Migration_LockWaitIsBounded(t *testing.T) {
 	require.NoError(t, newMigrator(0).Up(ctx), "once the lock is free, Up proceeds")
 }
 
+// TestIntegration_Migration_LockRetries: with LockRetries set, a migrator that
+// finds the lock held past LockTimeout pauses and waits again, so a second Job
+// racing the first one migrates once the holder lets go; retries that run out
+// still fail with ErrMigrationLockTimeout, and a cancel ends the retrying.
+func TestIntegration_Migration_LockRetries(t *testing.T) {
+	dsn, cleanup := setupPostgresContainer(t)
+	t.Cleanup(cleanup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	holder, err := sql.Open("pgx", dsn)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = holder.Close() })
+
+	conn, err := holder.Conn(ctx)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = conn.Close() })
+
+	lockID, err := database.GenerateAdvisoryLockId("testdb", "public", "schema_migrations")
+	require.NoError(t, err)
+
+	hold := func() {
+		_, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", lockID)
+		require.NoError(t, err)
+	}
+
+	release := func() {
+		_, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", lockID)
+		require.NoError(t, err)
+	}
+
+	migDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(migDir, "000001_t.up.sql"), []byte("CREATE TABLE t (id int);"), 0o644))
+
+	newMigrator := func(lockTimeout time.Duration, retries int, pause time.Duration) *Migrator {
+		m, err := NewMigrator(MigrationConfig{
+			PrimaryDSN:       dsn,
+			DatabaseName:     "testdb",
+			MigrationsPath:   migDir,
+			LockTimeout:      lockTimeout,
+			LockRetries:      retries,
+			LockRetryBackoff: pause,
+			Logger:           obs.Nop(),
+		})
+		require.NoError(t, err)
+
+		return m
+	}
+
+	t.Run("retries run out", func(t *testing.T) {
+		hold()
+		defer release()
+
+		started := time.Now()
+		err := newMigrator(200*time.Millisecond, 2, 50*time.Millisecond).Up(ctx)
+		require.ErrorIs(t, err, ErrMigrationLockTimeout)
+		assert.GreaterOrEqual(t, time.Since(started), 600*time.Millisecond, "three bounded waits ran")
+
+		_, err = newMigrator(200*time.Millisecond, 1, 50*time.Millisecond).Status(ctx)
+		require.ErrorIs(t, err, ErrMigrationLockTimeout, "Status retries the same way")
+	})
+
+	t.Run("a cancel ends the retrying", func(t *testing.T) {
+		hold()
+		defer release()
+
+		cancelCtx, cancelRun := context.WithCancel(ctx)
+		defer cancelRun()
+
+		time.AfterFunc(700*time.Millisecond, cancelRun)
+
+		started := time.Now()
+		err := newMigrator(200*time.Millisecond, 1000, 100*time.Millisecond).Up(cancelCtx)
+		require.ErrorIs(t, err, context.Canceled)
+		assert.NotErrorIs(t, err, ErrMigrationLockTimeout)
+		assert.Less(t, time.Since(started), 10*time.Second)
+	})
+
+	t.Run("contention then success", func(t *testing.T) {
+		hold()
+
+		released := make(chan struct{})
+		time.AfterFunc(time.Second, func() {
+			defer close(released)
+
+			_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", lockID)
+		})
+
+		m := newMigrator(300*time.Millisecond, 10, 100*time.Millisecond)
+		require.NoError(t, m.Up(ctx), "the second migrator waits out the first one")
+		<-released
+
+		status, err := m.Status(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, MigrationStatus{Version: 1, Applied: true}, status)
+	})
+}
+
 // TestIntegration_Migration_ContextStopsBetweenMigrations: a deadline that
 // passes during migration 1 lets it finish, stops before migration 2, and
 // leaves the database clean at version 1.

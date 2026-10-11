@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	constant "github.com/LerianStudio/lib-observability/v4/constants"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
@@ -50,6 +51,8 @@ type migrationRun struct {
 	allowMissing         bool
 	statementTimeout     time.Duration
 	lockTimeout          time.Duration
+	lockRetries          int
+	lockRetryBackoff     time.Duration
 	migrationsSchema     string
 	migrationsTable      string
 	logger               obs.Logger
@@ -64,6 +67,8 @@ func (m *Migrator) baseRun() migrationRun {
 		allowMissing:         m.cfg.AllowMissingMigrations,
 		statementTimeout:     m.cfg.StatementTimeout,
 		lockTimeout:          m.cfg.LockTimeout,
+		lockRetries:          m.cfg.LockRetries,
+		lockRetryBackoff:     m.cfg.LockRetryBackoff,
 		migrationsSchema:     m.cfg.MigrationsSchema,
 		migrationsTable:      m.cfg.MigrationsTable,
 		logger:               m.cfg.Logger,
@@ -275,23 +280,15 @@ type migrationSession struct {
 // (PostgreSQL advisory locks are re-entrant per session), so the only wait is
 // this bounded one.
 func openMigrationSession(ctx context.Context, db *sql.DB, run migrationRun) (*migrationSession, error) {
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return nil, run.redactor.failure(ctx, err, "failed to connect to migration database")
-	}
-
 	cfg := migrationDriverConfig(run)
 
 	lockID, err := database.GenerateAdvisoryLockId(cfg.DatabaseName, cfg.SchemaName, cfg.MigrationsTable)
 	if err != nil {
-		_ = conn.Close()
-
 		return nil, run.redactor.sanitize(err, "failed to derive migration lock id")
 	}
 
-	if err := acquireMigrationLock(ctx, conn, lockID, run); err != nil {
-		_ = conn.Close()
-
+	conn, err := lockedMigrationConn(ctx, db, lockID, run)
+	if err != nil {
 		return nil, err
 	}
 
@@ -319,10 +316,49 @@ func openMigrationSession(ctx context.Context, db *sql.DB, run migrationRun) (*m
 	return session, nil
 }
 
-// acquireMigrationLock waits for the migration advisory lock under
-// migrationLockContext. A wait cut by LockTimeout is ErrMigrationLockTimeout;
-// one cut by ctx (its deadline coming first, or a cancel) is ctx's error.
-func acquireMigrationLock(ctx context.Context, conn *sql.Conn, lockID string, run migrationRun) error {
+// lockedMigrationConn dials a connection and waits on it for the migration
+// lock under migrationLockContext. After a wait LockTimeout cut it closes that
+// connection (the driver kills a connection whose query is cancelled), pauses
+// per migrationLockRetryPause holding none, and dials again, up to lockRetries
+// more times. Exhausted retries are ErrMigrationLockTimeout; a dial, wait or
+// pause cut by ctx (its deadline coming first, or a cancel) is ctx's error;
+// any other failure returns at once.
+func lockedMigrationConn(ctx context.Context, db *sql.DB, lockID string, run migrationRun) (*sql.Conn, error) {
+	for retry := 0; ; retry++ {
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			return nil, run.redactor.failure(ctx, err, "failed to connect to migration database")
+		}
+
+		err = waitMigrationLock(ctx, conn, lockID, run)
+		if err == nil {
+			return conn, nil
+		}
+
+		_ = conn.Close()
+
+		if !errors.Is(err, ErrMigrationLockTimeout) {
+			return nil, err
+		}
+
+		if retry == run.lockRetries {
+			return nil, fmt.Errorf("%w: waited %s, %d attempts", ErrMigrationLockTimeout, run.lockTimeout, retry+1)
+		}
+
+		pause := migrationLockRetryPause(run.lockRetryBackoff, retry+1)
+
+		migrationLogAtLevel(ctx, run.logger, obs.LevelWarn, "migration lock busy; retrying",
+			"retry", retry+1, "of", run.lockRetries, "pause", pause.String())
+
+		if err := backoff.WaitContext(ctx, pause); err != nil {
+			return nil, fmt.Errorf("waiting for the migration lock: %w", err)
+		}
+	}
+}
+
+// waitMigrationLock is one bounded wait for the migration lock. A wait cut by
+// LockTimeout is ErrMigrationLockTimeout; one cut by ctx is ctx's error.
+func waitMigrationLock(ctx context.Context, conn *sql.Conn, lockID string, run migrationRun) error {
 	lockCtx, cancel := migrationLockContext(ctx, run.lockTimeout)
 	defer cancel()
 
@@ -332,13 +368,19 @@ func acquireMigrationLock(ctx context.Context, conn *sql.Conn, lockID string, ru
 		}
 
 		if lockCtx.Err() != nil {
-			return fmt.Errorf("%w: waited %s", ErrMigrationLockTimeout, run.lockTimeout)
+			return ErrMigrationLockTimeout
 		}
 
 		return run.redactor.sanitize(err, "failed to acquire migration lock")
 	}
 
 	return nil
+}
+
+// migrationLockRetryPause is the pause before retry n (from 1): base, doubled
+// for each retry after the first.
+func migrationLockRetryPause(base time.Duration, retry int) time.Duration {
+	return backoff.Exponential(base, retry-1)
 }
 
 // migrationLockContext bounds the migration lock wait: by LockTimeout when it

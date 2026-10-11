@@ -431,6 +431,13 @@ func TestMigrationConfig_StandaloneValidation(t *testing.T) {
 		"fs path that is absolute":   func(c *MigrationConfig) { c.MigrationsPath = "/sql" },
 		"negative statement timeout": func(c *MigrationConfig) { c.StatementTimeout = -time.Second },
 		"negative lock timeout":      func(c *MigrationConfig) { c.LockTimeout = -time.Second },
+		"negative lock retries": func(c *MigrationConfig) {
+			c.LockTimeout, c.LockRetries = time.Second, -1
+		},
+		"negative lock retry backoff": func(c *MigrationConfig) {
+			c.LockTimeout, c.LockRetries, c.LockRetryBackoff = time.Second, 1, -time.Second
+		},
+		"lock retries without a lock timeout": func(c *MigrationConfig) { c.LockRetries = 3 },
 	}
 
 	for name, mutate := range invalid {

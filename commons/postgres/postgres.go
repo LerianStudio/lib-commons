@@ -914,6 +914,20 @@ type MigrationConfig struct {
 	// still waits for another replica's long migration. The caller's context
 	// deadline caps it either way (and then yields the context's error).
 	LockTimeout time.Duration
+	// LockRetries is how many more times Up and Status wait for the migration
+	// lock after LockTimeout cut a wait: a migration Job racing another one
+	// (a second replica, a re-run Job) waits that one out instead of failing
+	// on the first contention. Zero, the default, fails on the first
+	// ErrMigrationLockTimeout. Only a wait LockTimeout cut is retried, so
+	// LockRetries requires LockTimeout; any other failure, and the context
+	// ending, returns at once. Exhausted retries return
+	// ErrMigrationLockTimeout. The caller's context deadline caps the whole
+	// retrying.
+	LockRetries int
+	// LockRetryBackoff is the pause before the first retry, doubled before
+	// each next one; zero retries at once. The connection stays open through
+	// the pause, and a context that ends during it stops the retrying.
+	LockRetryBackoff time.Duration
 	// MigrationsTable names this migrator's version table; empty means
 	// golang-migrate's "schema_migrations". Modules (or scopes) that share a
 	// database each set their own: every table keeps its own version and its
@@ -971,6 +985,10 @@ func (c MigrationConfig) validate() error {
 		return fmt.Errorf("%w: lock_timeout cannot be negative", ErrInvalidConfig)
 	}
 
+	if err := c.validateLockRetries(); err != nil {
+		return err
+	}
+
 	if err := validateMigrationIdentifier("migrations_table", c.MigrationsTable); err != nil {
 		return err
 	}
@@ -980,6 +998,24 @@ func (c MigrationConfig) validate() error {
 	}
 
 	return ValidateTLSPosture(c.TLSPosture, c.MinSSLMode)
+}
+
+// validateLockRetries refuses a retry setting that cannot take effect: only a
+// wait LockTimeout cut is retried, so retries without it are a mistake.
+func (c MigrationConfig) validateLockRetries() error {
+	if c.LockRetries < 0 {
+		return fmt.Errorf("%w: lock_retries cannot be negative", ErrInvalidConfig)
+	}
+
+	if c.LockRetryBackoff < 0 {
+		return fmt.Errorf("%w: lock_retry_backoff cannot be negative", ErrInvalidConfig)
+	}
+
+	if c.LockRetries > 0 && c.LockTimeout == 0 {
+		return fmt.Errorf("%w: lock_retries requires lock_timeout", ErrInvalidConfig)
+	}
+
+	return nil
 }
 
 // validateMigrationIdentifier accepts an empty value (the default) or a
@@ -1044,7 +1080,8 @@ func (m *Migrator) logAtLevel(ctx context.Context, level int, msg string, fields
 // Up applies every pending up migration.
 //
 // The context bounds the whole run: the dial, the wait for the migration
-// lock (also bounded by LockTimeout when set) and the run itself. Migrations
+// lock (also bounded by LockTimeout when set, and retried LockRetries times)
+// and the run itself. Migrations
 // apply one at a time, the context checked before each. golang-migrate cannot
 // interrupt a statement in flight (StatementTimeout bounds one), so a context
 // that ends mid-run stops the run between migrations: the migration in flight
