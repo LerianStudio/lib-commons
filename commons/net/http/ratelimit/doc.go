@@ -48,7 +48,8 @@
 // rate-limit middleware while writing their own 429 envelope after the
 // middleware has set Retry-After and X-RateLimit-* headers. WithOnLimited
 // remains a side-effect hook for metrics/logging and is invoked before the
-// exceeded handler.
+// exceeded handler. WithRefusalHandler does the same for the 400, 500 and 503
+// refusals; a 5xx cause is recorded for the access log either way.
 //
 // A tier that cannot enforce a limit — window zero or sub-millisecond, or max
 // not positive — is refused with 500 "misconfigured_rate_limiter" plus an error

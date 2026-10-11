@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	cn "github.com/LerianStudio/lib-commons/v7/commons/constants"
+	observability "github.com/LerianStudio/lib-observability/v4"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -25,6 +26,7 @@ func (e ErrorResponse) Error() string {
 }
 
 // RenderError writes all transport errors through a single, stable contract.
+// A 5xx body hides err, so err is recorded as the cause the access line logs.
 func RenderError(ctx fiber.Ctx, err error) error {
 	if ctx == nil {
 		return ErrContextNotFound
@@ -34,23 +36,30 @@ func RenderError(ctx fiber.Ctx, err error) error {
 		return nil
 	}
 
+	status, title, message := fiber.StatusInternalServerError, cn.DefaultErrorTitle, cn.DefaultInternalErrorMessage
+
 	// errors.As with a value target matches both ErrorResponse and *ErrorResponse,
 	// since ErrorResponse implements error via a value receiver.
 	var responseErr ErrorResponse
-	if errors.As(err, &responseErr) {
-		return renderErrorResponse(ctx, responseErr)
-	}
 
 	var fiberErr *fiber.Error
-	if errors.As(err, &fiberErr) {
-		return RespondError(ctx, fiberErr.Code, cn.DefaultErrorTitle, fiberErr.Message)
+
+	switch {
+	case errors.As(err, &responseErr):
+		status, title, message = normalizeErrorResponse(responseErr)
+	case errors.As(err, &fiberErr):
+		status, message = fiberErr.Code, fiberErr.Message
 	}
 
-	return RespondError(ctx, fiber.StatusInternalServerError, cn.DefaultErrorTitle, cn.DefaultInternalErrorMessage)
+	if status >= fiber.StatusInternalServerError {
+		observability.RecordErrorCause(ctx.Context(), err)
+	}
+
+	return RespondError(ctx, status, title, message)
 }
 
-// renderErrorResponse normalizes and sends an ErrorResponse with safe defaults.
-func renderErrorResponse(ctx fiber.Ctx, resp ErrorResponse) error {
+// normalizeErrorResponse applies safe defaults to an ErrorResponse's status, title and message.
+func normalizeErrorResponse(resp ErrorResponse) (int, string, string) {
 	status := fiber.StatusInternalServerError
 
 	if resp.Code >= http.StatusContinue && resp.Code <= 599 {
@@ -67,5 +76,5 @@ func renderErrorResponse(ctx fiber.Ctx, resp ErrorResponse) error {
 		message = http.StatusText(status)
 	}
 
-	return RespondError(ctx, status, title, message)
+	return status, title, message
 }

@@ -4,11 +4,14 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	observability "github.com/LerianStudio/lib-observability/v4"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -426,6 +429,60 @@ func TestRenderError_UnusualValidCodes(t *testing.T) {
 
 			// Valid HTTP codes between 100-599 should be used as-is
 			assert.Equal(t, tt.code, resp.StatusCode)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cause recording for the access line
+// ---------------------------------------------------------------------------
+
+func TestRenderError_RecordsCauseOnlyFor5xx(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCause  bool
+	}{
+		{"generic error", errors.New("pq: connection refused"), http.StatusInternalServerError, true},
+		{"wrapped ErrorResponse 503", fmt.Errorf("upstream: %w", ErrorResponse{Code: 503, Message: "try later"}), http.StatusServiceUnavailable, true},
+		{"fiber error 502", fiber.NewError(http.StatusBadGateway, "bad gateway"), http.StatusBadGateway, true},
+		{"ErrorResponse 400", ErrorResponse{Code: 400, Title: "invalid_request", Message: "name is required"}, http.StatusBadRequest, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var recorded error
+
+			app := fiber.New()
+			app.Use(func(c fiber.Ctx) error {
+				ctx, cause := observability.ContextWithErrorCause(c.Context())
+				c.SetContext(ctx)
+
+				err := c.Next()
+				recorded = cause()
+
+				return err
+			})
+			app.Get("/test", func(c fiber.Ctx) error {
+				return RenderError(c, tc.err)
+			})
+
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/test", nil))
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+
+			assert.Equal(t, tc.wantStatus, resp.StatusCode)
+
+			if tc.wantCause {
+				assert.Equal(t, tc.err, recorded)
+			} else {
+				assert.NoError(t, recorded)
+			}
 		})
 	}
 }

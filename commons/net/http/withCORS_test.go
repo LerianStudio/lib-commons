@@ -60,7 +60,7 @@ func TestWithCORS_UsesEnvironmentConfiguration(t *testing.T) {
 	require.Contains(t, resp.Header.Get(fiber.HeaderAccessControlAllowHeaders), constant.Authorization)
 }
 
-func TestAllowFullOptionsWithCORS_RegistersOptionsRoute(t *testing.T) {
+func TestAllowFullOptionsWithCORS_AnswersPreflight(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
@@ -75,6 +75,30 @@ func TestAllowFullOptionsWithCORS_RegistersOptionsRoute(t *testing.T) {
 	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
+func TestAllowFullOptionsWithCORS_UnknownPathAnswers404(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	AllowFullOptionsWithCORS(app)
+	app.Get("/health", func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+
+	for _, tc := range []struct {
+		method, path string
+		want         int
+	}{
+		{http.MethodGet, "/unknown", http.StatusNotFound},
+		{http.MethodPost, "/health", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/health", http.StatusOK},
+		{http.MethodOptions, "/unknown", http.StatusNoContent},
+	} {
+		resp, err := app.Test(httptest.NewRequest(tc.method, tc.path, nil))
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+
+		assert.Equal(t, tc.want, resp.StatusCode, "%s %s", tc.method, tc.path)
+	}
 }
 
 func TestWithCORS_ExplicitFalseCredentials(t *testing.T) {
