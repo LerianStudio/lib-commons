@@ -923,11 +923,23 @@ type MigrationConfig struct {
 	// ErrMigrationLockTimeout. Any other failure, and the context ending,
 	// returns at once. Exhausted retries return ErrMigrationLockTimeout. The
 	// caller's context deadline caps the whole retrying.
+	//
+	// Up also runs a migration again, up to LockRetries more times, when the
+	// session's lock_timeout refused one of its statements (a table lock the
+	// application holds outlasted the bound). golang-migrate leaves such a
+	// migration dirty; when it provably ran as one transaction (no
+	// AllowMultiStatements, no transaction control that commits before its
+	// last statement, nothing built CONCURRENTLY, no DO or CALL alone in its
+	// file) the refusal undid all of it, so Up sets the version back to the
+	// source's previous migration (or none) before pausing, and after the last
+	// refusal too: retries that run out return the refusal with the database
+	// clean, ready for the next run. Any other refused migration stays dirty.
+	// The migration lock stays held through these pauses.
 	LockRetries int
 	// LockRetryBackoff is the pause before the first retry, doubled before
-	// each next one; zero retries at once. The connection that waited is
-	// closed and none is held during the pause; a context that ends during it
-	// stops the retrying.
+	// each next one; zero retries at once. Before a retry of the lock wait the
+	// connection that waited is closed and none is held during the pause; a
+	// context that ends during a pause stops the retrying.
 	LockRetryBackoff time.Duration
 	// MigrationsTable names this migrator's version table; empty means
 	// golang-migrate's "schema_migrations". Modules (or scopes) that share a
@@ -1476,7 +1488,9 @@ func migrationLogAtLevel(ctx context.Context, logger obs.Logger, level int, msg 
 
 // runMigrations applies run's source to db: it opens the source, takes the
 // migration lock on a connection bounded by ctx, and applies the pending
-// migrations one at a time, stopping between them once ctx is done.
+// migrations one at a time, stopping between them once ctx is done and
+// retrying a migration the session's lock_timeout refused
+// (applyMigrationsRetrying).
 func runMigrations(ctx context.Context, db *sql.DB, run migrationRun) error {
 	if err := validateDBName(run.databaseName); err != nil {
 		migrationLogAtLevel(ctx, run.logger, obs.LevelError, "invalid primary database name", "error", err.Error())
@@ -1515,7 +1529,7 @@ func runMigrations(ctx context.Context, db *sql.DB, run migrationRun) error {
 
 	defer closeMigration(ctx, mig, session, run)
 
-	upErr := applyMigrations(ctx, mig)
+	upErr := applyMigrationsRetrying(ctx, mig, sourceDriver, run)
 
 	if ctxErr := ctx.Err(); ctxErr != nil && (upErr == nil || errors.Is(upErr, migrate.ErrNoChange)) {
 		return stoppedEarly(ctx, mig, run, ctxErr)

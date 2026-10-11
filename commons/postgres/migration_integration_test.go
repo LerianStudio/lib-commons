@@ -491,6 +491,128 @@ func TestIntegration_Migration_LockRetries(t *testing.T) {
 	})
 }
 
+// TestIntegration_Migration_LockRefusalRetries: a migration whose statement
+// waits on a table lock the application holds is refused by the session's
+// lock_timeout (SQLSTATE 55P03) and rolled back whole. With LockRetries the
+// migrator sets the dirty version back to the last applied migration (the
+// source's previous version, across a gap) and runs it again; retries that
+// run out leave the version clean, not dirty; a migration that may keep
+// partial work (CONCURRENTLY) stays dirty for an operator.
+func TestIntegration_Migration_LockRefusalRetries(t *testing.T) {
+	dsn, cleanup := setupPostgresContainer(t)
+	t.Cleanup(cleanup)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	admin, err := sql.Open("pgx", dsn)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = admin.Close() })
+
+	bounded := dsn + "&options=-c%20lock_timeout%3D200ms"
+
+	// prepare applies version 1 (table name) on its own version table, then
+	// adds version 3 (no 2) with body, and returns the migrator for both.
+	prepare := func(t *testing.T, name, body string, retries int) *Migrator {
+		t.Helper()
+
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "000001_create.up.sql"),
+			[]byte("CREATE TABLE "+name+" (id int);"), 0o644))
+
+		m, err := NewMigrator(MigrationConfig{
+			PrimaryDSN:       bounded,
+			DatabaseName:     "testdb",
+			MigrationsPath:   dir,
+			MigrationsTable:  "schema_migrations_" + name,
+			LockTimeout:      time.Minute,
+			LockRetries:      retries,
+			LockRetryBackoff: 100 * time.Millisecond,
+			Logger:           obs.Nop(),
+		})
+		require.NoError(t, err)
+		require.NoError(t, m.Up(ctx))
+
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "000003_change.up.sql"), []byte(body), 0o644))
+
+		return m
+	}
+
+	// holdTable takes an ACCESS EXCLUSIVE lock on table, as an application
+	// transaction would hold it, and returns its release.
+	holdTable := func(t *testing.T, table string) func() {
+		t.Helper()
+
+		tx, err := admin.BeginTx(ctx, nil)
+		require.NoError(t, err)
+
+		_, err = tx.ExecContext(ctx, "LOCK TABLE "+table+" IN ACCESS EXCLUSIVE MODE")
+		require.NoError(t, err)
+
+		return func() { _ = tx.Rollback() }
+	}
+
+	t.Run("a refused migration runs again once the lock is released", func(t *testing.T) {
+		m := prepare(t, "released", "ALTER TABLE released ADD COLUMN b int;", 20)
+		release := holdTable(t, "released")
+		time.AfterFunc(time.Second, release)
+
+		require.NoError(t, m.Up(ctx))
+
+		status, err := m.Status(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, MigrationStatus{Version: 3, Applied: true}, status)
+
+		var columns int
+		require.NoError(t, admin.QueryRowContext(ctx,
+			"SELECT count(*) FROM information_schema.columns WHERE table_name = 'released' AND column_name = 'b'").Scan(&columns))
+		assert.Equal(t, 1, columns)
+	})
+
+	t.Run("exhausted retries leave the version clean at the last applied migration", func(t *testing.T) {
+		m := prepare(t, "exhausted", "ALTER TABLE exhausted ADD COLUMN b int;", 2)
+		release := holdTable(t, "exhausted")
+
+		err := m.Up(ctx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "55P03")
+
+		status, err := m.Status(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, MigrationStatus{Version: 1, Applied: true}, status, "clean at 1, never dirty at 3, never 2")
+
+		release()
+		require.NoError(t, m.Up(ctx), "the next run applies it without an operator")
+	})
+
+	t.Run("a migration that may keep partial work stays dirty", func(t *testing.T) {
+		m := prepare(t, "concurrent", "CREATE INDEX CONCURRENTLY concurrent_id ON concurrent (id);", 5)
+		release := holdTable(t, "concurrent")
+		defer release()
+
+		err := m.Up(ctx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "55P03")
+
+		status, err := m.Status(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, MigrationStatus{Version: 3, Dirty: true, Applied: true}, status)
+	})
+
+	t.Run("without LockRetries a refusal stays dirty", func(t *testing.T) {
+		m := prepare(t, "unretried", "ALTER TABLE unretried ADD COLUMN b int;", 0)
+		release := holdTable(t, "unretried")
+		defer release()
+
+		require.Error(t, m.Up(ctx))
+
+		status, err := m.Status(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, MigrationStatus{Version: 3, Dirty: true, Applied: true}, status)
+	})
+}
+
 // TestIntegration_Migration_ContextStopsBetweenMigrations: a deadline that
 // passes during migration 1 lets it finish, stops before migration 2, and
 // leaves the database clean at version 1.

@@ -94,6 +94,20 @@
 // the retrying with the context's error, and exhausted retries return
 // ErrMigrationLockTimeout. Status retries the same way.
 //
+// LockRetries also covers a migration whose statement the session's
+// lock_timeout refused (SQLSTATE 55P03) because an application transaction
+// held the table. golang-migrate marks a migration dirty before running it,
+// so the refusal would leave the schema dirty for an operator. When the
+// migration provably ran as one transaction (no AllowMultiStatements, no
+// COMMIT or END before its last statement, no ROLLBACK, ABORT or PREPARE,
+// nothing built CONCURRENTLY, no DO or CALL alone in its file), the refusal
+// undid all of it: Up sets the version back to the source's previous
+// migration (never version-1, sources have gaps) or to none, logs a WARN,
+// pauses holding the migration lock and runs it again, up to LockRetries more
+// times. Retries that run out return the refusal and leave the database clean
+// for the next run. A refused migration that may have kept partial work stays
+// dirty and Up returns at once.
+//
 // Migrations apply one at a time, the context checked before each.
 // golang-migrate cannot interrupt a statement in flight, so a context that
 // ends mid-run stops the run between migrations: the database is left clean
