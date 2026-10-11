@@ -6,7 +6,7 @@
 // translates a domain-layer error into the shared Detail.
 //
 // The package imports github.com/danielgtaylor/huma/v2 and lib-observability's
-// tracing accessor only — no Fiber, no transport adapter — so it stays the
+// tracing accessor and error-cause slot only — no Fiber, no transport adapter — so it stays the
 // light, transport-free half of the wrapper. The heavier Fiber binding lives in
 // commons/net/http/openapi, which imports this package for exactly one thing:
 // registering InstanceTransformer on the API it builds, so every service carries
@@ -153,6 +153,10 @@ type Detail struct {
 	// Extensions are rendered as top-level members by Body, never as a member of
 	// their own.
 	Extensions Extensions `json:"-"`
+
+	// cause is why a >=500 failed: off the wire, it reaches the access line
+	// through InstanceTransformer.
+	cause error
 
 	// A body may carry extension members, so the published schema must allow them.
 	_ struct{} `json:"-" additionalProperties:"true"`

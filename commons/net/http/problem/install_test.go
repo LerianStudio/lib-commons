@@ -62,6 +62,71 @@ func TestNewError_ServerError_Scrubbed(t *testing.T) {
 	}
 }
 
+// TestNewError_KeepsTheScrubbedCauseOffTheWire proves a >=500 keeps what the
+// scrub dropped as its cause, for the access line, while the body bytes stay
+// exactly the scrubbed ones. A <500 shows its reason in the body and keeps none.
+func TestNewError_KeepsTheScrubbedCauseOffTheWire(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status int
+		msg    string
+		errs   []error
+		cause  string
+		body   string
+	}{
+		{
+			name:   "huma wrapping a plain handler error",
+			status: http.StatusInternalServerError,
+			msg:    "unexpected error occurred",
+			errs:   []error{errors.New("pq: connection refused")},
+			cause:  "unexpected error occurred: pq: connection refused",
+			body:   `{"title":"Internal Server Error","status":500,"detail":"internal error"}`,
+		},
+		{
+			name:   "message only",
+			status: http.StatusServiceUnavailable,
+			msg:    "ledger unreachable",
+			cause:  "ledger unreachable",
+			body:   `{"title":"Service Unavailable","status":503,"detail":"internal error"}`,
+		},
+		{
+			name:   "an upstream is lifted, not part of the cause",
+			status: http.StatusBadGateway,
+			msg:    "rail call failed",
+			errs:   []error{&Upstream{Code: "E1"}, nil, errors.New("timeout")},
+			cause:  "rail call failed: timeout",
+			body:   `{"title":"Bad Gateway","status":502,"detail":"internal error","upstream":{"code":"E1"}}`,
+		},
+		{
+			name:   "client error",
+			status: http.StatusConflict,
+			msg:    "already settled",
+			errs:   []error{errors.New("row 9")},
+			body:   `{"title":"Conflict","status":409,"detail":"already settled","errors":[{"message":"row 9"}]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := asDetail(t, newError(tt.status, tt.msg, tt.errs...))
+
+			if tt.cause == "" {
+				assert.NoError(t, d.cause)
+			} else {
+				assert.EqualError(t, d.cause, tt.cause)
+			}
+
+			raw, err := json.Marshal(Body(d))
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.body, string(raw))
+		})
+	}
+}
+
 // TestNewError_ClientError_PassthroughAndFold proves the <500 path: msg passes
 // through and errs fold into Errors[] in order — preserving Huma's native 422
 // field-error behavior.

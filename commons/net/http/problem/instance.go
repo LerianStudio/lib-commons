@@ -1,6 +1,7 @@
 package problem
 
 import (
+	observability "github.com/LerianStudio/lib-observability/v4"
 	"github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/danielgtaylor/huma/v2"
 )
@@ -25,7 +26,8 @@ import (
 // the huma.Context. It is therefore the only point that sees both the request and
 // the body, on every status the library can emit.
 //
-// It also hands every *Detail to Body, the only encoder of the extension members.
+// It also hands every *Detail to Body, the only encoder of the extension members,
+// and records a >=500's scrubbed cause for the access line on the request context.
 //
 // It is safe on any value: anything that is not a *Detail is returned untouched,
 // so registering it on an API whose consumer never called Install() changes
@@ -44,6 +46,10 @@ func InstanceTransformer(ctx huma.Context, _ string, v any) (any, error) {
 	pd, ok := v.(*Detail)
 	if !ok || pd == nil {
 		return v, nil
+	}
+
+	if ctx != nil {
+		observability.RecordErrorCause(ctx.Context(), pd.cause)
 	}
 
 	if pd.Instance == "" && ctx != nil {
