@@ -183,7 +183,7 @@
 "SASL field covered by the default taxonomy"
 "sasl_password=****"
 "sasl_password="
-"addendum only: pwd"
+"taxonomy covers pwd"
 "pwd=****"
 "pwd="
 "addendum only: signature"

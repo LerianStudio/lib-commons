@@ -183,7 +183,7 @@
 "SASL field covered by the default taxonomy"
 "sasl_password=abc123"
 "sasl_password="
-"addendum only: pwd"
+"taxonomy covers pwd"
 "pwd=hunter2"
 "pwd="
 "addendum only: signature"
