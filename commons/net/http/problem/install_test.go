@@ -483,6 +483,10 @@ func TestInstall_ServerError_UpstreamReachesTheWire(t *testing.T) {
 	assert.Equal(t, genericServerErrorDetail, body["detail"], "our own 5xx detail stays scrubbed")
 	_, hasErrors := body["errors"]
 	assert.False(t, hasErrors, "no errors[] on a 5xx")
+	_, hasCode := body["code"]
+	assert.False(t, hasCode, "a framework error omits code")
+	_, hasType := body["type"]
+	assert.False(t, hasType, "a framework error omits type")
 
 	up, ok := body["upstream"].(map[string]any)
 	require.True(t, ok, "upstream member must reach the wire on a 5xx, got %s", raw)
