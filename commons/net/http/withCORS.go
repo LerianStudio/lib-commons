@@ -36,8 +36,9 @@ type corsConfig struct {
 	policy *CORSPolicy
 }
 
-// CORSPolicy is the CORS policy WithCORSPolicy hands to WithCORS. Each field
-// reaches Fiber's cors.Config as given; empty AllowOrigins means any origin.
+// CORSPolicy is the CORS policy WithCORSPolicy hands to WithCORS. Fields reach
+// Fiber's cors.Config as given (empty methods/headers take Fiber's defaults); an
+// empty or "*" origin list takes the wildcard guard.
 type CORSPolicy struct {
 	AllowOrigins     []string
 	AllowMethods     []string
