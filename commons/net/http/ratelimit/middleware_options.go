@@ -123,8 +123,8 @@ func WithExceededHandler(fn func(c fiber.Ctx, tier Tier, ttl time.Duration) erro
 // context, 500 misconfigured tier, 503 Redis down while fail-closed) instead of the
 // chttp.ErrorResponse envelope. cause is for logs, never the body. A nil fn is a no-op.
 //
-// An error fn returns takes the access line's error field over the recorded 5xx cause, and
-// a 400 cause is never recorded: that error must wrap cause, or the line loses it.
+// An error returned by the handler takes precedence over the recorded 5xx cause in the access
+// line. A 400 cause is not recorded, so the returned error must wrap it.
 func WithRefusalHandler(fn func(c fiber.Ctx, status int, cause error) error) Option {
 	return func(rl *RateLimiter) {
 		if fn != nil {
