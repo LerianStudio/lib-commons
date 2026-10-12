@@ -219,13 +219,13 @@ func TestStringRedactsByFieldName(t *testing.T) {
 		{name: "camelCase field name", in: "accessToken=abc123", want: "accessToken=" + marker},
 		{name: "AWS key name covered by the default taxonomy", in: "aws_secret_access_key=abc123", want: "aws_secret_access_key=" + marker},
 		{name: "SASL field covered by the default taxonomy", in: "sasl_password=abc123", want: "sasl_password=" + marker},
+		{name: "taxonomy covers pwd", in: "pwd=hunter2", want: "pwd=" + marker},
 
 		// The cases below are the ADDENDUM'S REASON TO EXIST: the shared
 		// lib-observability taxonomy does not classify any of these, and they are
 		// exactly the spellings AWS SDKs and broker clients emit. Verified against
 		// redaction.IsSensitiveField with no extras, which returns false for all
-		// five.
-		{name: "addendum only: pwd", in: "pwd=hunter2", want: "pwd=" + marker},
+		// four.
 		{name: "addendum only: signature", in: "signature=abc123", want: "signature=" + marker},
 		{name: "addendum only: sessiontoken", in: "sessiontoken=abc123", want: "sessiontoken=" + marker},
 		{name: "addendum only: accesskey", in: "accesskey=abc123", want: "accesskey=" + marker},
@@ -592,9 +592,9 @@ func TestStringRedactsBrazilianDocumentAndAccountFields(t *testing.T) {
 	t.Parallel()
 
 	// A denylist only covers the shapes someone enumerated, and the shared
-	// taxonomy was enumerated in English. The document and bank-account field
-	// names a Brazilian ledger actually emits — in a unique-constraint violation,
-	// a validator message, a marshaled payload — were not on it.
+	// taxonomy was enumerated in English. The document field names a Brazilian
+	// ledger actually emits — in a unique-constraint violation, a validator
+	// message, a marshaled payload — were not on it.
 	tests := []struct {
 		name    string
 		in      string

@@ -88,8 +88,7 @@ var installMu sync.Mutex
 //     not by a flag: only a value a call site deliberately built lands there.
 //     Everything else about a 5xx — the raw msg, errors[] — stays scrubbed.
 //
-// For framework errors Code stays empty (dropped by omitempty) and Type stays at
-// the RFC default about:blank.
+// For framework errors the wire omits code and type (RFC 9457 reads no type as about:blank).
 func Install() {
 	installMu.Lock()
 	defer installMu.Unlock()

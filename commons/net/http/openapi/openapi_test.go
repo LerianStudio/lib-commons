@@ -1385,6 +1385,10 @@ func TestInstance_FrameworkErrorAlsoCarriesIt(t *testing.T) {
 
 	t.Logf("framework error %d, key set: %v", resp.StatusCode, slices.Sorted(maps.Keys(got)))
 	assert.Equal(t, *observed, got["instance"])
+	_, hasCode := got["code"]
+	assert.False(t, hasCode, "a framework error omits code")
+	_, hasType := got["type"]
+	assert.False(t, hasType, "a framework error omits type")
 }
 
 // TestInstance_DoesNotOverwriteACallerSetValue proves a service that fills the
