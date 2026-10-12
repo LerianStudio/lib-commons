@@ -59,7 +59,13 @@ func WithCORSLogger(logger obs.Logger) CORSOption {
 
 // WithCORSPolicy makes WithCORS take its policy from code and read none of the
 // ACCESS_CONTROL_* env vars. The wildcard-origin guards apply to it unchanged.
+// The slices are copied here: Fiber keeps them, so a caller's later edit stays out.
 func WithCORSPolicy(policy CORSPolicy) CORSOption {
+	policy.AllowOrigins = slices.Clone(policy.AllowOrigins)
+	policy.AllowMethods = slices.Clone(policy.AllowMethods)
+	policy.AllowHeaders = slices.Clone(policy.AllowHeaders)
+	policy.ExposeHeaders = slices.Clone(policy.ExposeHeaders)
+
 	return func(c *corsConfig) {
 		c.policy = &policy
 	}
