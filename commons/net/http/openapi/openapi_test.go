@@ -1445,3 +1445,64 @@ func TestInstance_SuccessBodiesAreUntouched(t *testing.T) {
 
 	assert.JSONEq(t, `{"name":"abc"}`, string(raw))
 }
+
+// railDetail is a service's own error envelope: the shape a rail adopts a
+// *problem.Detail into, the way br-sfn adds its correlationId. It is not a
+// *problem.Detail, so it reaches the transformer as a foreign value.
+type railDetail struct {
+	huma.ErrorModel
+	Code          string `json:"code,omitempty"`
+	CorrelationID string `json:"correlationId"`
+
+	cause error
+}
+
+func (d *railDetail) ErrorCause() error { return d.cause }
+
+func adoptIntoRail(mapped error) error {
+	shared, ok := mapped.(*problem.Detail)
+	if !ok {
+		return mapped
+	}
+
+	return &railDetail{
+		ErrorModel:    shared.ErrorModel,
+		Code:          shared.Code,
+		CorrelationID: "req-1",
+		cause:         shared.ErrorCause(),
+	}
+}
+
+// TestAccessLine_LogsTheCauseOfAnAdoptedEnvelope proves a service serialising
+// its own envelope keeps the hidden cause on the access line: the >=500 body
+// stays scrubbed while the line carries what MapError dropped from it.
+func TestAccessLine_LogsTheCauseOfAnAdoptedEnvelope(t *testing.T) {
+	// NOT parallel: problem.Install mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	problem.Install()
+
+	line := &accessLine{}
+	app := fiber.New()
+	app.Use(middleware.WithHTTPLogging(middleware.WithCustomLogger(line)))
+
+	cause := errors.New("pq: connection refused")
+	registerFailing(New(app, app.Group("/"), testConfig()), adoptIntoRail(problem.MapError(
+		cause,
+		func(error) (string, string, bool) { return "", "", false },
+		func(string) int { return http.StatusInternalServerError },
+		"SPB-9000",
+	)))
+
+	status, body := doReq(t, app, http.MethodGet, "/fail")
+
+	assert.Equal(t, http.StatusInternalServerError, status)
+	assert.NotContains(t, body, "connection refused", "the cause never reaches the client")
+	assert.Contains(t, body, `"correlationId":"req-1"`, "the rail's own envelope is what ships")
+
+	got := line.last()
+	assert.Equal(t, "pq: connection refused", got["error"])
+	assert.Equal(t, "SPB-9000", got["problem_code"])
+	assert.Equal(t, "internal error", got["problem_detail"])
+}

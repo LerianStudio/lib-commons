@@ -170,6 +170,19 @@ type Detail struct {
 	_ struct{} `json:"-" additionalProperties:"true"`
 }
 
+// ErrorCause returns why a >=500 failed, or nil: the error the scrub kept off
+// the wire. It is never serialised. A service that adopts d into its own
+// envelope carries this value and answers it from an ErrorCause() error method
+// of its own, which InstanceTransformer records for the access line exactly as
+// it does for a *Detail.
+func (d *Detail) ErrorCause() error {
+	if d == nil {
+		return nil
+	}
+
+	return d.cause
+}
+
 // Body is the value to encode for d: d itself, unless d carries extension
 // members, which only this view renders. Detail has no MarshalJSON of its own,
 // because every type embedding it would inherit one and lose its own fields.

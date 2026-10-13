@@ -336,3 +336,37 @@ func TestMapError_Upstream_JSON(t *testing.T) {
 	assert.Equal(t, "E4001", up["code"])
 	assert.Equal(t, "serviço indisponível", up["message"])
 }
+
+// TestDetail_ErrorCause hands a service adopting the document into its own
+// envelope the cause a >=500 kept off the wire, and nothing below 500.
+func TestDetail_ErrorCause(t *testing.T) {
+	t.Parallel()
+
+	codeOf := func(err error) (string, string, bool) { return "SVC-0001", err.Error(), true }
+	cause := errors.New("pq: connection refused")
+
+	t.Run("a 5xx keeps its cause off the wire", func(t *testing.T) {
+		t.Parallel()
+
+		pd := mapErrDetail(t, MapError(cause, codeOf, func(string) int { return http.StatusBadGateway }, "SVC-9000"))
+		require.ErrorIs(t, pd.ErrorCause(), cause)
+
+		raw, err := json.Marshal(Body(pd))
+		require.NoError(t, err)
+		assert.NotContains(t, string(raw), "connection refused")
+	})
+
+	t.Run("a 4xx carries none", func(t *testing.T) {
+		t.Parallel()
+
+		pd := mapErrDetail(t, MapError(cause, codeOf, func(string) int { return http.StatusConflict }, "SVC-9000"))
+		assert.NoError(t, pd.ErrorCause())
+	})
+
+	t.Run("nil", func(t *testing.T) {
+		t.Parallel()
+
+		var pd *Detail
+		assert.NoError(t, pd.ErrorCause())
+	})
+}
