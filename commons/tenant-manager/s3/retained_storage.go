@@ -218,6 +218,12 @@ func (s *retainedStorage) CreateRetained(
 		return ObjectMetadata{}, newRetainedStorageError("create", nil, err)
 	}
 
+	body, release, err := seekableBody(ctx, body)
+	if err != nil {
+		return ObjectMetadata{}, newRetainedStorageError("create", nil, err)
+	}
+	defer release()
+
 	retainUntil := canonicalObjectLockTime(retention.RetainUntil)
 
 	input := &awss3.PutObjectInput{

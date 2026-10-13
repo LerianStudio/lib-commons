@@ -1,6 +1,8 @@
 package problem
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -75,7 +77,8 @@ var installMu sync.Mutex
 //   - status >= 500: the body is scrubbed to the static genericServerErrorDetail
 //     and NO errs are folded. This is underwriter's central safety — it closes
 //     the direct-huma.Error5xx(rawErr) info-leak that br-sfn's old override left
-//     open by passing the raw msg/errs straight through.
+//     open by passing the raw msg/errs straight through. The dropped msg and
+//     errs stay off the wire as the cause InstanceTransformer hands the access line.
 //   - status  < 500: msg is passed through and errs are folded into Errors[] in
 //     order (skip nil, honor huma.ErrorDetailer) — like the stock
 //     huma.NewError, so native 422 validation errors keep their per-field
@@ -86,8 +89,7 @@ var installMu sync.Mutex
 //     not by a flag: only a value a call site deliberately built lands there.
 //     Everything else about a 5xx — the raw msg, errors[] — stays scrubbed.
 //
-// For framework errors Code stays empty (dropped by omitempty) and Type stays at
-// the RFC default about:blank.
+// For framework errors the wire omits code and type (RFC 9457 reads no type as about:blank).
 //
 // Folded errors[] entries keep the value Huma echoes from the rejected input;
 // [InstallWithoutValueEcho] drops it.
@@ -188,11 +190,27 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 	if status < http.StatusInternalServerError {
 		pd.Detail = msg
 		pd.Errors = fold(rest)
+	} else {
+		pd.cause = causeOf(msg, rest)
 	}
 
 	members.apply(pd)
 
 	return pd
+}
+
+// causeOf joins what the >=500 scrub drops from the body into one error.
+func causeOf(msg string, errs []error) error {
+	err := errors.Join(errs...)
+
+	switch {
+	case msg == "":
+		return err
+	case err == nil:
+		return errors.New(msg)
+	default:
+		return fmt.Errorf("%s: %w", msg, err)
+	}
 }
 
 // fold renders errs as errors[] like the stock huma.NewError: nil errs are

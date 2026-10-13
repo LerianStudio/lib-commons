@@ -1,5 +1,24 @@
 # Lib-commons Changelog
 
+## [7.15.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.15.0)
+
+Features:
+- Carry a partner actor token to allowlisted Lerian hosts. (@jeffersonrodrigues92)
+- Extract a bearer token from a plain authorization header. (@fredcamaral)
+
+Fixes:
+- Stop S3 body spooling on cancel and cap it at `5 GiB`. (@jeffersonrodrigues92)
+- Spool a large unseekable S3 body to disk. (@jeffersonrodrigues92)
+- Buffer an unseekable body before S3 `putobject`. (@fredcamaral)
+
+Improvements:
+- Bump `golang.org/x/net` to `v0.60.0` to address the HTTP/2 CVEs. (@jeffersonrodrigues92)
+- Keep one fiber extractor test now that the table covers the forms. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.14.0...v7.15.0)
+
+---
+
 ## [7.14.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.14.0)
 
 Features:

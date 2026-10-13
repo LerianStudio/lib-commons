@@ -12,6 +12,7 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v7/commons"
 	constant "github.com/LerianStudio/lib-commons/v7/commons/constants"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -60,7 +61,7 @@ func TestWithCORS_UsesEnvironmentConfiguration(t *testing.T) {
 	require.Contains(t, resp.Header.Get(fiber.HeaderAccessControlAllowHeaders), constant.Authorization)
 }
 
-func TestAllowFullOptionsWithCORS_RegistersOptionsRoute(t *testing.T) {
+func TestAllowFullOptionsWithCORS_AnswersPreflight(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
@@ -75,6 +76,30 @@ func TestAllowFullOptionsWithCORS_RegistersOptionsRoute(t *testing.T) {
 	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
+func TestAllowFullOptionsWithCORS_UnknownPathAnswers404(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	AllowFullOptionsWithCORS(app)
+	app.Get("/health", func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+
+	for _, tc := range []struct {
+		method, path string
+		want         int
+	}{
+		{http.MethodGet, "/unknown", http.StatusNotFound},
+		{http.MethodPost, "/health", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/health", http.StatusOK},
+		{http.MethodOptions, "/unknown", http.StatusNoContent},
+	} {
+		resp, err := app.Test(httptest.NewRequest(tc.method, tc.path, nil))
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+
+		assert.Equal(t, tc.want, resp.StatusCode, "%s %s", tc.method, tc.path)
+	}
 }
 
 func TestWithCORS_ExplicitFalseCredentials(t *testing.T) {
@@ -258,6 +283,32 @@ func TestWithCORS_MixedWildcardFallsBackToDenyAllByDefault(t *testing.T) {
 	assert.Empty(t, resp.Header.Get(fiber.HeaderAccessControlAllowCredentials))
 }
 
+func TestWithCORS_CommaOnlyOriginFallsBackToDenyAllByDefault(t *testing.T) {
+	t.Setenv("ACCESS_CONTROL_ALLOW_ORIGIN", ",")
+	t.Setenv("ACCESS_CONTROL_ALLOW_CREDENTIALS", "true")
+
+	logger := &testCORSLogger{}
+
+	app := fiber.New()
+	app.Use(WithCORS(WithCORSLogger(logger)))
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendStatus(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodOptions, "/", nil)
+	req.Header.Set(fiber.HeaderOrigin, "https://trusted.example")
+	req.Header.Set(fiber.HeaderAccessControlRequestMethod, http.MethodGet)
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	assert.Empty(t, resp.Header.Get(fiber.HeaderAccessControlAllowOrigin))
+	assert.Empty(t, resp.Header.Get(fiber.HeaderAccessControlAllowCredentials))
+	assert.Equal(t, obs.LevelError, logger.lastLevel)
+}
+
 func TestWithCORS_AllowCORSWildcardPermitsWildcard(t *testing.T) {
 	t.Setenv(commons.EnvAllowCORSWildcard, "true")
 	t.Setenv("ACCESS_CONTROL_ALLOW_ORIGIN", "*")
@@ -278,4 +329,120 @@ func TestWithCORS_AllowCORSWildcardPermitsWildcard(t *testing.T) {
 
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 	assert.Equal(t, "*", resp.Header.Get(fiber.HeaderAccessControlAllowOrigin))
+}
+
+// ---------------------------------------------------------------------------
+// WithCORSPolicy option
+// ---------------------------------------------------------------------------
+
+func setOtherCORSEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("ACCESS_CONTROL_ALLOW_ORIGIN", "https://env.example")
+	t.Setenv("ACCESS_CONTROL_ALLOW_METHODS", "DELETE")
+	t.Setenv("ACCESS_CONTROL_ALLOW_HEADERS", "X-Env-Only")
+	t.Setenv("ACCESS_CONTROL_EXPOSE_HEADERS", "X-Env-Exposed")
+	t.Setenv("ACCESS_CONTROL_ALLOW_CREDENTIALS", "false")
+}
+
+func TestWithCORSPolicy_DrivesHeadersAndIgnoresEnv(t *testing.T) {
+	setOtherCORSEnv(t)
+
+	app := fiber.New()
+	AllowFullOptionsWithCORS(app, WithCORSPolicy(CORSPolicy{
+		AllowOrigins:     []string{"https://console.example"},
+		AllowMethods:     []string{http.MethodGet, http.MethodPut, http.MethodOptions},
+		AllowHeaders:     []string{constant.Authorization, constant.IdempotencyKey},
+		ExposeHeaders:    []string{constant.IdempotencyReplayed, constant.IdempotencyFenced},
+		AllowCredentials: true,
+	}))
+	app.Get("/", func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+
+	preflight := httptest.NewRequest(http.MethodOptions, "/", nil)
+	preflight.Header.Set(fiber.HeaderOrigin, "https://console.example")
+	preflight.Header.Set(fiber.HeaderAccessControlRequestMethod, http.MethodPut)
+
+	resp, err := app.Test(preflight)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+	assert.Equal(t, "https://console.example", resp.Header.Get(fiber.HeaderAccessControlAllowOrigin))
+	assert.Equal(t, "true", resp.Header.Get(fiber.HeaderAccessControlAllowCredentials))
+	assert.Equal(t, "GET, PUT, OPTIONS", resp.Header.Get(fiber.HeaderAccessControlAllowMethods))
+	assert.Equal(t, constant.Authorization+", "+constant.IdempotencyKey, resp.Header.Get(fiber.HeaderAccessControlAllowHeaders))
+
+	simple := httptest.NewRequest(http.MethodGet, "/", nil)
+	simple.Header.Set(fiber.HeaderOrigin, "https://console.example")
+
+	resp, err = app.Test(simple)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "https://console.example", resp.Header.Get(fiber.HeaderAccessControlAllowOrigin))
+	assert.Equal(t, constant.IdempotencyReplayed+", "+constant.IdempotencyFenced,
+		resp.Header.Get(fiber.HeaderAccessControlExposeHeaders))
+
+	envOrigin := httptest.NewRequest(http.MethodGet, "/", nil)
+	envOrigin.Header.Set(fiber.HeaderOrigin, "https://env.example")
+
+	resp, err = app.Test(envOrigin)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	assert.Empty(t, resp.Header.Get(fiber.HeaderAccessControlAllowOrigin))
+}
+
+func TestWithCORSPolicy_AnyOriginFallsBackToDenyAllByDefault(t *testing.T) {
+	setOtherCORSEnv(t)
+
+	for name, origins := range map[string][]string{
+		"wildcard": {"*"},
+		"mixed":    {"*", "https://console.example"},
+		"empty":    nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			logger := &testCORSLogger{}
+
+			app := fiber.New()
+			app.Use(WithCORS(WithCORSLogger(logger), WithCORSPolicy(CORSPolicy{
+				AllowOrigins:     origins,
+				AllowCredentials: true,
+			})))
+			app.Get("/", func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+
+			req := httptest.NewRequest(http.MethodOptions, "/", nil)
+			req.Header.Set(fiber.HeaderOrigin, "https://console.example")
+			req.Header.Set(fiber.HeaderAccessControlRequestMethod, http.MethodGet)
+
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+
+			assert.Empty(t, resp.Header.Get(fiber.HeaderAccessControlAllowOrigin))
+			assert.Empty(t, resp.Header.Get(fiber.HeaderAccessControlAllowCredentials))
+			assert.Equal(t, obs.LevelError, logger.lastLevel)
+			assert.Contains(t, logger.lastMessage, "CORS wildcard origin rejected")
+			assert.Contains(t, logger.lastMessage, "WithCORSPolicy")
+		})
+	}
+}
+
+func TestWithCORSPolicy_PermittedWildcardDropsCredentials(t *testing.T) {
+	t.Setenv(commons.EnvAllowCORSWildcard, "true")
+
+	app := fiber.New()
+	app.Use(WithCORS(WithCORSPolicy(CORSPolicy{AllowOrigins: []string{"*"}, AllowCredentials: true})))
+	app.Get("/", func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+
+	req := httptest.NewRequest(http.MethodOptions, "/", nil)
+	req.Header.Set(fiber.HeaderOrigin, "https://example.com")
+	req.Header.Set(fiber.HeaderAccessControlRequestMethod, http.MethodGet)
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	assert.Equal(t, "*", resp.Header.Get(fiber.HeaderAccessControlAllowOrigin))
+	assert.Empty(t, resp.Header.Get(fiber.HeaderAccessControlAllowCredentials))
 }

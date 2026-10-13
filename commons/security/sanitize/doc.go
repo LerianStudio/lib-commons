@@ -26,13 +26,14 @@
 //
 // Field-name sensitivity is NOT decided here. It delegates to
 // github.com/LerianStudio/lib-observability/v4/redaction, the canonical Lerian
-// taxonomy, extended with an addendum for names that taxonomy does not carry:
-// the AWS and SASL key names broker clients and SDKs echo, and the Brazilian
-// document and bank-account names a ledger echoes — the shared list was
-// enumerated in English, so it knows "ssn" and "account_number" and has never
-// heard of "cpf" or "agencia". Structural stripping (URL userinfo, Authorization
-// and Cookie headers, query parameters, JSON and key=value pairs) and bare-token
-// value patterns are layered ON TOP of that field check.
+// taxonomy, extended with an addendum for names that taxonomy does not carry or
+// logs in clear: the AWS key names SDKs echo; the Brazilian document names a
+// ledger echoes — the shared list was enumerated in English, so it knows "ssn"
+// and has never heard of "cpf" or "cnpj"; and "conta" and "chave_pix", which
+// keep tipo_conta and tipo_chave_pix masked where the taxonomy's clear list
+// exempts them. Structural stripping (URL userinfo, Authorization and Cookie
+// headers, query parameters, JSON and key=value pairs) and bare-token value
+// patterns are layered ON TOP of that field check.
 //
 // That taxonomy classifies PII (email, phone, address, iban, swift, ...) as
 // sensitive in addition to secrets, so a PII field NAME is redacted BY DESIGN.
@@ -270,8 +271,8 @@
 // credential in four consecutive passes.
 //
 // POSTGRES' OWN UNIQUE-CONSTRAINT DETAIL LINE IS NOT COVERED, and it is the
-// spelling this package added "cpf" and "agencia" for. pgx echoes
-// "DETAIL: Key (cpf)=(12345678901) already exists." and the document is
+// spelling this package added "cpf" for. pgx echoes "DETAIL: Key
+// (cpf)=(12345678901) already exists." and the document is
 // printed: keyValueName stops at the ')' that sits between the name and the
 // '=', so there is no pair to find. The same holds for "Key (password)=(...)",
 // for a compound key "Key (cpf, agencia)=(...)" and for the quoted
