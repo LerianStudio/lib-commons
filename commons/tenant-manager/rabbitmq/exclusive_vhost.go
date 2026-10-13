@@ -97,6 +97,10 @@ const defaultVHost = "/"
 // needs no change: the refusal surfaces through its existing reconnect backoff
 // and degraded marking.
 //
+// A tenant is identified by its canonical ID (core.CanonicalTenantID) in
+// every request, census entry, claim and comparison, so the dashed and
+// dashless spellings of one UUID tenant are one owner.
+//
 // A vhost is identified by the lowercased broker host, the port and the
 // case-sensitive vhost name, with an empty name meaning "/". The check does
 // not detect one broker reached under two hostnames or addresses, and it
@@ -132,7 +136,7 @@ type vhostCensus struct {
 	group singleflight.Group
 
 	mu      sync.Mutex
-	claims  map[string]vhostClaim // tenantID -> configured vhost; nil until the first build
+	claims  map[string]vhostClaim // canonical tenantID -> configured vhost; nil until the first build
 	builtAt time.Time
 	retryAt time.Time // no rebuild before this, after a failed one
 	lastErr error     // why the last rebuild failed; nil after a success
@@ -519,8 +523,10 @@ func (p *Manager) buildVHostCensus(ctx context.Context) (map[string]vhostClaim, 
 	return claims, nil
 }
 
-// activeTenantIDs returns the distinct, non-empty IDs of the summaries whose
-// status is active or unset, as the multi-tenant consumer reads them.
+// activeTenantIDs returns the distinct canonical IDs (core.CanonicalTenantID)
+// of the summaries whose status is active or unset, as the multi-tenant
+// consumer reads them, so a tenant listed under two spellings is one census
+// entry. An ID with no canonical form cannot connect and is left out.
 func activeTenantIDs(summaries []*client.TenantSummary) []string {
 	ids := make([]string, 0, len(summaries))
 	seen := make(map[string]bool, len(summaries))
@@ -530,8 +536,12 @@ func activeTenantIDs(summaries []*client.TenantSummary) []string {
 			continue
 		}
 
-		tenantID := strings.TrimSpace(summary.ID)
-		if tenantID == "" || seen[tenantID] || (summary.Status != "" && !strings.EqualFold(summary.Status, "active")) {
+		if summary.Status != "" && !strings.EqualFold(summary.Status, "active") {
+			continue
+		}
+
+		tenantID, err := core.CanonicalTenantID(strings.TrimSpace(summary.ID))
+		if err != nil || seen[tenantID] {
 			continue
 		}
 

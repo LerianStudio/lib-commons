@@ -46,6 +46,8 @@ type Manager struct {
 	module  string
 	logger  *logcompat.Logger
 
+	// Every tenant-keyed map is keyed by the canonical tenant ID
+	// (core.CanonicalTenantID), so one tenant is one key under any spelling.
 	mu             sync.RWMutex
 	connections    map[string]*amqp.Connection
 	cachedURIs     map[string]string     // tenantID -> last known connection URI (for change detection)
@@ -156,6 +158,11 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 
 // GetConnection returns a RabbitMQ connection for the tenant.
 // Creates a new connection if one doesn't exist or the existing one is closed.
+//
+// tenantID is canonicalised with core.CanonicalTenantID first, so the dashed
+// and dashless spellings of one UUID tenant share one connection and one vhost
+// claim. An ID with no canonical form is refused with an error wrapping
+// core.ErrInvalidTenantIDFormat.
 func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Connection, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -163,6 +170,11 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Con
 
 	if tenantID == "" {
 		return nil, errors.New("tenant ID is required")
+	}
+
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return nil, err
 	}
 
 	p.mu.RLock()
@@ -487,8 +499,14 @@ func (p *Manager) Close(_ context.Context) error {
 	return errors.Join(errs...)
 }
 
-// CloseConnection closes the RabbitMQ connection for a specific tenant.
+// CloseConnection closes the RabbitMQ connection for a specific tenant, under
+// either spelling of its ID (see GetConnection).
 func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return err
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -497,7 +515,6 @@ func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 		return nil
 	}
 
-	var err error
 	if conn != nil && !conn.IsClosed() {
 		err = conn.Close()
 	}

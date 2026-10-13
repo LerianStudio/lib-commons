@@ -97,7 +97,12 @@ func (l *TenantLoader) InvalidateClientCache(ctx context.Context, tenantID, serv
 		return nil
 	}
 
-	if err := l.pmClient.InvalidateConfig(ctx, tenantID, service); err != nil {
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return err
+	}
+
+	if err = l.pmClient.InvalidateConfig(ctx, tenantID, service); err != nil {
 		wrappedErr := fmt.Errorf("tenantcache: failed to invalidate client cache for tenant %s: %w", tenantID, err)
 		libOpentelemetry.HandleSpanError(span, "failed to invalidate client cache", wrappedErr)
 
@@ -107,7 +112,10 @@ func (l *TenantLoader) InvalidateClientCache(ctx context.Context, tenantID, serv
 	return nil
 }
 
-// LoadTenant fetches and caches a tenant's configuration.
+// LoadTenant fetches and caches a tenant's configuration under its canonical
+// ID (core.CanonicalTenantID), so both spellings of a UUID tenant share one
+// entry; an ID with no canonical form is refused with an error wrapping
+// core.ErrInvalidTenantIDFormat.
 //
 // Behaviour:
 //  1. Acquires a per-tenant mutex (prevents concurrent loads for same tenant).
@@ -125,6 +133,15 @@ func (l *TenantLoader) LoadTenant(ctx context.Context, tenantID string) (*core.T
 
 	ctx, span := tracer.Start(ctx, "tenantcache.tenant_loader.load_tenant")
 	defer span.End()
+
+	// One tenant is one cache entry and one Tenant Manager call under either
+	// UUID spelling.
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "invalid tenant ID", err)
+
+		return nil, err
+	}
 
 	// Per-tenant mutex to prevent concurrent API calls for the same tenant.
 	lockVal, _ := l.loadLocks.LoadOrStore(tenantID, &sync.Mutex{})

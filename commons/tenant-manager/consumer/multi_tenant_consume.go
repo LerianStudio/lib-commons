@@ -449,12 +449,24 @@ func (c *MultiTenantConsumer) resetRetryState(tenantID string) {
 //
 // Unknown tenants trigger a lazy-load via the shared TenantLoader. Additionally,
 // tenants with expired cache entries are re-loaded to keep configuration fresh.
+//
+// tenantID is canonicalised with core.CanonicalTenantID, so the dashed and
+// dashless spellings of one UUID tenant are one consumer; an ID with no
+// canonical form starts nothing.
 func (c *MultiTenantConsumer) EnsureConsumerStarted(ctx context.Context, tenantID string) {
 	baseLogger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.ensure_consumer_started")
 	defer span.End()
+
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		logger.WarnfCtx(ctx, "not starting a consumer: %v", err)
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "invalid tenant ID", err)
+
+		return
+	}
 
 	// Fast path: check if consumer is already active (read lock only)
 	c.mu.RLock()
@@ -559,8 +571,14 @@ func (c *MultiTenantConsumer) EnsureConsumerStarted(ctx context.Context, tenantI
 // tenant does not have a running consumer.
 //
 // Use this method when a tenant is disassociated or deleted to prevent orphaned
-// goroutines from retrying indefinitely.
+// goroutines from retrying indefinitely. Either spelling of a UUID tenant ID
+// stops its consumer (see EnsureConsumerStarted).
 func (c *MultiTenantConsumer) StopConsumer(tenantID string) {
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return // no consumer runs under an ID with no canonical form
+	}
+
 	// Acquire the per-tenant lock to serialize with EnsureConsumerStarted,
 	// preventing a race where Stop and Ensure run concurrently for the same tenant.
 	lockVal, _ := c.consumerLocks.LoadOrStore(tenantID, &sync.Mutex{})
@@ -592,6 +610,11 @@ func (c *MultiTenantConsumer) StopConsumer(tenantID string) {
 // IsDegraded returns true if the given tenant is currently in a degraded state
 // due to repeated connection failures (>= maxRetryBeforeDegraded consecutive failures).
 func (c *MultiTenantConsumer) IsDegraded(tenantID string) bool {
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return false
+	}
+
 	entry, ok := c.retryState.Load(tenantID)
 	if !ok {
 		return false

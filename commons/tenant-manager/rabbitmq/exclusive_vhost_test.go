@@ -90,8 +90,12 @@ func (d *tenantDirectory) serve(w http.ResponseWriter, r *http.Request) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// Like the Tenant Manager, answer a tenant under either UUID spelling.
+	requested, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v1/tenants/"), "/")
+	requested, _ = core.CanonicalTenantID(requested)
+
 	for tenantID, cfg := range d.configs {
-		if !strings.Contains(r.URL.Path, "/tenants/"+tenantID+"/") {
+		if canonical, _ := core.CanonicalTenantID(tenantID); canonical != requested {
 			continue
 		}
 

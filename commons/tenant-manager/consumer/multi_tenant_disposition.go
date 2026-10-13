@@ -19,6 +19,7 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v7/commons/rabbitmq"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/logcompat"
 )
@@ -429,16 +430,7 @@ func (c *MultiTenantConsumer) StartActiveTenants(ctx context.Context) (int, erro
 
 	started := 0
 
-	for _, summary := range summaries {
-		if summary == nil {
-			continue
-		}
-
-		tenantID := strings.TrimSpace(summary.ID)
-		if tenantID == "" || (summary.Status != "" && !strings.EqualFold(summary.Status, "active")) {
-			continue
-		}
-
+	for _, tenantID := range activeTenantIDs(summaries) {
 		c.mu.Lock()
 		if c.closed {
 			c.mu.Unlock()
@@ -775,4 +767,28 @@ func (c *MultiTenantConsumer) openDispositionPublisher(ctx context.Context, tena
 	}
 
 	return publisher, nil
+}
+
+// activeTenantIDs returns the distinct canonical IDs (core.CanonicalTenantID)
+// of the summaries whose status is active or unset, so one tenant listed under
+// two spellings is one consumer. An ID with no canonical form is left out.
+func activeTenantIDs(summaries []*client.TenantSummary) []string {
+	ids := make([]string, 0, len(summaries))
+	seen := make(map[string]bool, len(summaries))
+
+	for _, summary := range summaries {
+		if summary == nil || (summary.Status != "" && !strings.EqualFold(summary.Status, "active")) {
+			continue
+		}
+
+		tenantID, err := core.CanonicalTenantID(strings.TrimSpace(summary.ID))
+		if err != nil || seen[tenantID] {
+			continue
+		}
+
+		seen[tenantID] = true
+		ids = append(ids, tenantID)
+	}
+
+	return ids
 }

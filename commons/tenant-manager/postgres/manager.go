@@ -434,6 +434,10 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 // If a cached connection fails a health check (e.g., due to credential rotation
 // after a tenant purge+re-associate), the stale connection is evicted and a new
 // one is created with fresh credentials from the Tenant Manager.
+//
+// tenantID is canonicalised with core.CanonicalTenantID first, so the dashed
+// and dashless spellings of one UUID tenant share one pool. An ID with no
+// canonical form is refused with an error wrapping core.ErrInvalidTenantIDFormat.
 func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*PostgresConnection, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -441,6 +445,11 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*Postgres
 
 	if tenantID == "" {
 		return nil, errors.New("tenant ID is required")
+	}
+
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return nil, err
 	}
 
 	if p.postureErr != nil {
@@ -1280,8 +1289,14 @@ func (p *Manager) closeUnhealthyConnection(ctx context.Context, tenantID string,
 	}
 }
 
-// CloseConnection closes the connection for a specific tenant.
+// CloseConnection closes the connection for a specific tenant, under either
+// spelling of its ID (see GetConnection).
 func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return err
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -1290,7 +1305,6 @@ func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 		return nil
 	}
 
-	var err error
 	if conn.ConnectionDB != nil {
 		err = conn.Close()
 	}
@@ -1445,7 +1459,15 @@ func BuildConnectionString(cfg *core.PostgreSQLConfig, extraSearchPathSchemas ..
 //
 // For MongoDB, the driver does not support changing pool size after client creation,
 // so this method only applies to PostgreSQL connections.
+//
+// tenantID is canonicalised as in GetConnection; an ID with no canonical form
+// has no pool, so nothing is applied.
 func (p *Manager) ApplyConnectionSettings(tenantID string, config *core.TenantConfig) {
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return
+	}
+
 	p.mu.RLock()
 
 	conn, ok := p.connections[tenantID]

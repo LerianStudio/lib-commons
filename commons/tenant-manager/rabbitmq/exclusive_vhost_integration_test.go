@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -37,6 +38,10 @@ const (
 	vhostIntegrationImage = "rabbitmq:3.13-management-alpine"
 	vhostTenantA          = "tenant-a"
 	vhostTenantB          = "tenant-b"
+	// vhostTenantUUID is a tenant as the Tenant Manager spells it (dashless);
+	// vhostTenantUUIDDashed is the same tenant as a payload may carry it.
+	vhostTenantUUID       = "33333333333333333333333333333333"
+	vhostTenantUUIDDashed = "33333333-3333-3333-3333-333333333333"
 )
 
 // brokerEndpoint is where the test broker listens and how to log in to it.
@@ -96,10 +101,13 @@ func sameVHostClient(t *testing.T, ep brokerEndpoint, active ...string) *client.
 			return
 		}
 
+		// Like the Tenant Manager, answer a tenant under either UUID spelling.
+		requested, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v1/tenants/"), "/")
+		requested, _ = core.CanonicalTenantID(requested)
 		tenantID := ""
 
-		for _, id := range []string{vhostTenantA, vhostTenantB} {
-			if strings.Contains(r.URL.Path, "/tenants/"+id+"/") {
+		for _, id := range []string{vhostTenantA, vhostTenantB, vhostTenantUUID} {
+			if id == requested {
 				tenantID = id
 			}
 		}
@@ -194,6 +202,37 @@ func TestIntegration_ExclusiveVHosts_OwnershipFromConfiguration(t *testing.T) {
 		_, err = m.GetConnection(ctx, vhostTenantB)
 		require.NoError(t, err)
 	})
+}
+
+// TestIntegration_ExclusiveVHosts_OneTenantTwoSpellings connects a tenant
+// under the Tenant Manager's dashless ID, as the multi-tenant consumer does,
+// then asks for a channel under the dashed UUID, as a publisher reading it from
+// a payload does: the same owner, the same connection, a usable channel.
+func TestIntegration_ExclusiveVHosts_OneTenantTwoSpellings(t *testing.T) {
+	ep := startVHostBroker(t)
+	ctx := context.Background()
+
+	m := NewManager(sameVHostClient(t, ep, vhostTenantUUID), "ledger",
+		WithLogger(testutil.NewMockLogger()), WithExclusiveVHosts())
+	t.Cleanup(func() { assert.NoError(t, m.Close(context.Background())) })
+
+	consumerConn, err := m.GetConnection(ctx, vhostTenantUUID)
+	require.NoError(t, err)
+
+	publisherConn, err := m.GetConnection(ctx, vhostTenantUUIDDashed)
+	require.NoError(t, err, "the dashed spelling is the same tenant, not a second owner")
+	assert.Same(t, consumerConn, publisherConn)
+
+	ch, err := m.GetChannel(ctx, vhostTenantUUIDDashed)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ch.Close() })
+
+	q, err := ch.QueueDeclare("", false, true, true, false, nil)
+	require.NoError(t, err)
+	require.NoError(t, ch.PublishWithContext(ctx, "", q.Name, false, false, amqp.Publishing{Body: []byte("audit")}))
+
+	assert.Equal(t, 1, m.Stats().TotalConnections)
+	assert.Equal(t, []string{vhostTenantUUID}, m.Stats().TenantIDs)
 }
 
 // TestIntegration_ExclusiveVHosts_ConcurrentTenantsBothRefused connects two
