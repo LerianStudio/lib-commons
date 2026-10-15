@@ -19,6 +19,13 @@
 // hot and bounds discovery latency for newly committed, retryable, or stuck
 // rows. Scope removal also evicts its activity state.
 //
+// The fallback scope, dispatched when discovery finds no tenant (the default
+// scope, or the tenant carried by the run context), backs off the same way.
+// While it is cold, a tick returns before tenant discovery and opens no span,
+// so an idle single-scope dispatcher exports no trace. The first event after an
+// idle period, or a tenant that discovery would newly list, can therefore wait
+// up to ColdDispatchInterval; WithColdDispatchInterval lowers that bound.
+//
 // Retention is opt-in through WithRetentionPublished and needs a repository
 // implementing the optional PublishedPurger capability (the postgres and mongo
 // adapters do); NewDispatcher returns ErrOutboxRetentionUnsupported otherwise.

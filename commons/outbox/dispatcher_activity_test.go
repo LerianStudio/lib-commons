@@ -14,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
@@ -288,4 +290,104 @@ func TestDispatcher_ColdScopeBackoff_EvictsRemovedScopeState(t *testing.T) {
 
 	_, queryCalls := repo.counts()
 	require.Equal(t, 6, queryCalls[scope])
+}
+
+// fallbackActivityRepo has no discovered tenants and lets dispatch fall back to
+// the default scope.
+type fallbackActivityRepo struct {
+	*activityCountingRepo
+}
+
+func (fallbackActivityRepo) RequiresTenant() bool {
+	return false
+}
+
+func TestDispatcher_FallbackScopeBackoff_SkipsIdleTicksAndResumesOnEvents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+	}{
+		{name: "default scope", ctx: context.Background()},
+		{name: "tenant from context", ctx: ContextWithTenantID(context.Background(), "tenant-a")},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			repo := newActivityCountingRepo()
+			clock := &activityClock{now: time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)}
+			dispatcher := newActivityDispatcher(t, repo, clock, time.Minute)
+			dispatcher.repo = fallbackActivityRepo{activityCountingRepo: repo}
+
+			dispatcher.dispatchTick(test.ctx)
+			clock.Advance(2 * time.Second)
+			dispatcher.dispatchTick(test.ctx)
+
+			topologyCalls, queryCalls := repo.counts()
+			require.Equal(t, 1, topologyCalls, "an idle tick must not list tenants")
+			require.Equal(t, 3, queryCalls[fallbackDispatchScope], "an idle tick must not query the outbox")
+
+			event := &OutboxEvent{ID: uuid.New(), EventType: "payment.created", Payload: []byte("ok")}
+			repo.enqueue(fallbackDispatchScope, repo.pending, event)
+
+			clock.Advance(57 * time.Second)
+			dispatcher.dispatchTick(test.ctx)
+			require.Empty(t, repo.markedPub)
+
+			clock.Advance(time.Second)
+			dispatcher.dispatchTick(test.ctx)
+			require.Equal(t, []uuid.UUID{event.ID}, repo.markedPub)
+
+			// Work keeps the scope hot, so the next tick polls again.
+			clock.Advance(2 * time.Second)
+			dispatcher.dispatchTick(test.ctx)
+
+			topologyCalls, queryCalls = repo.counts()
+			require.Equal(t, 3, topologyCalls)
+			require.Equal(t, 9, queryCalls[fallbackDispatchScope])
+		})
+	}
+}
+
+func TestDispatcher_ReconcileScopeActivity_KeepsFallbackScope(t *testing.T) {
+	t.Parallel()
+
+	discovered := TenantDispatchScope{TenantID: "tenant-a"}
+	repo := newActivityCountingRepo()
+	clock := &activityClock{now: time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)}
+	dispatcher := newActivityDispatcher(t, repo, clock, time.Minute)
+
+	dispatcher.recordScopeActivity(fallbackDispatchScope, DispatchResult{Processed: 1}, clock.Now())
+	dispatcher.recordScopeActivity(discovered, DispatchResult{Processed: 1}, clock.Now())
+
+	dispatcher.reconcileScopeActivity(nil)
+
+	require.Contains(t, dispatcher.scopeActivity, fallbackDispatchScope)
+	require.NotContains(t, dispatcher.scopeActivity, discovered)
+	require.Equal(t, clock.Now(), dispatcher.scopeActivity[fallbackDispatchScope].lastWorkAt)
+}
+
+func TestDispatcher_FallbackScopeBackoff_ColdTickExportsNoSpan(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	repo := newActivityCountingRepo()
+	clock := &activityClock{now: time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)}
+	dispatcher := newActivityDispatcher(t, repo, clock, time.Minute)
+	dispatcher.repo = fallbackActivityRepo{activityCountingRepo: repo}
+	dispatcher.tracer = provider.Tracer("test")
+
+	dispatcher.dispatchTick(context.Background())
+	warmSpans := len(recorder.Ended())
+	require.Positive(t, warmSpans, "the first tick must be traced")
+
+	clock.Advance(2 * time.Second)
+	dispatcher.dispatchTick(context.Background())
+
+	require.Len(t, recorder.Ended(), warmSpans, "a cold tick must not open a span")
 }
