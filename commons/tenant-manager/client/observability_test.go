@@ -4,6 +4,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -89,7 +90,7 @@ func metricNames(t *testing.T, reader *sdkmetric.ManualReader) []string {
 // doRequestThrough drives one real request through the given client so the
 // instrumented transport actually runs, and drains the body — httpobs ends the
 // span on body close, so a leaked body would leave the span unfinished.
-func doRequestThrough(t *testing.T, c *http.Client) {
+func doRequestThrough(ctx context.Context, t *testing.T, c *http.Client) {
 	t.Helper()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -97,7 +98,7 @@ func doRequestThrough(t *testing.T, c *http.Client) {
 	}))
 	t.Cleanup(server.Close)
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
 	require.NoError(t, err)
 
 	resp, err := c.Do(req)
@@ -147,26 +148,101 @@ func TestNewDefaultHTTPClientPreservesTuning(t *testing.T) {
 func TestOutboundRequestEmitsDurationMetric(t *testing.T) {
 	reader := withGlobalMeterProvider(t)
 
-	doRequestThrough(t, newDefaultHTTPClient())
+	doRequestThrough(context.Background(), t, newDefaultHTTPClient())
 
 	assert.Contains(t, metricNames(t, reader), clientDurationMetric,
 		"outbound requests must record http.client.request.duration")
 }
 
-// TestOutboundRequestEmitsClientSpan pins the subtle half of the contract:
-// httpobs emits NO span unless a TracerProvider is passed, so the wiring must
-// forward the global one and not rely on httpobs defaulting it.
+// TestOutboundRequestEmitsClientSpan pins that a request made under a parent
+// span gets a CLIENT span from the global TracerProvider.
 func TestOutboundRequestEmitsClientSpan(t *testing.T) {
 	recorder := withGlobalTracerProvider(t)
 
-	doRequestThrough(t, newDefaultHTTPClient())
+	ctx, parent := otel.Tracer("test").Start(context.Background(), "parent")
+	doRequestThrough(ctx, t, newDefaultHTTPClient())
+	parent.End()
 
 	spans := recorder.Ended()
-	require.NotEmpty(t, spans, "a CLIENT span must be produced for outbound requests")
+	require.Len(t, spans, 2, "a CLIENT span must be produced for outbound requests")
 
 	assert.Equal(t, trace.SpanKindClient, spans[0].SpanKind())
 	assert.Equal(t, "HTTP GET", spans[0].Name(),
 		"span name must stay bounded — never fold the URL path in")
+	assert.Equal(t, parent.SpanContext().SpanID(), spans[0].Parent().SpanID(),
+		"the CLIENT span must be a child of the caller's span")
+}
+
+// TestOutboundRequestWithoutParentEmitsNoSpan pins that a request made outside
+// any request (no span in its context) starts no root trace, while it still
+// records the outbound duration metric.
+func TestOutboundRequestWithoutParentEmitsNoSpan(t *testing.T) {
+	recorder := withGlobalTracerProvider(t)
+	reader := withGlobalMeterProvider(t)
+
+	doRequestThrough(context.Background(), t, newDefaultHTTPClient())
+
+	assert.Empty(t, recorder.Ended(), "a request with no parent span must not start a root trace")
+	assert.Contains(t, metricNames(t, reader), clientDurationMetric,
+		"the metric must not depend on a parent span")
+}
+
+// TestGetTenantConfigSpan pins when get_tenant_config is traced: only on a
+// cache miss, and only under a parent span. A cache hit is a local read, and a
+// call with no parent (pool settings revalidation) would be a root trace.
+func TestGetTenantConfigSpan(t *testing.T) {
+	const spanName = "tenantmanager.client.get_tenant_config"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		assert.NoError(t, json.NewEncoder(w).Encode(newMinimalTenantConfig()))
+	}))
+	t.Cleanup(server.Close)
+
+	tests := []struct {
+		name        string
+		warmCache   bool
+		underParent bool
+		wantSpans   []string
+	}{
+		{name: "cache miss under a parent span", underParent: true, wantSpans: []string{spanName, "HTTP GET", "parent"}},
+		{name: "cache hit under a parent span", warmCache: true, underParent: true, wantSpans: []string{"parent"}},
+		{name: "cache miss without a parent span", wantSpans: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := withGlobalTracerProvider(t)
+			c := mustNewClient(t, server.URL)
+
+			if tt.warmCache {
+				_, err := c.GetTenantConfig(context.Background(), "tenant-123", "ledger")
+				require.NoError(t, err)
+			}
+
+			ctx, parent := context.Background(), trace.SpanFromContext(context.Background())
+			if tt.underParent {
+				ctx, parent = otel.Tracer("test").Start(ctx, "parent")
+			}
+
+			_, err := c.GetTenantConfig(ctx, "tenant-123", "ledger")
+			require.NoError(t, err)
+			parent.End()
+
+			assert.ElementsMatch(t, tt.wantSpans, endedSpanNames(recorder))
+		})
+	}
+}
+
+// endedSpanNames returns the name of every span the recorder has seen end.
+func endedSpanNames(recorder *tracetest.SpanRecorder) []string {
+	var names []string
+
+	for _, span := range recorder.Ended() {
+		names = append(names, span.Name())
+	}
+
+	return names
 }
 
 // TestWithTimeoutInstrumentsBareClient covers the second construction site: the
@@ -184,7 +260,7 @@ func TestWithTimeoutInstrumentsBareClient(t *testing.T) {
 
 	require.NotNil(t, c.httpClient.Transport, "the bare client must get an instrumented transport")
 
-	doRequestThrough(t, c.httpClient)
+	doRequestThrough(context.Background(), t, c.httpClient)
 
 	assert.Contains(t, metricNames(t, reader), clientDurationMetric)
 }
