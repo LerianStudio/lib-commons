@@ -755,6 +755,8 @@ func (rc *RabbitMQConnection) HealthCheck() (bool, error) {
 
 // HealthCheckContext rabbitmq when the server is started.
 // It captures config fields under lock to avoid reading them during concurrent mutation.
+// It opens no span: health checks run many times a minute, and HealthCheck runs
+// on context.Background, so each check would be a root trace of its own.
 func (rc *RabbitMQConnection) HealthCheckContext(ctx context.Context) (bool, error) {
 	if rc == nil {
 		return false, nilConnectionAssert("health_check_context")
@@ -763,11 +765,6 @@ func (rc *RabbitMQConnection) HealthCheckContext(ctx context.Context) (bool, err
 	if ctx == nil {
 		ctx = context.Background()
 	}
-
-	ctx, span := tracer.Start(ctx, "rabbitmq.health_check")
-	defer span.End()
-
-	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemRabbitMQ))
 
 	rc.mu.Lock()
 	if err := rc.applyDefaults(); err != nil {
