@@ -391,3 +391,39 @@ func TestDispatcher_FallbackScopeBackoff_ColdTickExportsNoSpan(t *testing.T) {
 
 	require.Len(t, recorder.Ended(), warmSpans, "a cold tick must not open a span")
 }
+
+// slowListingRepo advances the clock during tenant listing, as a real
+// discovery query does.
+type slowListingRepo struct {
+	fallbackActivityRepo
+	clock *activityClock
+}
+
+func (repo slowListingRepo) ListTenantDispatchScopes(ctx context.Context) ([]TenantDispatchScope, error) {
+	repo.clock.Advance(10 * time.Millisecond)
+
+	return repo.fallbackActivityRepo.ListTenantDispatchScopes(ctx)
+}
+
+func TestDispatcher_FallbackScopeBackoff_HotScopePollsEveryTick(t *testing.T) {
+	t.Parallel()
+
+	repo := newActivityCountingRepo()
+	clock := &activityClock{now: time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)}
+	dispatcher := newActivityDispatcher(t, repo, clock, time.Minute)
+	dispatcher.repo = slowListingRepo{fallbackActivityRepo: fallbackActivityRepo{activityCountingRepo: repo}, clock: clock}
+
+	first := &OutboxEvent{ID: uuid.New(), EventType: "payment.created", Payload: []byte("ok")}
+	repo.enqueue(fallbackDispatchScope, repo.pending, first)
+	dispatcher.dispatchTick(context.Background())
+
+	// The next tick fires one DispatchInterval after the previous one started,
+	// which is before the previous dispatch time plus DispatchInterval.
+	clock.Advance(2*time.Second - 10*time.Millisecond)
+
+	second := &OutboxEvent{ID: uuid.New(), EventType: "payment.created", Payload: []byte("ok")}
+	repo.enqueue(fallbackDispatchScope, repo.pending, second)
+	dispatcher.dispatchTick(context.Background())
+
+	require.Equal(t, []uuid.UUID{first.ID, second.ID}, repo.markedPub)
+}
