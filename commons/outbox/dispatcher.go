@@ -694,12 +694,15 @@ func (dispatcher *Dispatcher) recordScopeActivity(
 		activity.lastWorkAt = now
 	}
 
-	interval := dispatcher.cfg.ColdDispatchInterval
+	activity.nextPollAt = now.Add(dispatcher.cfg.ColdDispatchInterval)
+
+	// A recently active scope is due on the next tick. Waiting for
+	// now+DispatchInterval would skip ticks: now is read after discovery, and
+	// the next tick fires one interval after this one started.
 	if !activity.lastWorkAt.IsZero() && now.Sub(activity.lastWorkAt) < dispatcher.cfg.ColdDispatchInterval {
-		interval = dispatcher.cfg.DispatchInterval
+		activity.nextPollAt = now
 	}
 
-	activity.nextPollAt = now.Add(interval)
 	dispatcher.scopeActivity[scope] = activity
 }
 
