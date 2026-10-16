@@ -76,8 +76,7 @@ func domainRefusal(err error, tenantID string) refusalError {
 	}
 
 	// Tenant suspended/purged -> 403
-	var suspErr *core.TenantSuspendedError
-	if errors.As(err, &suspErr) {
+	if suspErr, ok := errors.AsType[*core.TenantSuspendedError](err); ok {
 		return newRefusal(err, http.StatusForbidden, "0131", "Service Suspended",
 			"tenant service is "+suspErr.Status)
 	}

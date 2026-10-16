@@ -82,7 +82,7 @@ endif
 # Pinned tool versions for reproducibility (update as needed)
 GOTESTSUM_VERSION ?= v1.13.0
 GOSEC_VERSION ?= v2.26.1
-GOLANGCI_LINT_VERSION ?= v2.12.2
+GOLANGCI_LINT_VERSION ?= v2.14.0
 
 TEST_REPORTS_DIR ?= ./reports
 GOTESTSUM = $(shell command -v gotestsum 2>/dev/null)

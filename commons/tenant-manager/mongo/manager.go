@@ -903,8 +903,7 @@ func (p *Manager) getMongoConfigForTenant(
 ) (*core.MongoDBConfig, error) {
 	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service, client.WithSkipCache())
 	if err != nil {
-		var suspErr *core.TenantSuspendedError
-		if errors.As(err, &suspErr) {
+		if suspErr, ok := errors.AsType[*core.TenantSuspendedError](err); ok {
 			logger.WarnfCtx(ctx, "tenant service is %s: tenantID=%s", suspErr.Status, tenantID)
 			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "tenant service suspended", err)
 

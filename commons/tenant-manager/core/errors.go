@@ -136,8 +136,7 @@ func IsTenantSuspendedError(err error) bool {
 // *TenantSuspendedError whose Status is "purged". This allows callers to
 // distinguish purged tenants from suspended ones for eviction decisions.
 func IsTenantPurgedError(err error) bool {
-	var target *TenantSuspendedError
-	if errors.As(err, &target) {
+	if target, ok := errors.AsType[*TenantSuspendedError](err); ok {
 		return target.Status == "purged"
 	}
 
