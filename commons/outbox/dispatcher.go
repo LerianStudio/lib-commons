@@ -904,6 +904,9 @@ func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(ctx context.Contex
 			obs.LevelWarn,
 			"outbox tenant discovery returned no tenants; skipping dispatch because repository requires tenant context",
 		)
+		// Record an idle result so dispatchTick backs off. A discovery error
+		// returns before this point and is retried on the next tick.
+		dispatcher.recordScopeActivity(fallbackDispatchScope, DispatchResult{}, now)
 
 		return
 	}

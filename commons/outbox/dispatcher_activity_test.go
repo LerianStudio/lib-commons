@@ -8,6 +8,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -390,6 +391,80 @@ func TestDispatcher_FallbackScopeBackoff_ColdTickExportsNoSpan(t *testing.T) {
 	dispatcher.dispatchTick(context.Background())
 
 	require.Len(t, recorder.Ended(), warmSpans, "a cold tick must not open a span")
+}
+
+// tenantRequiredActivityRepo has no discovered tenants and refuses to dispatch
+// without one.
+type tenantRequiredActivityRepo struct {
+	*activityCountingRepo
+	discoveryErr error
+}
+
+func (tenantRequiredActivityRepo) RequiresTenant() bool {
+	return true
+}
+
+func (repo tenantRequiredActivityRepo) ListTenantDispatchScopes(ctx context.Context) ([]TenantDispatchScope, error) {
+	scopes, err := repo.activityCountingRepo.ListTenantDispatchScopes(ctx)
+	if repo.discoveryErr != nil {
+		return nil, repo.discoveryErr
+	}
+
+	return scopes, err
+}
+
+func TestDispatcher_FallbackScopeBackoff_TenantRequiredWithoutTenantsBacksOff(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	repo := newActivityCountingRepo()
+	clock := &activityClock{now: time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)}
+	dispatcher := newActivityDispatcher(t, repo, clock, time.Minute)
+	dispatcher.repo = tenantRequiredActivityRepo{activityCountingRepo: repo}
+	dispatcher.tracer = provider.Tracer("test")
+
+	dispatcher.dispatchTick(context.Background())
+	firstSpans := len(recorder.Ended())
+
+	// Every tick up to the last one before ColdDispatchInterval.
+	for range 29 {
+		clock.Advance(2 * time.Second)
+		dispatcher.dispatchTick(context.Background())
+	}
+
+	topologyCalls, _ := repo.counts()
+	require.Equal(t, 1, topologyCalls, "an idle tick must not list tenants")
+	require.Len(t, recorder.Ended(), firstSpans, "an idle tick must not open a span")
+
+	// A tenant listed during the backoff is found on the tick at ColdDispatchInterval.
+	tenant := TenantDispatchScope{TenantID: "tenant-a"}
+	repo.setScopes(tenant)
+	clock.Advance(2 * time.Second)
+	dispatcher.dispatchTick(context.Background())
+
+	topologyCalls, queryCalls := repo.counts()
+	require.Equal(t, 2, topologyCalls)
+	require.Equal(t, 3, queryCalls[tenant])
+}
+
+func TestDispatcher_FallbackScopeBackoff_DiscoveryErrorRetriesOnNextTick(t *testing.T) {
+	t.Parallel()
+
+	repo := newActivityCountingRepo()
+	clock := &activityClock{now: time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)}
+	dispatcher := newActivityDispatcher(t, repo, clock, time.Minute)
+	dispatcher.repo = tenantRequiredActivityRepo{
+		activityCountingRepo: repo,
+		discoveryErr:         errors.New("tenant discovery unavailable"),
+	}
+
+	dispatcher.dispatchTick(context.Background())
+	clock.Advance(2 * time.Second)
+	dispatcher.dispatchTick(context.Background())
+
+	topologyCalls, _ := repo.counts()
+	require.Equal(t, 2, topologyCalls, "a failed discovery must be retried on the next tick")
 }
 
 // slowListingRepo advances the clock during tenant listing, as a real
