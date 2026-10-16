@@ -1,5 +1,14 @@
 # Lib-commons Changelog
 
+## [7.16.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.16.0)
+
+Features:
+- Accept `development` in `CurrentEnv`. (@prymax10)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.15.0...v7.16.0)
+
+---
+
 ## [7.15.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.15.0)
 
 Features:
