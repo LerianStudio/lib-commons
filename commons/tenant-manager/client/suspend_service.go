@@ -89,7 +89,7 @@ func (c *Client) doStateTransition(ctx context.Context, span trace.Span, logger 
 	// #nosec G107 -- baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		c.recordFailure()
+		c.recordTransportFailure(ctx)
 		libOpentelemetry.HandleSpanError(span, "HTTP request failed", err)
 
 		return fmt.Errorf("failed to execute request: %w", err)
@@ -98,7 +98,7 @@ func (c *Client) doStateTransition(ctx context.Context, span trace.Span, logger 
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
-		c.recordFailure()
+		c.recordTransportFailure(ctx)
 		libOpentelemetry.HandleSpanError(span, "Failed to read response body", err)
 
 		return fmt.Errorf("failed to read response body: %w", err)

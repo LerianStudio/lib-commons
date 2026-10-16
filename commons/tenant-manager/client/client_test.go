@@ -699,6 +699,51 @@ func TestClient_CircuitBreaker_NetworkErrorCountsAsFailure(t *testing.T) {
 	assert.ErrorIs(t, err, core.ErrCircuitBreakerOpen)
 }
 
+func TestClient_CircuitBreaker_CallerHangUpIsNotAFailure(t *testing.T) {
+	// The server never answers: only a deadline or a hang-up ends the call.
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	callerCancel := func() (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(50*time.Millisecond, cancel)
+
+		return ctx, cancel
+	}
+	callerDeadline := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), 50*time.Millisecond)
+	}
+	noCallerLimit := func() (context.Context, context.CancelFunc) {
+		return context.WithCancel(context.Background())
+	}
+
+	tests := []struct {
+		name         string
+		callerCtx    func() (context.Context, context.CancelFunc)
+		opts         []ClientOption
+		wantFailures int
+	}{
+		{name: "caller cancel does not count", callerCtx: callerCancel},
+		{name: "caller deadline does not count", callerCtx: callerDeadline},
+		{name: "client's own timeout counts", callerCtx: noCallerLimit, opts: []ClientOption{WithTimeout(50 * time.Millisecond)}, wantFailures: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := mustNewClient(t, server.URL, append(tt.opts, WithCircuitBreaker(1, 30*time.Second))...)
+
+			ctx, cancel := tt.callerCtx()
+			defer cancel()
+
+			_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
+			require.Error(t, err)
+			assert.Equal(t, tt.wantFailures, client.cbFailures)
+		})
+	}
+}
+
 func TestClient_CircuitBreaker_SuccessResetsAfterPartialFailures(t *testing.T) {
 	var requestCount atomic.Int32
 
