@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"mime"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -72,7 +73,7 @@ func initValidators() (*validator.Validate, error) {
 
 	// Register custom validator for decimal amounts that must be positive
 	if err := vld.RegisterValidation("positive_decimal", func(fl validator.FieldLevel) bool {
-		value, ok := fl.Field().Interface().(decimal.Decimal)
+		value, ok := reflect.TypeAssert[decimal.Decimal](fl.Field())
 		if !ok {
 			return false
 		}

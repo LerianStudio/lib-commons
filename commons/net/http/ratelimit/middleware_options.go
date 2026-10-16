@@ -107,16 +107,28 @@ func WithOnLimited(fn func(c fiber.Ctx, tier Tier)) Option {
 // Window), so consumers that surface a retry-after-millis field in their envelope get the
 // same accuracy as the built-in Retry-After header.
 //
-// WithExceededHandler ONLY governs the 429 body. The 503 fail-closed path (handleRedisError)
-// is NOT affected and keeps its built-in chttp.ErrorResponse responder — those have
-// distinct semantics (Redis unavailable vs. rate exceeded) and should not share a body
-// responder.
+// WithExceededHandler ONLY governs the 429 body. The limiter's other refusals go through
+// WithRefusalHandler.
 //
 // Passing nil is a no-op: the option leaves any previously-installed handler in place.
 func WithExceededHandler(fn func(c fiber.Ctx, tier Tier, ttl time.Duration) error) Option {
 	return func(rl *RateLimiter) {
 		if fn != nil {
 			rl.exceededHandler = fn
+		}
+	}
+}
+
+// WithRefusalHandler writes the body of the limiter's non-429 refusals (400 invalid tenant
+// context, 500 misconfigured tier, 503 Redis down while fail-closed) instead of the
+// chttp.ErrorResponse envelope. cause is for logs, never the body. A nil fn is a no-op.
+//
+// An error returned by the handler takes precedence over the recorded 5xx cause in the access
+// line. A 400 cause is not recorded, so the returned error must wrap it.
+func WithRefusalHandler(fn func(c fiber.Ctx, status int, cause error) error) Option {
+	return func(rl *RateLimiter) {
+		if fn != nil {
+			rl.refusalHandler = fn
 		}
 	}
 }

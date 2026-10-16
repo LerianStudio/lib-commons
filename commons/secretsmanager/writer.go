@@ -80,8 +80,7 @@ func (writer *awsSecretWriter) CreateSecretString(ctx context.Context, secretID,
 		SecretString: aws.String(secretJSON),
 	})
 	if err != nil {
-		var exists *smtypes.ResourceExistsException
-		if errors.As(err, &exists) {
+		if _, ok := errors.AsType[*smtypes.ResourceExistsException](err); ok {
 			return fmt.Errorf("%w at %s", ErrBackendSecretExists, redactPath(secretID))
 		}
 
@@ -115,8 +114,7 @@ func (writer *awsSecretWriter) DeleteSecret(ctx context.Context, secretID string
 		return nil
 	}
 
-	var notFound *smtypes.ResourceNotFoundException
-	if errors.As(err, &notFound) {
+	if _, ok := errors.AsType[*smtypes.ResourceNotFoundException](err); ok {
 		return nil
 	}
 

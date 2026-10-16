@@ -49,30 +49,23 @@ const MaxInputLen = 64 << 10
 // generic default list. Field sensitivity itself is decided by
 // redaction.IsSensitiveField; this is only the addendum.
 //
-// Two groups, and the second is the one worth explaining. The AWS/SASL names are
-// what broker clients and SDKs echo. The BRAZILIAN document and bank-account
-// names are what a ledger echoes: the shared taxonomy was enumerated in English,
-// so it knows "ssn" and "account_number" and has never heard of "cpf" or
-// "agencia" — and those are the exact spellings a unique-constraint violation, a
-// validator message or a marshaled payload carries here.
+// Two groups, and the second is the one worth explaining. The AWS names are
+// what SDKs echo. The BRAZILIAN document names are what a
+// ledger echoes: the shared taxonomy was enumerated in English, so it knows
+// "ssn" and has never heard of "cpf" or "cnpj" — and those are the exact
+// spellings a unique-constraint violation, a validator message or a marshaled
+// payload carries here.
 //
 // Matching is by whole word, so an entry also covers its compounds
-// ("conta_corrente", "cpf_titular") without covering an unrelated word that
-// merely contains the letters.
+// ("cpf_titular") without covering an unrelated word that merely contains the
+// letters.
 var sensitiveFieldExtras = []string{
-	// AWS, SASL and signature material.
+	// AWS and signature material.
 	"accesskey",
-	"access_key",
 	"accesskeyid",
-	"aws_access_key_id",
-	"aws_secret_access_key",
-	"aws_session_token",
 	"secretaccesskey",
 	"sessiontoken",
 	"signature",
-	"sasl_password",
-	"passwd",
-	"pwd",
 	// libpq/pgx connection parameter carrying the client key's passphrase. The
 	// taxonomy's "password" does not reach it: the match is by whole word, and
 	// "sslpassword" has no boundary in front of "password".
@@ -85,12 +78,10 @@ var sensitiveFieldExtras = []string{
 	"document",
 	"documento",
 
-	// Bank account, branch and Pix addressing.
+	// The taxonomy carries these, but its clear list exempts tipo_conta and
+	// tipo_chave_pix; an addendum entry is matched first, so both stay masked.
 	"conta",
-	"agencia",
 	"chave_pix",
-	"holder_name",
-	"nome_titular",
 
 	// Date of birth, in both spellings this codebase sees.
 	"birthdate",

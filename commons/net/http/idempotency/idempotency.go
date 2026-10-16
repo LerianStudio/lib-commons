@@ -1736,8 +1736,7 @@ func effectiveStatus(c fiber.Ctx, status int, err error) int {
 		return status
 	}
 
-	var fiberErr *fiber.Error
-	if errors.As(err, &fiberErr) {
+	if fiberErr, ok := errors.AsType[*fiber.Error](err); ok {
 		return fiberErr.Code
 	}
 

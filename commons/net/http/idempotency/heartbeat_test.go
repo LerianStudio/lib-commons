@@ -363,8 +363,10 @@ func TestCheck_ProcessingHeartbeat_LogsTheResolvedTenant(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(middleware.Check())
+	// The heartbeat stops when the handler returns, so the handler holds until the failed beat is logged.
 	app.Post("/test", func(c fiber.Ctx) error {
-		time.Sleep(100 * time.Millisecond)
+		assert.Eventually(t, func() bool { return logger.has("processing heartbeat failed") },
+			10*time.Second, 5*time.Millisecond)
 
 		return c.SendStatus(fiber.StatusCreated)
 	})

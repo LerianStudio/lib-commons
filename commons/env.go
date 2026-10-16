@@ -9,14 +9,15 @@ import (
 // Environment identifiers accepted by CurrentEnv. Keep this list aligned with
 // downstream services' deploy manifests.
 const (
-	EnvStaging    = "staging"
-	EnvProduction = "production"
+	EnvDevelopment = "development"
+	EnvStaging     = "staging"
+	EnvProduction  = "production"
 )
 
 // CurrentEnv reads the runtime environment from ENVIRONMENT_NAME (preferred)
 // or ENV_NAME (also accepted). The value is normalised to lowercase and
 // trimmed. Returns an error if the variable is unset, empty, or not one of
-// the accepted values (staging, production).
+// the accepted values (development, staging, production).
 //
 // Callers MUST handle the error — env mis-configuration should fail-fast at
 // boot, never silently default.
@@ -28,12 +29,12 @@ func CurrentEnv() (string, error) {
 
 	env := strings.ToLower(strings.TrimSpace(raw))
 	switch env {
-	case EnvStaging, EnvProduction:
+	case EnvDevelopment, EnvStaging, EnvProduction:
 		return env, nil
 	case "":
-		return "", fmt.Errorf("ENVIRONMENT_NAME (or ENV_NAME) is required: must be %q or %q", EnvStaging, EnvProduction)
+		return "", fmt.Errorf("ENVIRONMENT_NAME (or ENV_NAME) is required: must be %q, %q or %q", EnvDevelopment, EnvStaging, EnvProduction)
 	default:
-		return "", fmt.Errorf("invalid environment %q: must be %q or %q", env, EnvStaging, EnvProduction)
+		return "", fmt.Errorf("invalid environment %q: must be %q, %q or %q", env, EnvDevelopment, EnvStaging, EnvProduction)
 	}
 }
 

@@ -63,7 +63,7 @@ type MultiTenantConfig struct {
 	// This is passed to tenant-manager when fetching tenant list.
 	Service string
 
-	// Environment is the deployment environment (e.g., "staging", "production").
+	// Environment is the deployment environment (e.g., "development", "staging", "production").
 	// Retained for backward compatibility but no longer used for Redis key
 	// construction. Tenant discovery uses the tenant-manager API exclusively.
 	Environment string

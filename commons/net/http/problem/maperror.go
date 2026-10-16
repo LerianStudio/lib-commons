@@ -22,7 +22,8 @@ import (
 //     URI (BaseURI + "/" + code); the code is NOT appended to detail. 5xx details
 //     are sanitized to "internal error" so a raw cause never leaks, unless err
 //     carries a PublicDetail, while Code/Type still let clients branch on a
-//     sanitized 500. An empty code yields a bare body (no Code, default Type)
+//     sanitized 500; err stays off the wire as the cause the access line logs.
+//     An empty code yields a bare body (no Code, default Type)
 //     for rails without a code taxonomy.
 //
 // codeOf extracts a (code, msg, ok) triple from err: ok=false signals the error
@@ -49,6 +50,9 @@ func MapError(
 	fallbackCode string,
 ) error {
 	pd := mapProblem(err, codeOf, statusOf, fallbackCode)
+	if pd.Status >= http.StatusInternalServerError {
+		pd.cause = err
+	}
 
 	var members curated
 

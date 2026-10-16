@@ -18,6 +18,7 @@ import (
 	constant "github.com/LerianStudio/lib-commons/v7/commons/constants"
 	chttp "github.com/LerianStudio/lib-commons/v7/commons/net/http"
 	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
+	observability "github.com/LerianStudio/lib-observability/v4"
 	"github.com/LerianStudio/lib-observability/v4/assert"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/gofiber/fiber/v3"
@@ -134,6 +135,7 @@ type RateLimiter struct {
 	failOpen        bool
 	onLimited       func(c fiber.Ctx, tier Tier)
 	exceededHandler func(c fiber.Ctx, tier Tier, ttl time.Duration) error
+	refusalHandler  func(c fiber.Ctx, status int, cause error) error
 	redisTimeout    time.Duration
 	// enabled holds the caller's explicit enablement decision from
 	// WithEnabled. nil means the caller did not decide and
@@ -365,13 +367,25 @@ func (rl *RateLimiter) misconfiguredTierHandler(ctx context.Context, tier Tier) 
 		)
 	}
 
+	cause := fmt.Errorf("rate limit tier %q: %s", tier.Name, message)
+
 	return func(c fiber.Ctx) error {
-		return chttp.Respond(c, http.StatusInternalServerError, chttp.ErrorResponse{
-			Code:    http.StatusInternalServerError,
-			Title:   misconfiguredTierTitle,
-			Message: message,
-		})
+		return rl.refuse(c, http.StatusInternalServerError, misconfiguredTierTitle, message, cause)
 	}
+}
+
+// refuse writes a refusal other than the 429: through WithRefusalHandler when set, else as
+// the historical flat envelope. A 5xx body hides cause, so it is recorded for the access line.
+func (rl *RateLimiter) refuse(c fiber.Ctx, status int, title, message string, cause error) error {
+	if status >= http.StatusInternalServerError {
+		observability.RecordErrorCause(c.Context(), cause)
+	}
+
+	if rl.refusalHandler != nil {
+		return rl.refusalHandler(c, status, cause)
+	}
+
+	return chttp.Respond(c, status, chttp.ErrorResponse{Code: status, Title: title, Message: message})
 }
 
 // maxLoggedMisconfiguredTiers bounds the per-instance misconfigured-tier log
@@ -527,22 +541,14 @@ func (rl *RateLimiter) handleRedisError(
 	libOpentelemetry.HandleSpanError(span, "rate limiter redis error", err)
 
 	if errors.Is(err, ErrInvalidTenantContext) {
-		return chttp.Respond(c, http.StatusBadRequest, chttp.ErrorResponse{
-			Code:    http.StatusBadRequest,
-			Title:   invalidTenantContextTitle,
-			Message: invalidTenantContextMessage,
-		})
+		return rl.refuse(c, http.StatusBadRequest, invalidTenantContextTitle, invalidTenantContextMessage, err)
 	}
 
 	if rl.failOpen {
 		return c.Next()
 	}
 
-	return chttp.Respond(c, http.StatusServiceUnavailable, chttp.ErrorResponse{
-		Code:    http.StatusServiceUnavailable,
-		Title:   serviceUnavailableTitle,
-		Message: serviceUnavailableMessage,
-	})
+	return rl.refuse(c, http.StatusServiceUnavailable, serviceUnavailableTitle, serviceUnavailableMessage, err)
 }
 
 // handleLimitExceeded handles the case when the rate limit has been exceeded.

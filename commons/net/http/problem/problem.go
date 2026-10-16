@@ -6,7 +6,7 @@
 // translates a domain-layer error into the shared Detail.
 //
 // The package imports github.com/danielgtaylor/huma/v2 and lib-observability's
-// tracing accessor only — no Fiber, no transport adapter — so it stays the
+// tracing accessor and error-cause slot only — no Fiber, no transport adapter — so it stays the
 // light, transport-free half of the wrapper. The heavier Fiber binding lives in
 // commons/net/http/openapi, which imports this package for exactly one thing:
 // registering InstanceTransformer on the API it builds, so every service carries
@@ -154,6 +154,10 @@ type Detail struct {
 	// their own.
 	Extensions Extensions `json:"-"`
 
+	// cause is why a >=500 failed: off the wire, it reaches the access line
+	// through InstanceTransformer.
+	cause error
+
 	// A body may carry extension members, so the published schema must allow them.
 	_ struct{} `json:"-" additionalProperties:"true"`
 }
@@ -268,8 +272,7 @@ type curated struct {
 // kind wins. matched reports a type was present, even empty, so the caller never
 // folds err into errors[].
 func (c *curated) collect(err error) (matched bool) {
-	var up *Upstream
-	if errors.As(err, &up) {
+	if up, ok := errors.AsType[*Upstream](err); ok {
 		matched = true
 
 		if c.upstream == nil && up != nil && (up.Code != "" || up.Message != "") {
@@ -277,8 +280,7 @@ func (c *curated) collect(err error) (matched bool) {
 		}
 	}
 
-	var extensions Extensions
-	if errors.As(err, &extensions) {
+	if extensions, ok := errors.AsType[Extensions](err); ok {
 		matched = true
 
 		if c.extensions == nil && len(extensions) > 0 {
@@ -286,8 +288,7 @@ func (c *curated) collect(err error) (matched bool) {
 		}
 	}
 
-	var detail PublicDetail
-	if errors.As(err, &detail) {
+	if detail, ok := errors.AsType[PublicDetail](err); ok {
 		matched = true
 
 		if c.detail == "" {
