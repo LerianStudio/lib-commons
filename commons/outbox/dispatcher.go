@@ -44,6 +44,12 @@ type dispatchScopeActivity struct {
 	nextPollAt time.Time
 }
 
+// fallbackDispatchScope keys the activity of the scope dispatched when
+// discovery finds no tenant: the default scope, or the tenant carried by the
+// run context. Discovery never yields an empty tenant ID, so the key cannot
+// collide with a discovered scope.
+var fallbackDispatchScope = TenantDispatchScope{}
+
 // Dispatcher handles publishing outbox events through registered handlers.
 type Dispatcher struct {
 	repo            OutboxRepository
@@ -268,18 +274,29 @@ func (dispatcher *Dispatcher) RunContext(parentCtx context.Context, launcher *li
 			default:
 			}
 
-			func() {
-				dispatcher.dispatchWg.Add(1)
-				defer dispatcher.dispatchWg.Done()
-
-				tickCtx, span := dispatcher.tracer.Start(ctx, "outbox.dispatcher.dispatch_once")
-				defer span.End()
-				defer runtime.RecoverAndLogWithContext(tickCtx, dispatcher.logger, "outbox", "dispatcher_tick")
-
-				dispatcher.dispatchAcrossTenants(tickCtx)
-			}()
+			dispatcher.dispatchTick(ctx)
 		}
 	}
+}
+
+// dispatchTick runs one scheduled dispatch cycle. The fallback scope's backoff
+// is checked here rather than with the discovered scopes: once discovery runs,
+// the tick has already exported a trace. A cold fallback tick therefore skips
+// discovery and opens no span, so newly listed tenants wait out the same
+// ColdDispatchInterval. Discovered scopes are still listed on every tick.
+func (dispatcher *Dispatcher) dispatchTick(ctx context.Context) {
+	dispatcher.dispatchWg.Add(1)
+	defer dispatcher.dispatchWg.Done()
+
+	if !dispatcher.shouldDispatchScope(fallbackDispatchScope, dispatcher.currentTime()) {
+		return
+	}
+
+	tickCtx, span := dispatcher.tracer.Start(ctx, "outbox.dispatcher.dispatch_once")
+	defer span.End()
+	defer runtime.RecoverAndLogWithContext(tickCtx, dispatcher.logger, "outbox", "dispatcher_tick")
+
+	dispatcher.dispatchAcrossTenants(tickCtx)
 }
 
 // Stop signals the dispatcher loop to stop.
@@ -677,17 +694,24 @@ func (dispatcher *Dispatcher) recordScopeActivity(
 		activity.lastWorkAt = now
 	}
 
-	interval := dispatcher.cfg.ColdDispatchInterval
+	activity.nextPollAt = now.Add(dispatcher.cfg.ColdDispatchInterval)
+
+	// A recently active scope is due on the next tick. Waiting for
+	// now+DispatchInterval would skip ticks: now is read after discovery, and
+	// the next tick fires one interval after this one started.
 	if !activity.lastWorkAt.IsZero() && now.Sub(activity.lastWorkAt) < dispatcher.cfg.ColdDispatchInterval {
-		interval = dispatcher.cfg.DispatchInterval
+		activity.nextPollAt = now
 	}
 
-	activity.nextPollAt = now.Add(interval)
 	dispatcher.scopeActivity[scope] = activity
 }
 
+// reconcileScopeActivity evicts the activity of scopes discovery no longer
+// lists. The fallback scope is never listed, so it is always kept.
 func (dispatcher *Dispatcher) reconcileScopeActivity(scopes []TenantDispatchScope) {
-	activeScopes := make(map[TenantDispatchScope]struct{}, len(scopes))
+	activeScopes := make(map[TenantDispatchScope]struct{}, len(scopes)+1)
+	activeScopes[fallbackDispatchScope] = struct{}{}
+
 	for _, scope := range scopes {
 		activeScopes[scope] = struct{}{}
 	}
@@ -855,11 +879,16 @@ func (dispatcher *Dispatcher) listTenantDispatchScopes(
 	return scopes, nil, nil
 }
 
+// dispatchWithoutDiscoveredTenant dispatches the fallback scope and records its
+// activity, so dispatchTick can back it off while it stays empty.
 func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(ctx context.Context, tracer trace.Tracer) {
+	now := dispatcher.currentTime()
+
 	tenantID, ok := TenantIDFromContext(ctx)
 	if ok && tenantID != "" {
-		dispatcher.DispatchOnceResult(ctx)
-		dispatcher.sweepRetention(ctx, tracer, TenantDispatchScope{TenantID: tenantID}, dispatcher.currentTime())
+		result := dispatcher.DispatchOnceResult(ctx)
+		dispatcher.recordScopeActivity(fallbackDispatchScope, result, now)
+		dispatcher.sweepRetention(ctx, tracer, TenantDispatchScope{TenantID: tenantID}, now)
 
 		return
 	}
@@ -881,7 +910,8 @@ func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(ctx context.Contex
 
 	fallbackCtx, fallbackSpan := tracer.Start(ctx, "outbox.dispatcher.default_scope")
 	result := dispatcher.DispatchOnceResult(fallbackCtx)
-	dispatcher.sweepRetention(fallbackCtx, tracer, TenantDispatchScope{}, dispatcher.currentTime())
+	dispatcher.recordScopeActivity(fallbackDispatchScope, result, now)
+	dispatcher.sweepRetention(fallbackCtx, tracer, TenantDispatchScope{}, now)
 	fallbackSpan.SetAttributes(
 		attribute.Int("outbox.dispatch.processed", result.Processed),
 		attribute.Int("outbox.dispatch.published", result.Published),
