@@ -454,9 +454,6 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 
 	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 
-	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_tenant_config")
-	defer span.End()
-
 	callOpts := &getConfigOpts{}
 	for _, opt := range opts {
 		opt(callOpts)
@@ -468,6 +465,11 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 			return cachedConfig, nil
 		}
 	}
+
+	// The span opens after the cache check: a cache hit is a local read, and
+	// tracing it would emit a span on nearly every request.
+	ctx, span := startChildSpan(ctx, tracer, "tenantmanager.client.get_tenant_config")
+	defer span.End()
 
 	// Check circuit breaker before making the HTTP request
 	if err := c.checkCircuitBreaker(); err != nil {

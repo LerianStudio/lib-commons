@@ -33,9 +33,10 @@ const (
 type DispatcherConfig struct {
 	// DispatchInterval is the periodic interval between dispatch cycles.
 	DispatchInterval time.Duration
-	// ColdDispatchInterval is the maximum polling interval for scopes with no
-	// recent outbox activity. It also defines how long a scope remains active
-	// after work is observed.
+	// ColdDispatchInterval is the polling interval for scopes with no recent
+	// outbox activity: a cold scope waits at most this long, rounded up to the
+	// next DispatchInterval tick. It also defines how long a scope remains
+	// active after work is observed.
 	ColdDispatchInterval time.Duration
 	// BatchSize is the max number of events processed per cycle.
 	BatchSize int
@@ -236,8 +237,9 @@ func WithDispatchInterval(interval time.Duration) DispatcherOption {
 	}
 }
 
-// WithColdDispatchInterval sets the maximum polling interval for scopes with
-// no recent outbox activity. Values shorter than DispatchInterval are
+// WithColdDispatchInterval sets the polling interval for scopes with no
+// recent outbox activity: a cold scope waits at most this long, rounded up to
+// the next DispatchInterval tick. Values shorter than DispatchInterval are
 // normalized to DispatchInterval.
 func WithColdDispatchInterval(interval time.Duration) DispatcherOption {
 	return func(dispatcher *Dispatcher) {
