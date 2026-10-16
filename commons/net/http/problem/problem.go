@@ -14,6 +14,14 @@
 // MODEL remains the consumer bootstrap's concern — it calls Install — and the
 // binding still applies none of that policy.
 //
+// InstallWithoutValueEcho is the opt-in variant of Install for APIs that receive
+// personal data: it also drops the value member from every errors[] entry of a
+// <500 document, so Huma's echo of the rejected input in that member (a field
+// value, a raw parameter, or the whole raw request body when it is not valid
+// JSON) never comes back in an error body. It does not rewrite messages: a
+// parser message that quotes the rejected input passes through, bounded in
+// length. Once installed it stays on for the process.
+//
 // This package is platform glue shared by every Lerian service; it must not
 // import any bounded-context package.
 package problem
@@ -160,6 +168,19 @@ type Detail struct {
 
 	// A body may carry extension members, so the published schema must allow them.
 	_ struct{} `json:"-" additionalProperties:"true"`
+}
+
+// ErrorCause returns why a >=500 failed, or nil: the error the scrub kept off
+// the wire. It is never serialised. A service that adopts d into its own
+// envelope carries this value and answers it from an ErrorCause() error method
+// of its own, which InstanceTransformer records for the access line exactly as
+// it does for a *Detail.
+func (d *Detail) ErrorCause() error {
+	if d == nil {
+		return nil
+	}
+
+	return d.cause
 }
 
 // Body is the value to encode for d: d itself, unless d carries extension

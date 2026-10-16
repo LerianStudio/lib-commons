@@ -29,6 +29,11 @@ import (
 // It also hands every *Detail to Body, the only encoder of the extension members,
 // and records a >=500's scrubbed cause for the access line on the request context.
 //
+// A service that serialises its own envelope (a *Detail adopted into a type that
+// adds its own members) keeps that cause by giving the envelope an
+// ErrorCause() error method answering the adopted Detail.ErrorCause(): the
+// transformer records it the same way and returns the envelope untouched.
+//
 // It is safe on any value: anything that is not a *Detail is returned untouched,
 // so registering it on an API whose consumer never called Install() changes
 // nothing. An instance a caller set itself is never overwritten.
@@ -45,6 +50,10 @@ import (
 func InstanceTransformer(ctx huma.Context, _ string, v any) (any, error) {
 	pd, ok := v.(*Detail)
 	if !ok || pd == nil {
+		if carrier, isCarrier := v.(interface{ ErrorCause() error }); isCarrier && ctx != nil {
+			observability.RecordErrorCause(ctx.Context(), carrier.ErrorCause())
+		}
+
 		return v, nil
 	}
 

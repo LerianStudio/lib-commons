@@ -14,6 +14,10 @@ const (
 	foreignKeyViolation = "23503"
 	checkViolation      = "23514"
 	undefinedTable      = "42P01"
+	duplicateSchema     = "42P06"
+	// lockNotAvailable is what PostgreSQL answers when the session's
+	// lock_timeout ends a lock wait.
+	lockNotAvailable = "55P03"
 	// queryCanceled is what PostgreSQL answers when it cancels a running
 	// statement — under statement_timeout, or on a client cancel request.
 	queryCanceled = "57014"

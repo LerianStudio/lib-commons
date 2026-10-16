@@ -1,6 +1,9 @@
 package ssrf
 
-import "strings"
+import (
+	"net/netip"
+	"strings"
+)
 
 // blockedHostnames contains exact hostnames that must be rejected regardless of
 // IP resolution. Case-insensitive comparison is used.
@@ -47,6 +50,12 @@ func normalizeHostname(hostname string) string {
 //     endpoints, AWS metadata IP).
 //   - Suffix match against dangerous suffixes (.local, .internal,
 //     .cluster.local).
+//   - A non-canonical IPv4 spelling: a host whose last label is a number
+//     (decimal digits, or 0x and hex digits) but that is not a canonical IP
+//     literal, such as "2130706433", "127.1", "0x7f000001" or "0177.0.0.1".
+//     inet_aton and the WHATWG URL parser read these as IPv4 addresses, and
+//     not all readers agree on which one, so a forward proxy or another
+//     resolver could reach a blocked address the IP-literal check never saw.
 //
 // Note: the ".internal" suffix blocks cloud metadata and internal DNS names but
 // may affect legitimate ".internal" domains in corporate environments. Use
@@ -65,7 +74,7 @@ func IsBlockedHostname(hostname string) bool {
 		return true
 	}
 
-	if blockedHostnames[lower] {
+	if blockedHostnames[lower] || isNonCanonicalIPv4(lower) {
 		return true
 	}
 
@@ -98,7 +107,7 @@ func isBlockedHostnameWithConfig(hostname string, cfg *config) bool {
 		return false
 	}
 
-	if blockedHostnames[lower] {
+	if blockedHostnames[lower] || isNonCanonicalIPv4(lower) {
 		return true
 	}
 
@@ -109,4 +118,43 @@ func isBlockedHostnameWithConfig(hostname string, cfg *config) bool {
 	}
 
 	return false
+}
+
+// isNonCanonicalIPv4 reports whether host, normalized, ends in a numeric label
+// without being a canonical IP literal. A DNS name never ends in a numeric
+// label, while inet_aton and the WHATWG URL parser read such a host as an IPv4
+// address in decimal, octal or hex, with one to four parts.
+func isNonCanonicalIPv4(host string) bool {
+	if _, err := netip.ParseAddr(host); err == nil {
+		return false
+	}
+
+	return isNumericLabel(host[strings.LastIndexByte(host, '.')+1:])
+}
+
+// isNumericLabel reports whether label is all decimal digits, or "0x" (any
+// case) followed by hex digits only, which the WHATWG parser reads as a number
+// even with no digits.
+func isNumericLabel(label string) bool {
+	if label == "" {
+		return false
+	}
+
+	digits, isHex := label, false
+	if len(label) >= 2 && label[0] == '0' && (label[1] == 'x' || label[1] == 'X') {
+		digits, isHex = label[2:], true
+	}
+
+	for i := range len(digits) {
+		c := digits[i]
+
+		switch {
+		case c >= '0' && c <= '9':
+		case isHex && ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')):
+		default:
+			return false
+		}
+	}
+
+	return true
 }

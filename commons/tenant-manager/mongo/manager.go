@@ -302,6 +302,10 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 // If a cached client fails a health check (e.g., due to credential rotation
 // after a tenant purge+re-associate), the stale client is evicted and a new
 // one is created with fresh credentials from the Tenant Manager.
+//
+// tenantID is canonicalised with core.CanonicalTenantID first, so the dashed
+// and dashless spellings of one UUID tenant share one client. An ID with no
+// canonical form is refused with an error wrapping core.ErrInvalidTenantIDFormat.
 func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Client, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -309,6 +313,11 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Cl
 
 	if tenantID == "" {
 		return nil, errors.New("tenant ID is required")
+	}
+
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Loops only when another caller's health check was in flight: once it publishes
@@ -1036,6 +1045,11 @@ func (p *Manager) GetDatabaseForTenant(ctx context.Context, tenantID string) (*m
 		return nil, errors.New("tenant ID is required")
 	}
 
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return nil, err
+	}
+
 	// GetConnection handles config fetching and caches both the connection
 	// and the database name (in p.databaseNames).
 	mongoClient, err := p.GetConnection(ctx, tenantID)
@@ -1126,11 +1140,17 @@ func (p *Manager) Close(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// CloseConnection closes the MongoDB client for a specific tenant.
+// CloseConnection closes the MongoDB client for a specific tenant, under
+// either spelling of its ID (see GetConnection).
 //
 // Uses snapshot-then-cleanup to avoid holding the mutex during Disconnect,
 // which performs network I/O and could block other goroutines.
 func (p *Manager) CloseConnection(ctx context.Context, tenantID string) error {
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return err
+	}
+
 	// Step 1: Under lock — remove entry from maps, capture the connection.
 	p.mu.Lock()
 

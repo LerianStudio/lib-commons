@@ -397,9 +397,10 @@ func ServeSpec(app *fiber.App, api huma.API, logger obs.Logger, prefix, title st
 	})
 }
 
-// scalarSecurityHeadersMiddleware overrides the global strict CSP for the
-// Scalar docs page and prevents MIME sniffing. Applied only to that route; the
-// global strict CSP is unaffected elsewhere.
+// scalarSecurityHeadersMiddleware overrides the global strict CSP (for
+// example the one commons/net/http.WithSecurityHeaders sets) for the Scalar
+// docs page and prevents MIME sniffing. Applied only to that route; the global
+// strict CSP is unaffected elsewhere.
 func scalarSecurityHeadersMiddleware() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		c.Set("Content-Security-Policy", scalarCSP)

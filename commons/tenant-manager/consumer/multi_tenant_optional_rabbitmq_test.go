@@ -158,5 +158,8 @@ func TestEnsureConsumerStarted_NoRabbitMQ_SkipsGoroutine(t *testing.T) {
 		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),
 		goleak.IgnoreTopFunction("testing.tRunner.func1"),
 		goleak.IgnoreTopFunction("testing.(*M).Run"),
+		// Sibling parallel tests parked for a slot (go test -parallel 1, as
+		// make test-unit LOW_RESOURCE=1 runs) are the runner's, not leaks.
+		goleak.IgnoreTopFunction("testing.(*testState).waitParallel"),
 	)
 }

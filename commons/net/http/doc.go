@@ -12,4 +12,16 @@
 // helper intentionally uses the RespondErrorEnvelope name instead of changing
 // RespondError, preserving the existing v5 RespondError(c,status,title,message)
 // API and making the wire contract explicit at each call site.
+//
+// # Security headers
+//
+// WithSecurityHeaders is the opt-in API security-header profile (nosniff, a
+// restrictive CSP, frame denial, no referrer, and HSTS on https only). HSTS
+// trusts a forwarded scheme only through Fiber's TrustProxy configuration:
+//
+//	app := fiber.New(fiber.Config{
+//	    TrustProxy:       true,
+//	    TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{"10.0.0.10"}},
+//	})
+//	app.Use(http.WithSecurityHeaders())
 package http

@@ -126,6 +126,12 @@ type Manager struct {
 	revalidateWG sync.WaitGroup
 
 	defaultConn *PostgresConnection
+
+	// tlsPosture and minSSLMode come from WithTLSPosture; postureErr holds
+	// the reason an invalid pair was refused at construction.
+	tlsPosture libPostgres.TLSPosture
+	minSSLMode libPostgres.SSLMode
+	postureErr error
 }
 
 // appliedSettings tracks the last-applied pool settings for a tenant so that
@@ -149,6 +155,12 @@ type PostgresConnection struct {
 	Logger                  obs.Logger     `json:"-"`
 	ConnectionDB            *dbresolver.DB `json:"-"`
 
+	// TLSPosture and MinSSLMode are handed to the lib-commons client, which
+	// refuses a DSN below the posture's floor before dialing. The manager sets
+	// them from WithTLSPosture.
+	TLSPosture libPostgres.TLSPosture `json:"-"`
+	MinSSLMode libPostgres.SSLMode    `json:"-"`
+
 	// client is the lib-commons postgres client this connection owns. Close()
 	// is the only capability the connection uses, and the interface keeps the
 	// close path observable in tests. Assigned only from Connect, which never
@@ -167,6 +179,8 @@ func (c *PostgresConnection) Connect(ctx context.Context) error {
 		Logger:             c.Logger,
 		MaxOpenConnections: c.MaxOpenConnections,
 		MaxIdleConnections: c.MaxIdleConnections,
+		TLSPosture:         c.TLSPosture,
+		MinSSLMode:         c.MinSSLMode,
 	})
 	if err != nil {
 		return err
@@ -263,6 +277,48 @@ func WithConnectionLimitCaps(maxOpen, maxIdle int) Option {
 			p.maxAllowedIdleConns = maxIdle
 		}
 	}
+}
+
+// WithTLSPosture applies a lib-commons Postgres TLS posture to every tenant
+// connection (see libPostgres.TLSPosture). Each tenant's sslmode, primary and
+// replica, is judged as the Tenant Manager sends it, before the DSN is built
+// and before anything is dialed: an empty sslmode is refused as unset rather
+// than read as the "disable" BuildConnectionString would write. A refusal
+// wraps libPostgres.ErrWeakSSLMode and names the tenant; on a settings
+// revalidation it keeps the current connection and logs ERROR.
+//
+// An invalid posture/floor pair cannot be returned from NewManager: it is
+// logged ERROR at construction and every GetConnection then fails with
+// libPostgres.ErrInvalidConfig. Without this option the manager applies no
+// posture and the client's default rule is unchanged.
+func WithTLSPosture(posture libPostgres.TLSPosture, minMode libPostgres.SSLMode) Option {
+	return func(p *Manager) {
+		p.tlsPosture = posture
+		p.minSSLMode = minMode
+	}
+}
+
+// checkTenantTLSPosture judges the tenant's raw sslmode settings, primary and
+// replica, against the manager's posture. A nil result means no posture is set
+// or both settings meet its floor.
+func (p *Manager) checkTenantTLSPosture(tenantID string, config *core.TenantConfig, pgConfig *core.PostgreSQLConfig) error {
+	if p.tlsPosture == libPostgres.TLSPostureDefault && p.minSSLMode == "" {
+		return nil
+	}
+
+	if pgConfig != nil {
+		if err := libPostgres.CheckSSLModeValue("primary", pgConfig.SSLMode, p.tlsPosture, p.minSSLMode); err != nil {
+			return fmt.Errorf("tenant %s: %w", tenantID, err)
+		}
+	}
+
+	if replica := config.GetPostgreSQLReplicaConfig(p.service, p.module); replica != nil {
+		if err := libPostgres.CheckSSLModeValue("replica", replica.SSLMode, p.tlsPosture, p.minSSLMode); err != nil {
+			return fmt.Errorf("tenant %s: %w", tenantID, err)
+		}
+	}
+
+	return nil
 }
 
 // WithModule sets the module name for the Manager (e.g., "onboarding", "transaction").
@@ -365,6 +421,11 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 	// Built after the options so WithHealthCheckInterval is already applied.
 	p.healthGate = healthcheck.NewGate(p.healthCheckInterval)
 
+	if err := libPostgres.ValidateTLSPosture(p.tlsPosture, p.minSSLMode); err != nil {
+		p.postureErr = err
+		p.logger.Errorf("postgres manager: invalid TLS posture, every connection will be refused: %v", err)
+	}
+
 	return p
 }
 
@@ -373,6 +434,10 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 // If a cached connection fails a health check (e.g., due to credential rotation
 // after a tenant purge+re-associate), the stale connection is evicted and a new
 // one is created with fresh credentials from the Tenant Manager.
+//
+// tenantID is canonicalised with core.CanonicalTenantID first, so the dashed
+// and dashless spellings of one UUID tenant share one pool. An ID with no
+// canonical form is refused with an error wrapping core.ErrInvalidTenantIDFormat.
 func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*PostgresConnection, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -380,6 +445,15 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*Postgres
 
 	if tenantID == "" {
 		return nil, errors.New("tenant ID is required")
+	}
+
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	if p.postureErr != nil {
+		return nil, fmt.Errorf("postgres manager: %w", p.postureErr)
 	}
 
 	// Loops only when another caller's health check was in flight: once it publishes
@@ -684,6 +758,14 @@ func (p *Manager) reconnectPostgres(
 	pgConfig *core.PostgreSQLConfig,
 	freshConnStr string,
 ) bool {
+	if err := p.checkTenantTLSPosture(tenantID, config, pgConfig); err != nil {
+		if p.logger != nil {
+			p.logger.Errorf("config change: refusing new PostgreSQL connection, keeping old connection: %v", err)
+		}
+
+		return true
+	}
+
 	replicaConnStr, replicaDBName, replicaErr := p.resolveReplicaConnection(config, pgConfig, freshConnStr, tenantID, p.logger)
 	if replicaErr != nil {
 		if p.logger != nil {
@@ -703,6 +785,8 @@ func (p *Manager) reconnectPostgres(
 		MaxOpenConnections:      maxOpen,
 		MaxIdleConnections:      maxIdle,
 		SkipMigrations:          p.IsMultiTenant(),
+		TLSPosture:              p.tlsPosture,
+		MinSSLMode:              p.minSSLMode,
 	}
 
 	if p.logger != nil {
@@ -897,6 +981,13 @@ func (p *Manager) buildTenantPostgresConnection(
 	logger *logcompat.Logger,
 	span trace.Span,
 ) (*PostgresConnection, error) {
+	if err := p.checkTenantTLSPosture(tenantID, config, pgConfig); err != nil {
+		logger.ErrorCtx(ctx, fmt.Sprintf("refusing tenant database connection: %v", err))
+		libOpentelemetry.HandleSpanError(span, "tenant sslmode below TLS posture", err)
+
+		return nil, err
+	}
+
 	primaryConnStr, err := BuildConnectionString(pgConfig)
 	if err != nil {
 		logger.ErrorCtx(ctx, fmt.Sprintf("invalid connection string for tenant %s: %v", tenantID, err))
@@ -922,6 +1013,8 @@ func (p *Manager) buildTenantPostgresConnection(
 		MaxOpenConnections:      maxOpen,
 		MaxIdleConnections:      maxIdle,
 		SkipMigrations:          p.IsMultiTenant(),
+		TLSPosture:              p.tlsPosture,
+		MinSSLMode:              p.minSSLMode,
 	}
 
 	if p.logger != nil {
@@ -1195,8 +1288,14 @@ func (p *Manager) closeUnhealthyConnection(ctx context.Context, tenantID string,
 	}
 }
 
-// CloseConnection closes the connection for a specific tenant.
+// CloseConnection closes the connection for a specific tenant, under either
+// spelling of its ID (see GetConnection).
 func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return err
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -1205,7 +1304,6 @@ func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 		return nil
 	}
 
-	var err error
 	if conn.ConnectionDB != nil {
 		err = conn.Close()
 	}
@@ -1360,7 +1458,15 @@ func BuildConnectionString(cfg *core.PostgreSQLConfig, extraSearchPathSchemas ..
 //
 // For MongoDB, the driver does not support changing pool size after client creation,
 // so this method only applies to PostgreSQL connections.
+//
+// tenantID is canonicalised as in GetConnection; an ID with no canonical form
+// has no pool, so nothing is applied.
 func (p *Manager) ApplyConnectionSettings(tenantID string, config *core.TenantConfig) {
+	tenantID, err := core.CanonicalTenantID(tenantID)
+	if err != nil {
+		return
+	}
+
 	p.mu.RLock()
 
 	conn, ok := p.connections[tenantID]
@@ -1507,6 +1613,9 @@ func (p *Manager) IsMultiTenant() bool {
 // CreateDirectConnection creates a direct database connection from config.
 // Useful when you have config but don't need full connection management.
 // Returns an error if cfg is nil.
+//
+// It applies no TLS posture. A caller that needs one checks the setting first:
+// libPostgres.CheckSSLModeValue("primary", cfg.SSLMode, posture, minMode).
 func CreateDirectConnection(ctx context.Context, cfg *core.PostgreSQLConfig) (*sql.DB, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("postgres.CreateDirectConnection: %w", core.ErrNilConfig)
