@@ -120,8 +120,7 @@ func FiberErrorHandler(c fiber.Ctx, err error) error {
 		span.End()
 	}
 
-	var fe *fiber.Error
-	if errors.As(err, &fe) {
+	if fe, ok := errors.AsType[*fiber.Error](err); ok {
 		return RenderError(c, ErrorResponse{
 			Code:    fe.Code,
 			Title:   cn.DefaultErrorTitle,

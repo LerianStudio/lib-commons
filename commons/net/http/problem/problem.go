@@ -272,8 +272,7 @@ type curated struct {
 // kind wins. matched reports a type was present, even empty, so the caller never
 // folds err into errors[].
 func (c *curated) collect(err error) (matched bool) {
-	var up *Upstream
-	if errors.As(err, &up) {
+	if up, ok := errors.AsType[*Upstream](err); ok {
 		matched = true
 
 		if c.upstream == nil && up != nil && (up.Code != "" || up.Message != "") {
@@ -281,8 +280,7 @@ func (c *curated) collect(err error) (matched bool) {
 		}
 	}
 
-	var extensions Extensions
-	if errors.As(err, &extensions) {
+	if extensions, ok := errors.AsType[Extensions](err); ok {
 		matched = true
 
 		if c.extensions == nil && len(extensions) > 0 {
@@ -290,8 +288,7 @@ func (c *curated) collect(err error) (matched bool) {
 		}
 	}
 
-	var detail PublicDetail
-	if errors.As(err, &detail) {
+	if detail, ok := errors.AsType[PublicDetail](err); ok {
 		matched = true
 
 		if c.detail == "" {

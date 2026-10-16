@@ -1253,8 +1253,7 @@ func classifyMigrationError(err error, allowMissing bool, state migrationState) 
 		}
 	}
 
-	var dirtyErr migrate.ErrDirty
-	if errors.As(err, &dirtyErr) {
+	if dirtyErr, ok := errors.AsType[migrate.ErrDirty](err); ok {
 		return migrationOutcome{
 			err:     fmt.Errorf("%w: database version %d", ErrMigrationDirty, dirtyErr.Version),
 			level:   obs.LevelError,
