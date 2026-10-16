@@ -24,7 +24,8 @@
 // While it is cold, a tick returns before tenant discovery and opens no span,
 // so an idle single-scope dispatcher exports no trace. The first event after an
 // idle period, or a tenant that discovery would newly list, can therefore wait
-// up to ColdDispatchInterval; WithColdDispatchInterval lowers that bound.
+// up to ColdDispatchInterval, rounded up to the next DispatchInterval tick;
+// WithColdDispatchInterval lowers that bound.
 //
 // Retention is opt-in through WithRetentionPublished and needs a repository
 // implementing the optional PublishedPurger capability (the postgres and mongo

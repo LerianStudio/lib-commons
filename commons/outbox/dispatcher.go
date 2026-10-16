@@ -605,6 +605,11 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 	ctx, span := tracer.Start(ctx, "outbox.dispatcher.tenants")
 	defer span.End()
 
+	// Read the clock once, before discovery, and schedule every scope in this
+	// tick from it. A time read after discovery, or after earlier tenants'
+	// dispatch, would land the next poll a little after the matching tick.
+	now := dispatcher.currentTime()
+
 	scopes, scopedRepo, err := dispatcher.listTenantDispatchScopes(ctx)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list tenants", err)
@@ -618,7 +623,7 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 
 	orderedScopes := dispatcher.tenantDispatchScopeOrder(normalizedScopes)
 	if len(orderedScopes) == 0 {
-		dispatcher.dispatchWithoutDiscoveredTenant(ctx, tracer)
+		dispatcher.dispatchWithoutDiscoveredTenant(ctx, tracer, now)
 		dispatcher.sweepListedTenants(ctx, tracer)
 
 		return
@@ -629,7 +634,6 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 			break
 		}
 
-		now := dispatcher.currentTime()
 		if !dispatcher.shouldDispatchScope(scope, now) {
 			continue
 		}
@@ -669,6 +673,12 @@ func (dispatcher *Dispatcher) currentTime() time.Time {
 	return dispatcher.now().UTC()
 }
 
+// shouldDispatchScope reports whether scope is due on the tick that read now.
+// A tick reads the clock a little after its scheduled time, by an amount that
+// varies from tick to tick. A scope is therefore due on the first tick that
+// reads the clock less than half a DispatchInterval before nextPollAt: the tick
+// scheduled nearest nextPollAt (the later one on a tie), so that delay cannot
+// push the scope to the tick after it.
 func (dispatcher *Dispatcher) shouldDispatchScope(scope TenantDispatchScope, now time.Time) bool {
 	dispatcher.scopeActivityMu.Lock()
 	defer dispatcher.scopeActivityMu.Unlock()
@@ -678,7 +688,7 @@ func (dispatcher *Dispatcher) shouldDispatchScope(scope TenantDispatchScope, now
 		return true
 	}
 
-	return !now.Before(activity.nextPollAt)
+	return activity.nextPollAt.Sub(now) < dispatcher.cfg.DispatchInterval/2
 }
 
 func (dispatcher *Dispatcher) recordScopeActivity(
@@ -696,9 +706,7 @@ func (dispatcher *Dispatcher) recordScopeActivity(
 
 	activity.nextPollAt = now.Add(dispatcher.cfg.ColdDispatchInterval)
 
-	// A recently active scope is due on the next tick. Waiting for
-	// now+DispatchInterval would skip ticks: now is read after discovery, and
-	// the next tick fires one interval after this one started.
+	// A recently active scope is due again on the next tick.
 	if !activity.lastWorkAt.IsZero() && now.Sub(activity.lastWorkAt) < dispatcher.cfg.ColdDispatchInterval {
 		activity.nextPollAt = now
 	}
@@ -881,9 +889,11 @@ func (dispatcher *Dispatcher) listTenantDispatchScopes(
 
 // dispatchWithoutDiscoveredTenant dispatches the fallback scope and records its
 // activity, so dispatchTick can back it off while it stays empty.
-func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(ctx context.Context, tracer trace.Tracer) {
-	now := dispatcher.currentTime()
-
+func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(
+	ctx context.Context,
+	tracer trace.Tracer,
+	now time.Time,
+) {
 	tenantID, ok := TenantIDFromContext(ctx)
 	if ok && tenantID != "" {
 		result := dispatcher.DispatchOnceResult(ctx)
