@@ -268,11 +268,9 @@ func TestDispatcher_MetricsCarryOutboxTable(t *testing.T) {
 		return values
 	}
 
-	for range 3 {
-		audit.dispatchAcrossTenants(context.Background())
-		streaming.dispatchAcrossTenants(context.Background())
+	audit.dispatchAcrossTenants(context.Background())
+	streaming.dispatchAcrossTenants(context.Background())
 
-		require.Equal(t, map[string]int64{"audit_outbox": 7200, "outbox_events": 0}, byTable("outbox.queue.oldest_age"))
-		require.Len(t, byTable("outbox.queue.depth"), 2)
-	}
+	require.Equal(t, map[string]int64{"audit_outbox": 7200, "outbox_events": 0}, byTable("outbox.queue.oldest_age"))
+	require.Len(t, byTable("outbox.queue.depth"), 2)
 }

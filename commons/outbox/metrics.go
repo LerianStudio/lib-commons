@@ -29,8 +29,13 @@ type dispatcherMetrics struct {
 
 // tableAttributes returns outbox.table for a TableNamer repository, else none.
 func tableAttributes(repo OutboxRepository) []attribute.KeyValue {
-	if namer, ok := repo.(TableNamer); ok && namer.OutboxTable() != "" {
-		return []attribute.KeyValue{attribute.String("outbox.table", namer.OutboxTable())}
+	namer, ok := repo.(TableNamer)
+	if !ok {
+		return nil
+	}
+
+	if table := namer.OutboxTable(); table != "" {
+		return []attribute.KeyValue{attribute.String("outbox.table", table)}
 	}
 
 	return nil
