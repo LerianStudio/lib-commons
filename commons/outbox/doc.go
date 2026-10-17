@@ -44,7 +44,8 @@
 // The outbox.queue.oldest_age gauge reports, on an OldestWaitingReader repository, the age of
 // the oldest PENDING, PROCESSING or FAILED event in the claim scope, the largest across the
 // dispatch scopes sharing a series: the alarm for a fact left waiting. The postgres and mongo
-// adapters implement both.
+// adapters implement both, and TableNamer: every dispatcher metric then carries outbox.table,
+// so two dispatchers in one process (one per outbox table) never overwrite each other's gauges.
 //
 // Retention is opt-in through WithRetentionPublished and needs a repository
 // implementing the optional PublishedPurger capability (the postgres and mongo

@@ -24,9 +24,24 @@ type dispatcherMetrics struct {
 	dispatchLatency   metric.Float64Histogram
 	queueDepth        *libMetrics.GaugeBuilder
 	queueOldestAge    *libMetrics.GaugeBuilder
+	attrs             []attribute.KeyValue // on every series; the builders already carry them
 }
 
-func newDispatcherMetrics(provider metric.MeterProvider, logger obs.Logger) (dispatcherMetrics, error) {
+// tableAttributes returns outbox.table for a TableNamer repository, else none.
+func tableAttributes(repo OutboxRepository) []attribute.KeyValue {
+	namer, ok := repo.(TableNamer)
+	if !ok {
+		return nil
+	}
+
+	if table := namer.OutboxTable(); table != "" {
+		return []attribute.KeyValue{attribute.String("outbox.table", table)}
+	}
+
+	return nil
+}
+
+func newDispatcherMetrics(provider metric.MeterProvider, logger obs.Logger, attrs ...attribute.KeyValue) (dispatcherMetrics, error) {
 	if provider == nil {
 		provider = otel.GetMeterProvider()
 	}
@@ -102,6 +117,14 @@ func newDispatcherMetrics(provider metric.MeterProvider, logger obs.Logger) (dis
 	if err != nil {
 		return dispatcherMetrics{}, fmt.Errorf("create outbox.queue.oldest_age gauge: %w", err)
 	}
+
+	metrics.attrs = attrs
+	metrics.eventsDispatched = metrics.eventsDispatched.WithAttributes(attrs...)
+	metrics.eventsFailed = metrics.eventsFailed.WithAttributes(attrs...)
+	metrics.eventsStateFailed = metrics.eventsStateFailed.WithAttributes(attrs...)
+	metrics.eventsPurged = metrics.eventsPurged.WithAttributes(attrs...)
+	metrics.queueDepth = metrics.queueDepth.WithAttributes(attrs...)
+	metrics.queueOldestAge = metrics.queueOldestAge.WithAttributes(attrs...)
 
 	return metrics, nil
 }

@@ -621,6 +621,11 @@ func (repo *Repository) ResetStuckProcessing(ctx context.Context, limit int, pro
 	return retry, err
 }
 
+var _ outbox.TableNamer = (*Repository)(nil)
+
+// OutboxTable implements outbox.TableNamer with the collection name.
+func (repo *Repository) OutboxTable() string { return repo.collectionName }
+
 var _ outbox.StuckReclaimer = (*Repository)(nil)
 
 // ReclaimStuckProcessing implements outbox.StuckReclaimer.
