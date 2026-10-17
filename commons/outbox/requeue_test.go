@@ -103,3 +103,40 @@ func TestDispatcher_RecordsOldestWaitingAge(t *testing.T) {
 	now = now.Add(time.Minute)
 	require.Zero(t, gauge(), "tenant-b due again, its fact published")
 }
+
+// A tenant dropped from discovery takes its series to 0 instead of leaving its last age.
+func TestDispatcher_OldestWaitingAgeFallsToZeroWhenScopeLeaves(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	repo := &waitingFakeRepo{
+		fakeRepo: &fakeRepo{tenants: []string{"tenant-a", "tenant-b"}},
+		oldest:   map[string]time.Time{"tenant-b": now.Add(-72 * time.Hour)},
+	}
+
+	reader := sdkmetric.NewManualReader()
+	dispatcher, err := NewDispatcher(repo, NewHandlerRegistry(), nil, nil,
+		WithTenantMetricAttributes(true), WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
+	require.NoError(t, err)
+
+	dispatcher.now = func() time.Time { return now }
+	ages := func() map[string]int64 {
+		dispatcher.dispatchAcrossTenants(context.Background())
+
+		metricData := findOutboxMetric(collectOutboxMetrics(t, reader), "outbox.queue.oldest_age")
+		require.NotNil(t, metricData)
+
+		byTenant := map[string]int64{}
+		for _, point := range metricData.Data.(metricdata.Gauge[int64]).DataPoints {
+			tenant, _ := point.Attributes.Value("tenant")
+			byTenant[tenant.AsString()] = point.Value
+		}
+
+		return byTenant
+	}
+
+	require.Equal(t, map[string]int64{"tenant-a": 0, "tenant-b": int64(72 * time.Hour / time.Second)}, ages())
+
+	repo.tenants = []string{"tenant-a"}
+	require.Equal(t, map[string]int64{"tenant-a": 0, "tenant-b": 0}, ages(), "tenant-b left discovery")
+}

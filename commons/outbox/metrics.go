@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
@@ -140,7 +141,7 @@ func (dispatcher *Dispatcher) observeOldestWaiting(ctx context.Context, scope Te
 
 // recordOldestWaitingAge sets outbox.queue.oldest_age to the largest age across the known
 // scopes sharing each series, so one scope's 0 never hides another's waiting fact. Cold
-// scopes keep their last sample; scopes discovery drops leave with their activity.
+// scopes keep their last sample; a series no scope reports any more falls to 0.
 func (dispatcher *Dispatcher) recordOldestWaitingAge(ctx context.Context) {
 	if dispatcher.metrics.queueOldestAge == nil {
 		return
@@ -168,7 +169,20 @@ func (dispatcher *Dispatcher) recordOldestWaitingAge(ctx context.Context) {
 		maxByLabel[label] = max(maxByLabel[label], sample.age)
 	}
 
-	for label, age := range maxByLabel {
+	dispatcher.scopeActivityMu.Lock()
+	previous := dispatcher.oldestAgeLabels
+	dispatcher.oldestAgeLabels = maxByLabel
+	dispatcher.scopeActivityMu.Unlock()
+
+	ages := maps.Clone(maxByLabel)
+
+	for label := range previous {
+		if _, live := ages[label]; !live {
+			ages[label] = 0
+		}
+	}
+
+	for label, age := range ages {
 		builder := dispatcher.metrics.queueOldestAge
 		if label != "" {
 			builder = builder.WithAttributes(attribute.String("tenant", label))

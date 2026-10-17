@@ -69,6 +69,7 @@ type Dispatcher struct {
 	tenantMetricKeys         map[string]struct{}
 	tenantMetricMu           sync.Mutex
 	scopeActivity            map[TenantDispatchScope]dispatchScopeActivity
+	oldestAgeLabels          map[string]int64 // outbox.queue.oldest_age series set last pass
 	retentionSweptAt         map[TenantDispatchScope]time.Time
 	retentionPrunedAt        time.Time
 	retentionListedAt        time.Time
