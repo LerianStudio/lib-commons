@@ -147,19 +147,18 @@ func (m *Middleware) runChainWithHeartbeat(c fiber.Ctx, key string, processing [
 	}
 
 	// Read on the request goroutine: the heartbeat goroutine never touches c.
-	tenantID := recordTenant(c)
+	logger := m.recordLogger(recordTenant(c))
 
 	// Construction checks the interval only against a fixed [WithProcessingTTL];
 	// a provider or retention lease is known only here, so the tick follows it.
 	tick := heartbeatTick(m.heartbeatInterval, lease)
 	if tick < m.heartbeatInterval {
-		m.logger.Log(c.Context(), obs.LevelWarn,
+		logger.Log(c.Context(), obs.LevelWarn,
 			"idempotency: processing heartbeat interval shortened to fit the lease",
 			"configured_interval", m.heartbeatInterval,
 			"effective_lease", lease,
 			"tick", tick,
 			"idempotency_key_digest", keyDigest(key),
-			"tenant_id", tenantID,
 		)
 	}
 
@@ -179,7 +178,7 @@ func (m *Middleware) runChainWithHeartbeat(c fiber.Ctx, key string, processing [
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if !m.beat(ctx, tenantID, key, processing, lease) {
+				if !m.beat(ctx, logger, key, processing, lease) {
 					return
 				}
 			}
@@ -195,16 +194,15 @@ func (m *Middleware) runChainWithHeartbeat(c fiber.Ctx, key string, processing [
 }
 
 // beat renews the lease once and reports whether the heartbeat should go on.
-func (m *Middleware) beat(ctx context.Context, tenantID, key string, processing []byte, lease time.Duration) bool {
+func (m *Middleware) beat(ctx context.Context, logger obs.Logger, key string, processing []byte, lease time.Duration) bool {
 	beatCtx, cancel := context.WithTimeout(ctx, m.redisTimeout)
 	defer cancel()
 
 	applied, err := m.extender.Extend(beatCtx, key, processing, lease)
 	if err != nil {
 		if ctx.Err() == nil {
-			m.logger.Log(ctx, obs.LevelWarn, "idempotency: processing heartbeat failed; retrying at the next interval",
+			logger.Log(ctx, obs.LevelWarn, "idempotency: processing heartbeat failed; retrying at the next interval",
 				"idempotency_key_digest", keyDigest(key),
-				"tenant_id", tenantID,
 				"error", err,
 			)
 		}
@@ -213,9 +211,8 @@ func (m *Middleware) beat(ctx context.Context, tenantID, key string, processing 
 	}
 
 	if !applied {
-		m.logger.Log(ctx, obs.LevelWarn, "idempotency: processing heartbeat found the lease no longer held; stopping",
+		logger.Log(ctx, obs.LevelWarn, "idempotency: processing heartbeat found the lease no longer held; stopping",
 			"idempotency_key_digest", keyDigest(key),
-			"tenant_id", tenantID,
 		)
 
 		return false
@@ -250,13 +247,12 @@ func heartbeatTick(interval, lease time.Duration) time.Duration {
 // for the heartbeat to hold. It runs before acquisition, so nothing is spent
 // and retrying is the correct instruction.
 func (m *Middleware) refuseUnholdableLease(c fiber.Ctx, key string, lease time.Duration) error {
-	m.logger.Log(c.Context(), obs.LevelError,
+	m.recordLogger(recordTenant(c)).Log(c.Context(), obs.LevelError,
 		"idempotency: lease shorter than the heartbeat minimum; refusing the request",
 		"configured_interval", m.heartbeatInterval,
 		"effective_lease", lease,
 		"minimum_lease", MinHeartbeatLease,
 		"idempotency_key_digest", keyDigest(key),
-		"tenant_id", recordTenant(c),
 	)
 
 	return m.respondUnavailable(c)
