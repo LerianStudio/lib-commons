@@ -131,6 +131,7 @@ func Run(t *testing.T, factory Factory, opts ...RunOption) {
 		testListTenantsWithPublishedBefore(t, factory)
 	})
 	run("RequeueInvalidMovesOnlyInvalidBackToPending", func(t *testing.T) { testRequeueInvalid(t, factory) })
+	run("OldestWaitingCreatedAtSkipsFinishedEvents", func(t *testing.T) { testOldestWaitingCreatedAt(t, factory) })
 	run("DispatcherRepublishesRequeuedEventWithSameID", func(t *testing.T) { testDispatcherRepublishesRequeued(t, factory) })
 }
 
@@ -220,6 +221,42 @@ func testRequeueInvalid(t *testing.T, factory Factory) {
 
 	requireEventStatus(t, repo, ctx, published.ID, outbox.OutboxStatusPublished)
 	claimSinglePending(t, repo, ctx, invalid.ID)
+}
+
+// testOldestWaitingCreatedAt pins the read behind outbox.queue.oldest_age: the oldest event
+// still owed a publish, never a PUBLISHED or INVALID one, nor another tenant's.
+func testOldestWaitingCreatedAt(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+
+	reader, ok := repo.(outbox.OldestWaitingReader)
+	if !ok {
+		t.Skip("repository does not implement outbox.OldestWaitingReader")
+	}
+
+	baseCtx := contractContext(t)
+	ctx := outbox.ContextWithTenantID(baseCtx, "tenant-a")
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	_, found, err := reader.OldestWaitingCreatedAt(ctx)
+	require.NoError(t, err)
+	require.False(t, found)
+
+	invalid := createEventAt(t, repo, ctx, "payment.waiting", now.Add(-4*time.Hour))
+	published := createEventAt(t, repo, ctx, "payment.waiting", now.Add(-3*time.Hour))
+	failed := createEventAt(t, repo, ctx, "payment.waiting", now.Add(-2*time.Hour))
+	require.Len(t, claimAllPending(t, repo, ctx, 10), 3)
+	require.NoError(t, repo.MarkInvalid(ctx, invalid.ID, "malformed"))
+	require.NoError(t, repo.MarkPublished(ctx, published.ID, now))
+	require.NoError(t, repo.MarkFailed(ctx, failed.ID, "broker unavailable", 100))
+	createEventAt(t, repo, ctx, "payment.waiting", now.Add(-time.Hour))
+	createEventAt(t, repo, outbox.ContextWithTenantID(baseCtx, "tenant-b"), "payment.waiting", now.Add(-5*time.Hour))
+
+	oldest, found, err := reader.OldestWaitingCreatedAt(ctx)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.True(t, now.Add(-2*time.Hour).Equal(oldest), "oldest waiting is the FAILED event, got %s", oldest)
 }
 
 func testCreateThenGetRoundtrip(t *testing.T, factory Factory) {

@@ -1,7 +1,9 @@
 package outbox
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
@@ -20,6 +22,7 @@ type dispatcherMetrics struct {
 	eventsRequeued    *libMetrics.CounterBuilder
 	dispatchLatency   metric.Float64Histogram
 	queueDepth        *libMetrics.GaugeBuilder
+	queueOldestAge    *libMetrics.GaugeBuilder
 }
 
 func newDispatcherMetrics(provider metric.MeterProvider, logger obs.Logger) (dispatcherMetrics, error) {
@@ -99,5 +102,44 @@ func newDispatcherMetrics(provider metric.MeterProvider, logger obs.Logger) (dis
 		return dispatcherMetrics{}, fmt.Errorf("create outbox.queue.depth gauge: %w", err)
 	}
 
+	metrics.queueOldestAge, err = factory.Gauge(libMetrics.Metric{
+		Name:        "outbox.queue.oldest_age",
+		Description: "Age of the oldest PENDING, PROCESSING or FAILED outbox event, 0 when none",
+		Unit:        "s",
+	})
+	if err != nil {
+		return dispatcherMetrics{}, fmt.Errorf("create outbox.queue.oldest_age gauge: %w", err)
+	}
+
 	return metrics, nil
+}
+
+// recordOldestWaitingAge sets outbox.queue.oldest_age after a dispatch cycle when the
+// repository is an OldestWaitingReader; a failed read keeps the last value.
+func (dispatcher *Dispatcher) recordOldestWaitingAge(ctx context.Context, tenantKey string) {
+	reader, ok := dispatcher.repo.(OldestWaitingReader)
+	if !ok || dispatcher.metrics.queueOldestAge == nil || ctx.Err() != nil {
+		return
+	}
+
+	oldest, found, err := reader.OldestWaitingCreatedAt(dispatcher.withClaimScope(ctx))
+	if err != nil {
+		dispatcher.resolvedLogger().Log(ctx, obs.LevelWarn, "outbox oldest waiting event read failed", "error", sanitizeErrorForStorage(err))
+
+		return
+	}
+
+	age := int64(0)
+	if found {
+		age = max(0, int64(dispatcher.currentTime().Sub(oldest)/time.Second))
+	}
+
+	builder := dispatcher.metrics.queueOldestAge
+	if attr, ok := dispatcher.tenantMetricAttribute(tenantKey); ok {
+		builder = builder.WithAttributes(attr)
+	}
+
+	if err := builder.Set(ctx, age); err != nil {
+		dispatcher.logMetricError(ctx, "record outbox.queue.oldest_age", err)
+	}
 }

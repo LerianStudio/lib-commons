@@ -75,6 +75,13 @@ type InvalidRequeuer interface {
 	RequeueInvalid(ctx context.Context, id uuid.UUID) error
 }
 
+// OldestWaitingReader is the capability behind the outbox.queue.oldest_age gauge.
+type OldestWaitingReader interface {
+	// OldestWaitingCreatedAt returns the created_at of the oldest PENDING, PROCESSING or
+	// FAILED event in the tenant and claim scope of ctx, and false when there is none.
+	OldestWaitingCreatedAt(ctx context.Context) (time.Time, bool, error)
+}
+
 // StuckReclaimer is an additive capability that lets the dispatcher fire
 // OnInvalid for the stuck events a reclaim marks INVALID. It is separate from
 // OutboxRepository so ResetStuckProcessing keeps returning only retry events.

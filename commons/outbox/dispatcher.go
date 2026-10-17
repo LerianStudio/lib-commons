@@ -447,6 +447,7 @@ func (dispatcher *Dispatcher) DispatchOnceResult(ctx context.Context) DispatchRe
 	dispatcher.addDispatchedEvents(ctx, tenantKey, int64(published))
 	dispatcher.addFailedEvents(ctx, tenantKey, int64(failed))
 	dispatcher.recordDispatchLatency(ctx, tenantKey, time.Since(start))
+	dispatcher.recordOldestWaitingAge(ctx, tenantKey)
 
 	return DispatchResult{
 		Processed:         processed,

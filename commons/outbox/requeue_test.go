@@ -4,20 +4,25 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
-// waitingFakeRepo is a claim-scoped InvalidRequeuer.
+// waitingFakeRepo is a claim-scoped repository with both waiting-row capabilities.
 type waitingFakeRepo struct {
 	*fakeRepo
 	requeueErr   error
 	requeued     []uuid.UUID
 	requeueScope []string
+	oldest       time.Time
+	found        bool
+	oldestErr    error
 }
 
 func (repo *waitingFakeRepo) ScopesClaimsByEventType() {}
@@ -27,6 +32,10 @@ func (repo *waitingFakeRepo) RequeueInvalid(ctx context.Context, id uuid.UUID) e
 	repo.requeued = append(repo.requeued, id)
 
 	return repo.requeueErr
+}
+
+func (repo *waitingFakeRepo) OldestWaitingCreatedAt(context.Context) (time.Time, bool, error) {
+	return repo.oldest, repo.found, repo.oldestErr
 }
 
 func TestDispatcher_RequeueInvalid(t *testing.T) {
@@ -58,4 +67,37 @@ func TestDispatcher_RequeueInvalid(t *testing.T) {
 	require.ErrorIs(t, dispatcher.RequeueInvalid(ctx, uuid.New()), ErrOutboxEventNotInvalid)
 
 	requireIntMetricValue(t, collectOutboxMetrics(t, reader), "outbox.events.requeued", "tenant-a", 1)
+}
+
+// Each cycle sets the age of the oldest waiting event, 0 once none waits, and keeps the
+// last value when the read fails.
+func TestDispatcher_RecordsOldestWaitingAge(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	reader := sdkmetric.NewManualReader()
+	repo := &waitingFakeRepo{fakeRepo: &fakeRepo{}, oldest: now.Add(-90 * time.Second), found: true}
+
+	dispatcher, err := NewDispatcher(repo, NewHandlerRegistry(), nil, nil, WithTenantMetricAttributes(true),
+		WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
+	require.NoError(t, err)
+
+	dispatcher.now = func() time.Time { return now }
+	ctx := ContextWithTenantID(context.Background(), "tenant-a")
+
+	steps := []struct {
+		found   bool
+		readErr error
+		want    int64
+	}{
+		{found: true, want: 90},
+		{found: true, readErr: errors.New("database unavailable"), want: 90},
+		{found: false, want: 0},
+	}
+
+	for _, step := range steps {
+		repo.found, repo.oldestErr = step.found, step.readErr
+		dispatcher.DispatchOnceResult(ctx)
+		requireIntMetricValue(t, collectOutboxMetrics(t, reader), "outbox.queue.oldest_age", "tenant-a", step.want)
+	}
 }
