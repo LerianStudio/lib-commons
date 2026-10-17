@@ -48,13 +48,11 @@ func TestDispatcher_Requeue(t *testing.T) {
 	require.NoError(t, err)
 	require.ErrorIs(t, unsupported.Requeue(context.Background(), uuid.New()), ErrOutboxRequeueUnsupported)
 
-	reader := sdkmetric.NewManualReader()
 	repo := &waitingFakeRepo{fakeRepo: &fakeRepo{}}
 	handlers := NewHandlerRegistry()
 	require.NoError(t, handlers.Register("payment.settled", func(context.Context, *OutboxEvent) error { return nil }))
 
-	dispatcher, err := NewDispatcher(repo, handlers, nil, nil, WithClaimScopedToHandlers(), WithTenantMetricAttributes(true),
-		WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
+	dispatcher, err := NewDispatcher(repo, handlers, nil, nil, WithClaimScopedToHandlers())
 	require.NoError(t, err)
 
 	ctx := ContextWithTenantID(context.Background(), "tenant-a")
@@ -63,10 +61,8 @@ func TestDispatcher_Requeue(t *testing.T) {
 	require.Equal(t, []uuid.UUID{id}, repo.requeued)
 	require.Equal(t, []string{"payment.settled"}, repo.requeueScope, "the claim scope applies to the requeue")
 
-	repo.requeueErr = fmt.Errorf("requeueing invalid event: %w", ErrOutboxEventNotRequeueable)
+	repo.requeueErr = fmt.Errorf("requeueing event: %w", ErrOutboxEventNotRequeueable)
 	require.ErrorIs(t, dispatcher.Requeue(ctx, uuid.New()), ErrOutboxEventNotRequeueable)
-
-	requireIntMetricValue(t, collectOutboxMetrics(t, reader), "outbox.events.requeued", "tenant-a", 1)
 }
 
 // Each cycle sets the age of the oldest waiting event, 0 once none waits, and keeps the

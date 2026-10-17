@@ -19,7 +19,6 @@ type dispatcherMetrics struct {
 	eventsFailed      *libMetrics.CounterBuilder
 	eventsStateFailed *libMetrics.CounterBuilder
 	eventsPurged      *libMetrics.CounterBuilder
-	eventsRequeued    *libMetrics.CounterBuilder
 	dispatchLatency   metric.Float64Histogram
 	queueDepth        *libMetrics.GaugeBuilder
 	queueOldestAge    *libMetrics.GaugeBuilder
@@ -73,15 +72,6 @@ func newDispatcherMetrics(provider metric.MeterProvider, logger obs.Logger) (dis
 	})
 	if err != nil {
 		return dispatcherMetrics{}, fmt.Errorf("create outbox.events.purged counter: %w", err)
-	}
-
-	metrics.eventsRequeued, err = factory.Counter(libMetrics.Metric{
-		Name:        "outbox.events.requeued",
-		Description: "Number of INVALID outbox events put back in the queue by RequeueInvalid",
-		Unit:        outboxMetricUnitEvent,
-	})
-	if err != nil {
-		return dispatcherMetrics{}, fmt.Errorf("create outbox.events.requeued counter: %w", err)
 	}
 
 	metrics.dispatchLatency, err = meter.Float64Histogram(

@@ -47,18 +47,7 @@ func (dispatcher *Dispatcher) Requeue(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("requeue outbox event: %w", err)
 	}
 
-	tenantKey := tenantKeyFromContext(ctx)
 	dispatcher.resolvedLogger().Log(ctx, obs.LevelInfo, "outbox event requeued", "event_id", id.String())
-
-	if counter := dispatcher.metrics.eventsRequeued; counter != nil {
-		if attr, ok := dispatcher.tenantMetricAttribute(tenantKey); ok {
-			counter = counter.WithAttributes(attr)
-		}
-
-		if err := counter.AddOne(ctx); err != nil {
-			dispatcher.logMetricError(ctx, "record outbox.events.requeued", err)
-		}
-	}
 
 	return nil
 }
