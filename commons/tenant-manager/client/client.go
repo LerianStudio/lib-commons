@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -137,6 +138,7 @@ func WithTimeout(timeout time.Duration) ClientOption {
 // A threshold of 0 disables the circuit breaker (default behavior).
 // HTTP 4xx responses (400, 403, 404) are NOT counted as failures because they
 // represent valid responses from the Tenant Manager, not service unavailability.
+// Neither is a request the caller's own context cancelled.
 func WithCircuitBreaker(threshold int, timeout time.Duration) ClientOption {
 	return func(c *Client) {
 		c.cbThreshold = threshold
@@ -305,6 +307,14 @@ func (c *Client) recordFailure() {
 
 	if c.cbFailures >= c.cbThreshold {
 		c.cbState = cbOpen
+	}
+}
+
+// recordTransportFailure records a failed round trip unless the caller cancelled
+// it: a hang-up is not the Tenant Manager failing, a missed caller deadline is.
+func (c *Client) recordTransportFailure(ctx context.Context) {
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		c.recordFailure()
 	}
 }
 
@@ -514,7 +524,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	// #nosec G107 -- baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		c.recordFailure()
+		c.recordTransportFailure(ctx)
 		logger.Log(ctx, obs.LevelError, "failed to execute request", "error", err)
 		libOpentelemetry.HandleSpanError(span, "HTTP request failed", err)
 
@@ -525,7 +535,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	// Read response body with size limit to prevent unbounded memory allocation
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
-		c.recordFailure()
+		c.recordTransportFailure(ctx)
 		logger.Log(ctx, obs.LevelError, "failed to read response body", "error", err)
 		libOpentelemetry.HandleSpanError(span, "Failed to read response body", err)
 
@@ -634,7 +644,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	// #nosec G107 -- baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		c.recordFailure()
+		c.recordTransportFailure(ctx)
 		logger.Log(ctx, obs.LevelError, "failed to execute request", "error", err)
 		libOpentelemetry.HandleSpanError(span, "HTTP request failed", err)
 
@@ -645,7 +655,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	// Read response body with size limit to prevent unbounded memory allocation
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
-		c.recordFailure()
+		c.recordTransportFailure(ctx)
 		logger.Log(ctx, obs.LevelError, "failed to read response body", "error", err)
 		libOpentelemetry.HandleSpanError(span, "Failed to read response body", err)
 

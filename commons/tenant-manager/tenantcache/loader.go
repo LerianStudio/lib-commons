@@ -18,11 +18,12 @@ import (
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/logcompat"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
+	"golang.org/x/sync/singleflight"
 )
 
 // TenantLoader fetches tenant configurations from the tenant-manager API and
-// caches them in a TenantCache. It uses per-tenant mutexes to prevent concurrent
-// API calls for the same tenant (double-check cache pattern).
+// caches them in a TenantCache. Concurrent loads of one tenant share a single
+// API call (singleflight, with a double-check of the cache).
 //
 // TenantLoader is a standalone component: any layer (middleware, event listener,
 // consumer) can use it. It does NOT manage consumer goroutines or knownTenants
@@ -33,7 +34,7 @@ type TenantLoader struct {
 	service          string
 	cacheTTL         time.Duration
 	logger           *logcompat.Logger
-	loadLocks        sync.Map // per-tenant mutexes (key: tenantID, value: *sync.Mutex)
+	loads            singleflight.Group // one in-flight load per tenant
 	onTenantLoaded   func(ctx context.Context, tenantID string)
 	onTenantLoadedMu sync.RWMutex
 }
@@ -69,7 +70,8 @@ func NewTenantLoader(
 // SetOnTenantLoaded registers a callback that is invoked after a tenant is
 // successfully lazy-loaded from the tenant-manager API and cached. The callback
 // is NOT called on cache hits -- only on new loads. Passing nil clears the
-// callback. This is safe to call before any LoadTenant call.
+// callback. This is safe to call before any LoadTenant call. It runs on the shared,
+// uncancellable load; a panic in it terminates the process (singleflight re-raises it).
 func (l *TenantLoader) SetOnTenantLoaded(fn func(ctx context.Context, tenantID string)) {
 	l.onTenantLoadedMu.Lock()
 	l.onTenantLoaded = fn
@@ -110,11 +112,13 @@ func (l *TenantLoader) InvalidateClientCache(ctx context.Context, tenantID, serv
 // LoadTenant fetches and caches a tenant's configuration.
 //
 // Behaviour:
-//  1. Acquires a per-tenant mutex (prevents concurrent loads for same tenant).
-//  2. Double-checks the cache after acquiring the lock.
-//  3. Calls pmClient.GetTenantConfig if not cached.
-//  4. Caches the result with the configured TTL.
-//  5. Returns the config or an error.
+//  1. Concurrent callers for one tenant share one load: one fetch, one result,
+//     and at most one circuit breaker failure for all of them.
+//  2. The shared load is detached from every caller's cancellation, so a
+//     caller hanging up does not fail the others; each caller still stops
+//     waiting when its own context ends. The client's own timeout bounds it.
+//  3. The load double-checks the cache, calls pmClient.GetTenantConfig on a
+//     miss and caches the result with the configured TTL.
 //
 // Error classification:
 //   - TenantSuspendedError / TenantPurgedError: returned as-is (not cached)
@@ -126,28 +130,19 @@ func (l *TenantLoader) LoadTenant(ctx context.Context, tenantID string) (*core.T
 	ctx, span := tracer.Start(ctx, "tenantcache.tenant_loader.load_tenant")
 	defer span.End()
 
-	// Per-tenant mutex to prevent concurrent API calls for the same tenant.
-	lockVal, _ := l.loadLocks.LoadOrStore(tenantID, &sync.Mutex{})
+	loads := l.loads.DoChan(tenantID, func() (any, error) {
+		return l.fetchAndCache(context.WithoutCancel(ctx), tenantID)
+	})
 
-	tenantMu, ok := lockVal.(*sync.Mutex)
-	if !ok {
-		err := fmt.Errorf("tenantcache: unexpected lock type for tenant %s", tenantID)
-		libOpentelemetry.HandleSpanError(span, "unexpected lock type", err)
+	var res singleflight.Result
 
-		return nil, err
+	select {
+	case res = <-loads:
+	case <-ctx.Done():
+		res.Err = ctx.Err()
 	}
 
-	tenantMu.Lock()
-	defer tenantMu.Unlock()
-
-	// Double-check: maybe another goroutine loaded it while we waited.
-	if entry, cached := l.cache.Get(tenantID); cached && entry != nil {
-		return entry.Config, nil
-	}
-
-	// Fetch from tenant-manager API.
-	config, err := l.pmClient.GetTenantConfig(ctx, tenantID, l.service)
-	if err != nil {
+	if err := res.Err; err != nil {
 		if core.IsTenantSuspendedError(err) || core.IsTenantPurgedError(err) {
 			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "tenant suspended or purged", err)
 			return nil, err
@@ -164,7 +159,23 @@ func (l *TenantLoader) LoadTenant(ctx context.Context, tenantID string) (*core.T
 		return nil, wrappedErr
 	}
 
-	// Cache the config with TTL.
+	config, _ := res.Val.(*core.TenantConfig)
+
+	return config, nil
+}
+
+// fetchAndCache is the body of one shared load.
+func (l *TenantLoader) fetchAndCache(ctx context.Context, tenantID string) (*core.TenantConfig, error) {
+	// Double-check: a load may have finished between the caller's miss and this one.
+	if entry, cached := l.cache.Get(tenantID); cached && entry != nil {
+		return entry.Config, nil
+	}
+
+	config, err := l.pmClient.GetTenantConfig(ctx, tenantID, l.service)
+	if err != nil {
+		return nil, err
+	}
+
 	l.cache.Set(tenantID, config, l.cacheTTL)
 
 	l.logger.InfofCtx(ctx, "lazy-loaded tenant %s for service %s", tenantID, l.service)

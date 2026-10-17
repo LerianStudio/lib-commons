@@ -386,3 +386,112 @@ func TestNewTenantLoader_DefaultTTL(t *testing.T) {
 	require.True(t, ok, "tenant should be in cache")
 	assert.False(t, entry.IsExpired(), "cache entry should not be expired (default TTL should be used)")
 }
+
+// newSlowLoaderServer answers every request after 100ms, long enough for
+// concurrent callers to queue behind the first load.
+func newSlowLoaderServer(t *testing.T, status int, body any, requestCount *atomic.Int64, arrived chan<- struct{}) *httptest.Server {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requestCount.Add(1) == 1 && arrived != nil {
+			close(arrived)
+		}
+
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(body)
+	}))
+
+	t.Cleanup(server.Close)
+
+	return server
+}
+
+func TestLoadTenant_ConcurrentFailedLoadIsOneFailure(t *testing.T) {
+	t.Parallel()
+
+	tenantID := "tenant-loader-concurrent-failure"
+
+	var requestCount atomic.Int64
+	server := newSlowLoaderServer(t, http.StatusInternalServerError, nil, &requestCount, nil)
+
+	// Threshold 2: a second recorded failure would open the breaker.
+	pmClient, err := client.NewClient(server.URL, obs.Nop(),
+		client.WithAllowInsecureHTTP(),
+		client.WithServiceAPIKey(testServiceAPIKey),
+		client.WithCircuitBreaker(2, time.Minute),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { pmClient.Close() })
+
+	loader := NewTenantLoader(pmClient, NewTenantCache(), testServiceName, DefaultTenantCacheTTL, obs.Nop())
+
+	const callers = 5
+
+	var wg sync.WaitGroup
+
+	errs := make([]error, callers)
+
+	for i := range callers {
+		wg.Go(func() { _, errs[i] = loader.LoadTenant(context.Background(), tenantID) })
+	}
+
+	wg.Wait()
+
+	assert.Equal(t, int64(1), requestCount.Load(), "concurrent callers must share one load")
+
+	for i, err := range errs {
+		require.Error(t, err, "caller %d", i)
+		assert.NotErrorIs(t, err, core.ErrCircuitBreakerOpen, "caller %d", i)
+	}
+
+	// One failed load recorded one failure, so the breaker is still closed.
+	_, err = loader.LoadTenant(context.Background(), tenantID)
+	assert.NotErrorIs(t, err, core.ErrCircuitBreakerOpen)
+	assert.Equal(t, int64(2), requestCount.Load())
+}
+
+func TestLoadTenant_CallerHangUpDoesNotFailSharedLoad(t *testing.T) {
+	t.Parallel()
+
+	tenantID := "tenant-loader-hangup"
+
+	var requestCount atomic.Int64
+
+	arrived := make(chan struct{})
+	server := newSlowLoaderServer(t, http.StatusOK, newTestTenantConfig(tenantID), &requestCount, arrived)
+	loader := NewTenantLoader(newTestClient(t, server.URL), NewTenantCache(), testServiceName, DefaultTenantCacheTTL, obs.Nop())
+
+	leaderCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	leaderErr := make(chan error, 1)
+
+	go func() {
+		_, err := loader.LoadTenant(leaderCtx, tenantID)
+		leaderErr <- err
+	}()
+
+	<-arrived
+
+	followerDone := make(chan struct{})
+
+	var (
+		followerCfg *core.TenantConfig
+		followerErr error
+	)
+
+	go func() {
+		defer close(followerDone)
+		followerCfg, followerErr = loader.LoadTenant(context.Background(), tenantID)
+	}()
+
+	cancel()
+
+	require.ErrorIs(t, <-leaderErr, context.Canceled, "the caller who hung up gets its own context error")
+
+	<-followerDone
+	require.NoError(t, followerErr, "another caller's hang-up must not fail this caller")
+	assert.Equal(t, tenantID, followerCfg.ID)
+	assert.Equal(t, int64(1), requestCount.Load(), "one fetch served both callers: the leader's hang-up did not abort it")
+}

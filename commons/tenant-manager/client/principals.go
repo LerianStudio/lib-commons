@@ -68,7 +68,7 @@ func (c *Client) GetTenantPrincipals(ctx context.Context, tenantID, service stri
 	// #nosec G107 -- baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		c.recordFailure()
+		c.recordTransportFailure(ctx)
 		logger.Log(ctx, obs.LevelError, "failed to execute request", "error", err)
 		libOpentelemetry.HandleSpanError(span, "HTTP request failed", err)
 
@@ -78,7 +78,7 @@ func (c *Client) GetTenantPrincipals(ctx context.Context, tenantID, service stri
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
-		c.recordFailure()
+		c.recordTransportFailure(ctx)
 		logger.Log(ctx, obs.LevelError, "failed to read response body", "error", err)
 		libOpentelemetry.HandleSpanError(span, "Failed to read response body", err)
 
