@@ -15,20 +15,16 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-// waitingFakeRepo is a claim-scoped repository with both waiting-row capabilities.
+// waitingFakeRepo is a repository with both waiting-row capabilities.
 type waitingFakeRepo struct {
 	*fakeRepo
-	requeueErr   error
-	requeued     []uuid.UUID
-	requeueScope []string
-	oldest       map[string]time.Time // by tenant; absent means nothing waits
-	oldestErr    error
+	requeueErr error
+	requeued   []uuid.UUID
+	oldest     map[string]time.Time // by tenant; absent means nothing waits
+	oldestErr  error
 }
 
-func (repo *waitingFakeRepo) ScopesClaimsByEventType() {}
-
-func (repo *waitingFakeRepo) Requeue(ctx context.Context, id uuid.UUID) error {
-	repo.requeueScope, _ = ClaimEventTypesFromContext(ctx)
+func (repo *waitingFakeRepo) Requeue(_ context.Context, id uuid.UUID) error {
 	repo.requeued = append(repo.requeued, id)
 
 	return repo.requeueErr
@@ -52,17 +48,13 @@ func TestDispatcher_Requeue(t *testing.T) {
 	require.ErrorIs(t, unsupported.Requeue(context.Background(), uuid.New()), ErrOutboxRequeueUnsupported)
 
 	repo := &waitingFakeRepo{fakeRepo: &fakeRepo{}}
-	handlers := NewHandlerRegistry()
-	require.NoError(t, handlers.Register("payment.settled", func(context.Context, *OutboxEvent) error { return nil }))
-
-	dispatcher, err := NewDispatcher(repo, handlers, nil, nil, WithClaimScopedToHandlers())
+	dispatcher, err := NewDispatcher(repo, NewHandlerRegistry(), nil, nil)
 	require.NoError(t, err)
 
 	ctx := ContextWithTenantID(context.Background(), "tenant-a")
 	id := uuid.New()
 	require.NoError(t, dispatcher.Requeue(ctx, id))
 	require.Equal(t, []uuid.UUID{id}, repo.requeued)
-	require.Equal(t, []string{"payment.settled"}, repo.requeueScope, "the claim scope applies to the requeue")
 
 	repo.requeueErr = fmt.Errorf("requeueing event: %w", ErrOutboxEventNotRequeueable)
 	require.ErrorIs(t, dispatcher.Requeue(ctx, uuid.New()), ErrOutboxEventNotRequeueable)

@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/google/uuid"
-	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // Requeue puts the INVALID or FAILED event id back in the queue for a later cycle, the sole
@@ -29,12 +27,7 @@ func (dispatcher *Dispatcher) Requeue(ctx context.Context, id uuid.UUID) error {
 		ctx = context.Background()
 	}
 
-	tracer := dispatcher.tracer
-	if nilcheck.Interface(tracer) {
-		tracer = noop.NewTracerProvider().Tracer("commons.noop")
-	}
-
-	ctx, span := tracer.Start(ctx, "outbox.dispatcher.requeue")
+	ctx, span := dispatcher.tracer.Start(ctx, "outbox.dispatcher.requeue")
 	defer span.End()
 
 	if err := requeuer.Requeue(dispatcher.withClaimScope(ctx), id); err != nil {
