@@ -92,6 +92,11 @@ var (
 	// resolved tenant contains ':', the store-key delimiter: such a tenant would
 	// address another tenant's records, so nothing is written.
 	ErrTenantMalformed = errors.New("idempotency: tenant contains the store-key delimiter ':'")
+
+	// ErrSingleTenantMisconfigured is what [Middleware.Err] reports when
+	// [WithSingleTenant] is combined with [WithRequireTenant] or a non-nil
+	// [WithTenantProvider]: the record cannot be rooted at no tenant and at one.
+	ErrSingleTenantMisconfigured = errors.New("idempotency: single-tenant mode combined with a tenant option")
 )
 
 // requestFingerprint identifies WHICH request an idempotency key was spent on.
@@ -270,6 +275,7 @@ type Middleware struct {
 	// header, or without tenant context, proceeds unprotected.
 	requireKey       bool
 	requireTenant    bool
+	singleTenant     bool
 	onKeyRequired    func(c fiber.Ctx) error
 	onTenantRequired func(c fiber.Ctx) error
 	// failClosed inverts the transient-Redis-error behavior. Default (false)
@@ -338,6 +344,10 @@ func newMiddleware(opts ...Option) *Middleware {
 		if opt != nil {
 			opt(m)
 		}
+	}
+
+	if m.singleTenant && (m.requireTenant || m.tenantProvider != nil) {
+		m.configErr = ErrSingleTenantMisconfigured
 	}
 
 	return m
@@ -892,6 +902,27 @@ func WithRequireTenant() Option {
 	}
 }
 
+// WithSingleTenant roots every record at no tenant, for an installation that
+// serves one client and carries no tenant on its requests. The store key is
+// <prefix><idempotencyKey>, with no tenant segment, and neither the
+// tenant-manager context nor a [TenantProvider] is read: a keyed mutating
+// request is protected instead of taking the absent-tenant bypass, and
+// [Middleware.FenceOutcomeUnknown] fences it. Log lines name no tenant.
+//
+// Every record of the installation shares one namespace, so use it only where
+// the installation itself is the isolation boundary. Combined with
+// [WithRequireTenant] or a non-nil [WithTenantProvider], [Middleware.Err]
+// reports [ErrSingleTenantMisconfigured] and every keyed mutating request is
+// refused with 503.
+//
+// Switching it on or off moves every key, so a retry straddling that deploy
+// finds no record and runs again; drain the retention window first.
+func WithSingleTenant() Option {
+	return func(m *Middleware) {
+		m.singleTenant = true
+	}
+}
+
 // WithTenantRequiredHandler sets a custom handler for requests refused by
 // [WithRequireTenant]. By default, a generic 400 JSON response is returned.
 func WithTenantRequiredHandler(fn func(c fiber.Ctx) error) Option {
@@ -1023,7 +1054,8 @@ func WithMaxBodyCache(n int) Option {
 }
 
 // Check returns a Fiber middleware that enforces idempotency on supported mutating requests.
-// Requests without tenant context bypass idempotency to preserve tenant isolation.
+// Requests without tenant context bypass idempotency to preserve tenant isolation,
+// unless [WithSingleTenant] roots every record at no tenant.
 // If the Middleware is nil, a pass-through handler is returned.
 func (m *Middleware) Check() fiber.Handler {
 	if m == nil {
@@ -1447,7 +1479,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 		)
 	}
 
-	if tenantID == "" {
+	if m.tenantMissing(tenantID) {
 		if m.requireTenant {
 			return m.respondTenantRequired(c)
 		}
@@ -1546,8 +1578,13 @@ func recordTenant(c fiber.Ctx) string {
 // provider it is the tenant-manager context, which is the shipped behaviour. A
 // provider error is the absent tenant; see [WithTenantProvider]. A tenant
 // containing the store-key delimiter, from either source, is [ErrTenantMalformed]:
-// rooted as-is it would address another tenant's records.
+// rooted as-is it would address another tenant's records. [WithSingleTenant]
+// reads neither source: the record has no tenant.
 func (m *Middleware) resolveTenant(c fiber.Ctx) (string, error) {
+	if m.singleTenant {
+		return "", nil
+	}
+
 	var tenantID string
 
 	if m.tenantProvider == nil {
@@ -1569,6 +1606,12 @@ func (m *Middleware) resolveTenant(c fiber.Ctx) (string, error) {
 	}
 
 	return tenantID, nil
+}
+
+// tenantMissing reports a record that needs a tenant and has none. A
+// single-tenant record never needs one.
+func (m *Middleware) tenantMissing(tenantID string) bool {
+	return tenantID == "" && !m.singleTenant
 }
 
 // resolveFingerprint builds the digest that identifies WHICH request spent this
@@ -1798,12 +1841,11 @@ func (m *Middleware) resolveProcessingTTL(c fiber.Ctx) time.Duration {
 // [WithProcessingTTL] is unset and the lease borrows the retention TTL, which
 // resolveProcessingTTL cannot see from here.
 func (m *Middleware) logFallbackLease(c fiber.Ctx, cause string, err error, returned time.Duration) {
-	m.logger.Log(c.Context(), obs.LevelWarn,
+	m.recordLogger(recordTenant(c)).Log(c.Context(), obs.LevelWarn,
 		"idempotency: "+cause+"; falling back to the configured lease",
 		"error", err,
 		"provider_lease", returned,
 		"fallback_lease", m.processingTTL,
-		"tenant_id", recordTenant(c),
 	)
 }
 
@@ -1861,10 +1903,9 @@ func (m *Middleware) handleStore(
 	if err := json.Unmarshal(stored, &current); err != nil {
 		legacy, isLegacy := decodeLegacyRecord(stored)
 		if !isLegacy {
-			m.logger.Log(ctx, obs.LevelError,
+			m.recordLogger(recordTenant(c)).Log(ctx, obs.LevelError,
 				"idempotency: stored record could not be decoded; refusing the request",
 				"idempotency_key_digest", keyDigest(key),
-				"tenant_id", recordTenant(c),
 				"record_bytes", len(stored),
 				"error", err,
 			)
@@ -1988,12 +2029,11 @@ func (m *Middleware) handleStoreAcquired(
 		// so every resend under it is refused 409. An operator asked why has to
 		// find the one record, and "a response was too large" with no key is not
 		// an answer. The key travels as a digest; see logFenceFailure.
-		m.logger.Log(postCtx, obs.LevelWarn,
+		m.recordLogger(recordTenant(c)).Log(postCtx, obs.LevelWarn,
 			"idempotency: replay response exceeds the configured limit; completing the key without a replayable receipt",
 			"error", err,
 			"status_code", statusCode,
 			"idempotency_key_digest", keyDigest(key),
-			"tenant_id", recordTenant(c),
 		)
 
 		response = nil
@@ -2152,10 +2192,9 @@ func (m *Middleware) markOutcomeUnknown(
 
 	fenced = true
 
-	m.logger.Log(ctx, obs.LevelWarn, "idempotency: key fenced with an unrecorded outcome",
+	m.recordLogger(recordTenant(c)).Log(ctx, obs.LevelWarn, "idempotency: key fenced with an unrecorded outcome",
 		"record_outcome", outcomeUnrecorded,
 		"idempotency_key_digest", keyDigest(key),
-		"tenant_id", recordTenant(c),
 		"owner", record.Owner,
 	)
 
@@ -2166,7 +2205,21 @@ func (m *Middleware) markOutcomeUnknown(
 // is the ONE composition: handle reads there and FenceOutcomeUnknown writes
 // there, so a consumer fence cannot drift beside the record it has to sit on.
 func (m *Middleware) storeKey(tenantID, idempotencyKey string) string {
+	if m.singleTenant {
+		return m.keyPrefix + idempotencyKey
+	}
+
 	return fmt.Sprintf("%s%s:%s", m.keyPrefix, tenantID, idempotencyKey)
+}
+
+// recordLogger logs about one record: it names the tenant the record is rooted
+// at, and none for a record rooted at no tenant.
+func (m *Middleware) recordLogger(tenantID string) obs.Logger {
+	if tenantID == "" {
+		return m.logger
+	}
+
+	return obs.With(m.logger, "tenant_id", tenantID)
 }
 
 // FenceOutcomeUnknown plants, for the request in c, the same terminal record
@@ -2219,7 +2272,7 @@ func (m *Middleware) FenceOutcomeUnknown(c fiber.Ctx, ttl time.Duration) error {
 		return err
 	}
 
-	if tenantID == "" {
+	if m.tenantMissing(tenantID) {
 		return errFenceTenantMissing
 	}
 
@@ -2258,10 +2311,9 @@ func (m *Middleware) FenceOutcomeUnknown(c fiber.Ctx, ttl time.Duration) error {
 		return nil
 	}
 
-	m.logger.Log(ctx, obs.LevelWarn, "idempotency: key fenced with an unrecorded outcome by the application",
+	m.recordLogger(tenantID).Log(ctx, obs.LevelWarn, "idempotency: key fenced with an unrecorded outcome by the application",
 		"record_outcome", outcomeUnrecorded,
 		"idempotency_key_digest", keyDigest(key),
-		"tenant_id", tenantID,
 	)
 
 	return nil
@@ -2281,10 +2333,9 @@ func (m *Middleware) FenceOutcomeUnknown(c fiber.Ctx, ttl time.Duration) error {
 // tenant ID and the acquisition owner are logged raw; neither is client-supplied
 // and the owner is what correlates this line with the stored record.
 func (m *Middleware) logFenceFailure(ctx context.Context, tenantID, key, owner, cause string, err error) {
-	m.logger.Log(ctx, obs.LevelError,
+	m.recordLogger(tenantID).Log(ctx, obs.LevelError,
 		"idempotency: key left UNFENCED after an unrecorded outcome; a resend may execute the operation again — "+cause,
 		"idempotency_key_digest", keyDigest(key),
-		"tenant_id", tenantID,
 		"owner", owner,
 		"error", err,
 	)
@@ -2304,12 +2355,11 @@ func keyDigest(key string) string {
 func (m *Middleware) captureResponse(ctx context.Context, c fiber.Ctx, key string, beforeHandler headerSnapshot) ([]byte, error) {
 	body := c.Response().Body()
 	if len(body) > m.maxBodyCache {
-		m.logger.Log(c.Context(), obs.LevelWarn,
+		m.recordLogger(recordTenant(c)).Log(c.Context(), obs.LevelWarn,
 			"idempotency: response body exceeds maxBodyCache, skipping cache",
 			"body_size", len(body),
 			"max_body_cache", m.maxBodyCache,
 			"idempotency_key_digest", keyDigest(key),
-			"tenant_id", recordTenant(c),
 		)
 
 		return nil, errResponseTooLarge

@@ -40,6 +40,12 @@
 // header check, so it only ever sees a KEYED request: an unkeyed one has already
 // taken the branch above. Pair it with [WithRequireKey] to refuse both.
 //
+// [WithSingleTenant] is for an installation that serves one client and carries
+// no tenant at all. The record is rooted at no tenant, under
+// <prefix><idempotencyKey>, and neither tenant source is read, so the bypass
+// above never applies. Combining it with [WithRequireTenant] or
+// [WithTenantProvider] is a configuration error reported by [Middleware.Err].
+//
 // The middleware encodes state, fingerprint, acquisition owner, and optional
 // replay response into one opaque value stored atomically under that key. Store
 // implementations preserve those bytes and provide only atomic acquisition and
