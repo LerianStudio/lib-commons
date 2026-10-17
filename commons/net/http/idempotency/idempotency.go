@@ -910,7 +910,9 @@ func WithRequireTenant() Option {
 // [Middleware.FenceOutcomeUnknown] fences it. Log lines name no tenant.
 //
 // Every record of the installation shares one namespace, so use it only where
-// the installation itself is the isolation boundary. Combined with
+// the installation itself is the isolation boundary. A tenant-scoped middleware
+// on the same store needs another prefix: the single-tenant key "t:k" is its
+// record for tenant "t", key "k". Combined with
 // [WithRequireTenant] or a non-nil [WithTenantProvider], [Middleware.Err]
 // reports [ErrSingleTenantMisconfigured] and every keyed mutating request is
 // refused with 503.
