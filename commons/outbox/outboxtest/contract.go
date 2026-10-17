@@ -130,24 +130,23 @@ func Run(t *testing.T, factory Factory, opts ...RunOption) {
 	run("ListTenantsWithPublishedBeforeListsOnlyTenantsWithDeletableEvents", func(t *testing.T) {
 		testListTenantsWithPublishedBefore(t, factory)
 	})
-	run("RequeueInvalidMovesOnlyInvalidBackToPending", func(t *testing.T) { testRequeueInvalid(t, factory) })
+	run("RequeueMovesInvalidOrFailedBackToPending", func(t *testing.T) { testRequeue(t, factory) })
 	run("OldestWaitingCreatedAtSkipsFinishedEvents", func(t *testing.T) { testOldestWaitingCreatedAt(t, factory) })
 	run("DispatcherRepublishesRequeuedEventWithSameID", func(t *testing.T) { testDispatcherRepublishesRequeued(t, factory) })
 }
 
-// testDispatcherRepublishesRequeued walks the redrive end to end: the broker stays down until
-// the retry budget runs out, an operator requeues the INVALID event, and the next cycle
-// publishes it under the id the first attempt carried.
+// testDispatcherRepublishesRequeued walks the redrive end to end. With the broker down one
+// event spends its budget and goes INVALID; another stays FAILED with attempts at a budget
+// since lowered, so no cycle retries it. Requeued, both publish under their own ids.
 func testDispatcherRepublishesRequeued(t *testing.T, factory Factory) {
 	t.Helper()
 
 	repo := factory(t)
-	if _, ok := repo.(outbox.InvalidRequeuer); !ok {
-		t.Skip("repository does not implement outbox.InvalidRequeuer")
+	if _, ok := repo.(outbox.Requeuer); !ok {
+		t.Skip("repository does not implement outbox.Requeuer")
 	}
 
 	ctx := outbox.ContextWithTenantID(contractContext(t), "tenant-a")
-	created := createEvent(t, repo, ctx, "payment.redrive")
 
 	var brokerUp atomic.Bool
 
@@ -164,63 +163,81 @@ func testDispatcherRepublishesRequeued(t *testing.T, factory Factory) {
 		return nil
 	}))
 
-	dispatcher, err := outbox.NewDispatcher(repo, handlers, nil, noop.NewTracerProvider().Tracer("test"),
-		outbox.WithPublishMaxAttempts(1), outbox.WithMaxDispatchAttempts(1))
-	require.NoError(t, err)
+	withBudget := func(maxAttempts int) *outbox.Dispatcher {
+		dispatcher, err := outbox.NewDispatcher(repo, handlers, nil, noop.NewTracerProvider().Tracer("test"),
+			outbox.WithPublishMaxAttempts(1), outbox.WithMaxDispatchAttempts(maxAttempts), outbox.WithRetryWindow(time.Nanosecond))
+		require.NoError(t, err)
 
-	require.Equal(t, 1, dispatcher.DispatchOnceResult(ctx).Failed)
-	requireEventStatus(t, repo, ctx, created.ID, outbox.OutboxStatusInvalid)
+		return dispatcher
+	}
+
+	invalid := createEvent(t, repo, ctx, "payment.redrive")
+	require.Equal(t, 1, withBudget(1).DispatchOnceResult(ctx).Failed)
+	requireEventStatus(t, repo, ctx, invalid.ID, outbox.OutboxStatusInvalid)
+
+	stranded := createEvent(t, repo, ctx, "payment.redrive")
+	require.Equal(t, 1, withBudget(2).DispatchOnceResult(ctx).Failed)
+	requireEventStatus(t, repo, ctx, stranded.ID, outbox.OutboxStatusFailed)
 
 	brokerUp.Store(true)
-	require.Zero(t, dispatcher.DispatchOnceResult(ctx).Processed, "an INVALID event is never claimed")
 
-	require.NoError(t, dispatcher.RequeueInvalid(ctx, created.ID))
-	require.Equal(t, 1, dispatcher.DispatchOnceResult(ctx).Published)
-	require.Equal(t, []uuid.UUID{created.ID}, published)
-	requireEventStatus(t, repo, ctx, created.ID, outbox.OutboxStatusPublished)
+	lowered := withBudget(1)
+	require.Zero(t, lowered.DispatchOnceResult(ctx).Processed, "neither the INVALID nor the stranded FAILED event is claimed")
+
+	require.NoError(t, lowered.Requeue(ctx, invalid.ID))
+	require.NoError(t, lowered.Requeue(ctx, stranded.ID))
+	require.Equal(t, 2, lowered.DispatchOnceResult(ctx).Published)
+	require.ElementsMatch(t, []uuid.UUID{invalid.ID, stranded.ID}, published)
+	requireEventStatus(t, repo, ctx, invalid.ID, outbox.OutboxStatusPublished)
+	requireEventStatus(t, repo, ctx, stranded.ID, outbox.OutboxStatusPublished)
 }
 
-// testRequeueInvalid pins the operator redrive: an INVALID event goes back to PENDING as the
-// same event, attempts and diagnosis reset; every other id, or another tenant, is refused.
-func testRequeueInvalid(t *testing.T, factory Factory) {
+// testRequeue pins the operator redrive: an INVALID or FAILED event goes back to PENDING as
+// the same event, attempts and diagnosis reset; any other status or tenant is refused.
+func testRequeue(t *testing.T, factory Factory) {
 	t.Helper()
 
 	repo := factory(t)
 
-	requeuer, ok := repo.(outbox.InvalidRequeuer)
+	requeuer, ok := repo.(outbox.Requeuer)
 	if !ok {
-		t.Skip("repository does not implement outbox.InvalidRequeuer")
+		t.Skip("repository does not implement outbox.Requeuer")
 	}
 
 	baseCtx := contractContext(t)
 	ctx := outbox.ContextWithTenantID(baseCtx, "tenant-a")
 	invalid := createEvent(t, repo, ctx, "payment.requeue")
-	claimSinglePending(t, repo, ctx, invalid.ID)
-	require.NoError(t, repo.MarkFailed(ctx, invalid.ID, "broker unavailable", 1))
-
+	failed := createEvent(t, repo, ctx, "payment.requeue")
 	published := createEvent(t, repo, ctx, "payment.requeue")
-	claimSinglePending(t, repo, ctx, published.ID)
+	require.Len(t, claimAllPending(t, repo, ctx, 10), 3)
+	require.NoError(t, repo.MarkFailed(ctx, invalid.ID, "broker unavailable", 1))
+	require.NoError(t, repo.MarkFailed(ctx, failed.ID, "broker unavailable", 100))
 	require.NoError(t, repo.MarkPublished(ctx, published.ID, time.Now().UTC()))
+	processing := createEvent(t, repo, ctx, "payment.requeue")
+	claimSinglePending(t, repo, ctx, processing.ID)
 
-	require.Error(t, requeuer.RequeueInvalid(outbox.ContextWithTenantID(baseCtx, "tenant-b"), invalid.ID))
+	require.ErrorIs(t, requeuer.Requeue(outbox.ContextWithTenantID(baseCtx, "tenant-b"), invalid.ID), outbox.ErrOutboxEventNotRequeueable)
 	requireEventStatus(t, repo, ctx, invalid.ID, outbox.OutboxStatusInvalid)
 
-	require.NoError(t, requeuer.RequeueInvalid(ctx, invalid.ID))
+	for _, event := range []*outbox.OutboxEvent{invalid, failed} {
+		require.NoError(t, requeuer.Requeue(ctx, event.ID))
 
-	stored := mustGetEvent(t, repo, ctx, invalid.ID)
-	require.Equal(t, outbox.OutboxStatusPending, stored.Status)
-	require.Zero(t, stored.Attempts)
-	require.Empty(t, stored.LastError)
-	require.Equal(t, invalid.EventType, stored.EventType)
-	require.Equal(t, invalid.AggregateID, stored.AggregateID)
-	require.JSONEq(t, string(invalid.Payload), string(stored.Payload))
-
-	for _, id := range []uuid.UUID{invalid.ID, published.ID, uuid.New()} {
-		require.ErrorIs(t, requeuer.RequeueInvalid(ctx, id), outbox.ErrOutboxEventNotInvalid)
+		stored := mustGetEvent(t, repo, ctx, event.ID)
+		require.Equal(t, outbox.OutboxStatusPending, stored.Status)
+		require.Zero(t, stored.Attempts)
+		require.Empty(t, stored.LastError)
+		require.Equal(t, event.EventType, stored.EventType)
+		require.Equal(t, event.AggregateID, stored.AggregateID)
+		require.JSONEq(t, string(event.Payload), string(stored.Payload))
 	}
 
+	for _, id := range []uuid.UUID{invalid.ID, processing.ID, published.ID, uuid.New()} {
+		require.ErrorIs(t, requeuer.Requeue(ctx, id), outbox.ErrOutboxEventNotRequeueable)
+	}
+
+	requireEventStatus(t, repo, ctx, processing.ID, outbox.OutboxStatusProcessing)
 	requireEventStatus(t, repo, ctx, published.ID, outbox.OutboxStatusPublished)
-	claimSinglePending(t, repo, ctx, invalid.ID)
+	require.Len(t, claimAllPending(t, repo, ctx, 10), 2)
 }
 
 // testOldestWaitingCreatedAt pins the read behind outbox.queue.oldest_age: the oldest event

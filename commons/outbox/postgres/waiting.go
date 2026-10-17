@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,12 +13,12 @@ import (
 )
 
 var (
-	_ outbox.InvalidRequeuer     = (*Repository)(nil)
+	_ outbox.Requeuer            = (*Repository)(nil)
 	_ outbox.OldestWaitingReader = (*Repository)(nil)
 )
 
-// RequeueInvalid implements outbox.InvalidRequeuer.
-func (repo *Repository) RequeueInvalid(ctx context.Context, id uuid.UUID) error {
+// Requeue implements outbox.Requeuer.
+func (repo *Repository) Requeue(ctx context.Context, id uuid.UUID) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -26,11 +27,17 @@ func (repo *Repository) RequeueInvalid(ctx context.Context, id uuid.UUID) error 
 		return ErrRepositoryNotInitialized
 	}
 
+	for _, from := range []string{outbox.OutboxStatusInvalid, outbox.OutboxStatusFailed} {
+		if err := outbox.ValidateOutboxTransition(from, outbox.OutboxStatusPending); err != nil {
+			return fmt.Errorf("requeue transition: %w", err)
+		}
+	}
+
 	if id == uuid.Nil {
 		return ErrIDRequired
 	}
 
-	ctx, span := tracerFromContext(ctx).Start(ctx, "postgres.requeue_outbox_invalid")
+	ctx, span := tracerFromContext(ctx).Start(ctx, "postgres.requeue_outbox_event")
 	defer span.End()
 
 	_, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) (struct{}, error) {
@@ -39,16 +46,16 @@ func (repo *Repository) RequeueInvalid(ctx context.Context, id uuid.UUID) error 
 			return struct{}{}, err
 		}
 
-		filter, filterArgs, err := repo.tenantFilterClause(5, tenantID)
+		filter, filterArgs, err := repo.tenantFilterClause(6, tenantID)
 		if err != nil {
 			return struct{}{}, err
 		}
 
 		query := "UPDATE " + quoteIdentifierPath(repo.tableName) + // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
 			" SET status = $1::outbox_event_status, attempts = 0, last_error = NULL, updated_at = $2" +
-			" WHERE id = $3 AND status = $4::outbox_event_status" + filter
+			" WHERE id = $3 AND status IN ($4::outbox_event_status, $5::outbox_event_status)" + filter
 
-		args := append([]any{outbox.OutboxStatusPending, time.Now().UTC(), id, outbox.OutboxStatusInvalid}, filterArgs...)
+		args := append([]any{outbox.OutboxStatusPending, time.Now().UTC(), id, outbox.OutboxStatusInvalid, outbox.OutboxStatusFailed}, filterArgs...)
 
 		scope, scopeArgs := claimScopeClause(ctx, len(args)+1)
 
@@ -63,15 +70,17 @@ func (repo *Repository) RequeueInvalid(ctx context.Context, id uuid.UUID) error 
 		}
 
 		if rows == 0 {
-			return struct{}{}, outbox.ErrOutboxEventNotInvalid
+			return struct{}{}, outbox.ErrOutboxEventNotRequeueable
 		}
 
 		return struct{}{}, nil
 	})
 	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "failed to requeue invalid outbox event", err)
+		if !errors.Is(err, outbox.ErrOutboxEventNotRequeueable) {
+			libOpentelemetry.HandleSpanError(span, "failed to requeue outbox event", err)
+		}
 
-		return fmt.Errorf("requeueing invalid event: %w", err)
+		return fmt.Errorf("requeueing event: %w", err)
 	}
 
 	return nil

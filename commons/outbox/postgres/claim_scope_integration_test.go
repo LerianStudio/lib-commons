@@ -125,7 +125,7 @@ func TestIntegration_Dispatcher_PriorityTypesKeepRecoveryInScope(t *testing.T) {
 
 // A scoped dispatcher on a shared table requeues only its own INVALID events: another
 // service's INVALID event is refused and left INVALID for that service's operator.
-func TestIntegration_Dispatcher_RequeueInvalidStaysInClaimScope(t *testing.T) {
+func TestIntegration_Dispatcher_RequeueStaysInClaimScope(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 	owned, foreign := createFixtureEvent(t, fx, "payment.owned"), createFixtureEvent(t, fx, "payment.foreign")
 	updateFixtureEventState(t, fx, owned.ID, outbox.OutboxStatusInvalid, 3, time.Now().UTC())
@@ -135,8 +135,8 @@ func TestIntegration_Dispatcher_RequeueInvalidStaysInClaimScope(t *testing.T) {
 		noop.NewTracerProvider().Tracer("test"), outbox.WithClaimScopedToHandlers())
 	require.NoError(t, err)
 
-	require.ErrorIs(t, dispatcher.RequeueInvalid(fx.tenantCtx, foreign.ID), outbox.ErrOutboxEventNotInvalid)
-	require.NoError(t, dispatcher.RequeueInvalid(fx.tenantCtx, owned.ID))
+	require.ErrorIs(t, dispatcher.Requeue(fx.tenantCtx, foreign.ID), outbox.ErrOutboxEventNotRequeueable)
+	require.NoError(t, dispatcher.Requeue(fx.tenantCtx, owned.ID))
 	require.Equal(t, 1, dispatcher.DispatchOnceResult(fx.tenantCtx).Published)
 
 	for id, want := range map[uuid.UUID]string{owned.ID: outbox.OutboxStatusPublished, foreign.ID: outbox.OutboxStatusInvalid} {

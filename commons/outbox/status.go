@@ -40,10 +40,13 @@ func (status OutboxEventStatus) CanTransitionTo(next OutboxEventStatus) bool {
 	case StatusPending:
 		return next == StatusProcessing
 	case StatusFailed:
-		return next == StatusProcessing
+		// PENDING is the operator requeue (Dispatcher.Requeue); the dispatcher never takes it.
+		return next == StatusProcessing || next == StatusPending
 	case StatusProcessing:
 		return next == StatusProcessing || next == StatusPublished || next == StatusFailed || next == StatusInvalid
-	case StatusPublished, StatusInvalid:
+	case StatusInvalid:
+		return next == StatusPending
+	case StatusPublished:
 		return false
 	default:
 		return false

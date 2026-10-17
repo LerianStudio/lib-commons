@@ -15,12 +15,12 @@ import (
 )
 
 var (
-	_ outbox.InvalidRequeuer     = (*Repository)(nil)
+	_ outbox.Requeuer            = (*Repository)(nil)
 	_ outbox.OldestWaitingReader = (*Repository)(nil)
 )
 
-// RequeueInvalid implements outbox.InvalidRequeuer.
-func (repo *Repository) RequeueInvalid(ctx context.Context, id uuid.UUID) error {
+// Requeue implements outbox.Requeuer.
+func (repo *Repository) Requeue(ctx context.Context, id uuid.UUID) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -29,11 +29,18 @@ func (repo *Repository) RequeueInvalid(ctx context.Context, id uuid.UUID) error 
 		return ErrRepositoryNotInitialized
 	}
 
+	requeueable := []string{outbox.OutboxStatusInvalid, outbox.OutboxStatusFailed}
+	for _, from := range requeueable {
+		if err := outbox.ValidateOutboxTransition(from, outbox.OutboxStatusPending); err != nil {
+			return fmt.Errorf("requeue transition: %w", err)
+		}
+	}
+
 	if id == uuid.Nil {
 		return ErrIDRequired
 	}
 
-	ctx, span := repo.tracking(ctx).Start(ctx, "mongo.requeue_outbox_invalid")
+	ctx, span := repo.tracking(ctx).Start(ctx, "mongo.requeue_outbox_event")
 	defer span.End()
 
 	tenantID, err := repo.tenantIDFromContext(ctx)
@@ -48,20 +55,20 @@ func (repo *Repository) RequeueInvalid(ctx context.Context, id uuid.UUID) error 
 	}
 
 	result, err := collection.UpdateOne(ctx,
-		mergeFilters(repo.idTenantFilter(id, tenantID), bson.M{mongoFieldStatus: outbox.OutboxStatusInvalid}),
+		mergeFilters(repo.idTenantFilter(id, tenantID), bson.M{mongoFieldStatus: bson.M{mongoOperatorIn: requeueable}}),
 		bson.M{
 			mongoUpdateSet:   bson.M{mongoFieldStatus: outbox.OutboxStatusPending, mongoFieldAttempts: 0, mongoFieldUpdatedAt: time.Now().UTC()},
 			mongoUpdateUnset: bson.M{mongoFieldLastError: "", mongoFieldClaimToken: ""},
 		},
 	)
 	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "failed to requeue invalid outbox event", err)
+		libOpentelemetry.HandleSpanError(span, "failed to requeue outbox event", err)
 
-		return fmt.Errorf("requeueing invalid event: %w", err)
+		return fmt.Errorf("requeueing event: %w", err)
 	}
 
 	if result.ModifiedCount == 0 {
-		return fmt.Errorf("requeueing invalid event: %w", outbox.ErrOutboxEventNotInvalid)
+		return fmt.Errorf("requeueing event: %w", outbox.ErrOutboxEventNotRequeueable)
 	}
 
 	return nil

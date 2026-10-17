@@ -27,7 +27,7 @@ type waitingFakeRepo struct {
 
 func (repo *waitingFakeRepo) ScopesClaimsByEventType() {}
 
-func (repo *waitingFakeRepo) RequeueInvalid(ctx context.Context, id uuid.UUID) error {
+func (repo *waitingFakeRepo) Requeue(ctx context.Context, id uuid.UUID) error {
 	repo.requeueScope, _ = ClaimEventTypesFromContext(ctx)
 	repo.requeued = append(repo.requeued, id)
 
@@ -38,15 +38,15 @@ func (repo *waitingFakeRepo) OldestWaitingCreatedAt(context.Context) (time.Time,
 	return repo.oldest, repo.found, repo.oldestErr
 }
 
-func TestDispatcher_RequeueInvalid(t *testing.T) {
+func TestDispatcher_Requeue(t *testing.T) {
 	t.Parallel()
 
 	var nilDispatcher *Dispatcher
-	require.ErrorIs(t, nilDispatcher.RequeueInvalid(context.Background(), uuid.New()), ErrOutboxDispatcherRequired)
+	require.ErrorIs(t, nilDispatcher.Requeue(context.Background(), uuid.New()), ErrOutboxDispatcherRequired)
 
 	unsupported, err := NewDispatcher(&fakeRepo{}, NewHandlerRegistry(), nil, nil)
 	require.NoError(t, err)
-	require.ErrorIs(t, unsupported.RequeueInvalid(context.Background(), uuid.New()), ErrOutboxRequeueUnsupported)
+	require.ErrorIs(t, unsupported.Requeue(context.Background(), uuid.New()), ErrOutboxRequeueUnsupported)
 
 	reader := sdkmetric.NewManualReader()
 	repo := &waitingFakeRepo{fakeRepo: &fakeRepo{}}
@@ -59,12 +59,12 @@ func TestDispatcher_RequeueInvalid(t *testing.T) {
 
 	ctx := ContextWithTenantID(context.Background(), "tenant-a")
 	id := uuid.New()
-	require.NoError(t, dispatcher.RequeueInvalid(ctx, id))
+	require.NoError(t, dispatcher.Requeue(ctx, id))
 	require.Equal(t, []uuid.UUID{id}, repo.requeued)
 	require.Equal(t, []string{"payment.settled"}, repo.requeueScope, "the claim scope applies to the requeue")
 
-	repo.requeueErr = fmt.Errorf("requeueing invalid event: %w", ErrOutboxEventNotInvalid)
-	require.ErrorIs(t, dispatcher.RequeueInvalid(ctx, uuid.New()), ErrOutboxEventNotInvalid)
+	repo.requeueErr = fmt.Errorf("requeueing invalid event: %w", ErrOutboxEventNotRequeueable)
+	require.ErrorIs(t, dispatcher.Requeue(ctx, uuid.New()), ErrOutboxEventNotRequeueable)
 
 	requireIntMetricValue(t, collectOutboxMetrics(t, reader), "outbox.events.requeued", "tenant-a", 1)
 }

@@ -12,15 +12,15 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
-// RequeueInvalid puts the INVALID event id back in the queue so a later dispatch cycle, the
-// sole publisher, publishes it again with the same id, event type and payload. ctx carries
-// the tenant; the dispatcher's claim scope applies, as to every claim.
-func (dispatcher *Dispatcher) RequeueInvalid(ctx context.Context, id uuid.UUID) error {
+// Requeue puts the INVALID or FAILED event id back in the queue for a later cycle, the sole
+// publisher, to publish under the same id; ctx carries the tenant and the claim scope applies.
+// It does not undo an OnInvalid reaction: restore any domain state OnInvalid changed first.
+func (dispatcher *Dispatcher) Requeue(ctx context.Context, id uuid.UUID) error {
 	if dispatcher == nil || dispatcher.repo == nil {
 		return ErrOutboxDispatcherRequired
 	}
 
-	requeuer, ok := dispatcher.repo.(InvalidRequeuer)
+	requeuer, ok := dispatcher.repo.(Requeuer)
 	if !ok {
 		return ErrOutboxRequeueUnsupported
 	}
@@ -34,21 +34,21 @@ func (dispatcher *Dispatcher) RequeueInvalid(ctx context.Context, id uuid.UUID) 
 		tracer = noop.NewTracerProvider().Tracer("commons.noop")
 	}
 
-	ctx, span := tracer.Start(ctx, "outbox.dispatcher.requeue_invalid")
+	ctx, span := tracer.Start(ctx, "outbox.dispatcher.requeue")
 	defer span.End()
 
-	if err := requeuer.RequeueInvalid(dispatcher.withClaimScope(ctx), id); err != nil {
-		if errors.Is(err, ErrOutboxEventNotInvalid) {
-			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "outbox event is not invalid", err)
+	if err := requeuer.Requeue(dispatcher.withClaimScope(ctx), id); err != nil {
+		if errors.Is(err, ErrOutboxEventNotRequeueable) {
+			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "outbox event is not requeueable", err)
 		} else {
-			libOpentelemetry.HandleSpanError(span, "failed to requeue invalid outbox event", err)
+			libOpentelemetry.HandleSpanError(span, "failed to requeue outbox event", err)
 		}
 
-		return fmt.Errorf("requeue invalid outbox event: %w", err)
+		return fmt.Errorf("requeue outbox event: %w", err)
 	}
 
 	tenantKey := tenantKeyFromContext(ctx)
-	dispatcher.resolvedLogger().Log(ctx, obs.LevelInfo, "outbox event requeued from INVALID", "event_id", id.String())
+	dispatcher.resolvedLogger().Log(ctx, obs.LevelInfo, "outbox event requeued", "event_id", id.String())
 
 	if counter := dispatcher.metrics.eventsRequeued; counter != nil {
 		if attr, ok := dispatcher.tenantMetricAttribute(tenantKey); ok {

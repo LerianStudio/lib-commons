@@ -54,6 +54,8 @@ func TestValidateOutboxTransition(t *testing.T) {
 	require.NoError(t, ValidateOutboxTransition(OutboxStatusProcessing, OutboxStatusFailed))
 	require.NoError(t, ValidateOutboxTransition(OutboxStatusProcessing, OutboxStatusInvalid))
 	require.NoError(t, ValidateOutboxTransition(OutboxStatusProcessing, OutboxStatusProcessing))
+	require.NoError(t, ValidateOutboxTransition(OutboxStatusInvalid, OutboxStatusPending), "operator requeue")
+	require.NoError(t, ValidateOutboxTransition(OutboxStatusFailed, OutboxStatusPending), "operator requeue")
 
 	// Invalid transitions from terminal states.
 	err := ValidateOutboxTransition(OutboxStatusPublished, OutboxStatusProcessing)
@@ -63,9 +65,6 @@ func TestValidateOutboxTransition(t *testing.T) {
 	require.ErrorIs(t, err, ErrOutboxTransitionInvalid)
 
 	err = ValidateOutboxTransition(OutboxStatusInvalid, OutboxStatusProcessing)
-	require.ErrorIs(t, err, ErrOutboxTransitionInvalid)
-
-	err = ValidateOutboxTransition(OutboxStatusInvalid, OutboxStatusPending)
 	require.ErrorIs(t, err, ErrOutboxTransitionInvalid)
 
 	// Invalid backward transitions.

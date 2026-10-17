@@ -67,12 +67,12 @@ type InvalidPurger interface {
 	ListTenantsWithInvalidBefore(ctx context.Context, before time.Time, keepEventTypes []string) ([]string, error)
 }
 
-// InvalidRequeuer is the capability Dispatcher.RequeueInvalid needs.
-type InvalidRequeuer interface {
-	// RequeueInvalid atomically moves the INVALID event id to PENDING, attempts 0 and last_error
+// Requeuer is the capability Dispatcher.Requeue needs.
+type Requeuer interface {
+	// Requeue atomically moves the INVALID or FAILED event id to PENDING, attempts 0, last_error
 	// cleared, keeping id, event type and payload, within the tenant and claim scope of ctx; any
-	// other id returns ErrOutboxEventNotInvalid and changes nothing.
-	RequeueInvalid(ctx context.Context, id uuid.UUID) error
+	// other id returns ErrOutboxEventNotRequeueable and changes nothing.
+	Requeue(ctx context.Context, id uuid.UUID) error
 }
 
 // OldestWaitingReader is the capability behind the outbox.queue.oldest_age gauge.
