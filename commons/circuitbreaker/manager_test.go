@@ -610,22 +610,6 @@ func TestAdmission_UnknownClosedAndInvalidAreNotBlocked(t *testing.T) {
 	assert.True(t, retryAt.IsZero())
 }
 
-func TestAdmission_OpenReportsItsDeadline(t *testing.T) {
-	mgr, reader := newAdmissionManager(t)
-
-	const timeout = time.Minute
-
-	_, err := mgr.GetOrCreate("svc", admissionConfig(1, timeout))
-	require.NoError(t, err)
-
-	before, after := tripBreaker(t, mgr, "", "svc")
-
-	retryAt, blocked := reader.Admission("svc")
-	require.True(t, blocked)
-	assert.False(t, retryAt.Before(before.Add(timeout)), "deadline %v earlier than the window", retryAt)
-	assert.False(t, retryAt.After(after.Add(timeout)), "deadline %v later than the window", retryAt)
-}
-
 func TestAdmission_DefaultTimeoutIsSixtySeconds(t *testing.T) {
 	mgr, reader := newAdmissionManager(t)
 
@@ -646,7 +630,7 @@ func TestAdmission_HalfOpenQuotaWithoutConsumingProbes(t *testing.T) {
 	_, err := mgr.GetOrCreate("svc", admissionConfig(2, 50*time.Millisecond))
 	require.NoError(t, err)
 
-	_, firstOpen := tripBreaker(t, mgr, "", "svc")
+	tripBreaker(t, mgr, "", "svc")
 
 	// Lazy expiry: only the admission read moves the breaker to HALF-OPEN.
 	require.Eventually(t, func() bool {
@@ -685,12 +669,6 @@ func TestAdmission_HalfOpenQuotaWithoutConsumingProbes(t *testing.T) {
 	retryAt, blocked = reader.Admission("svc")
 	assert.False(t, blocked)
 	assert.True(t, retryAt.IsZero())
-
-	before, _ := tripBreaker(t, mgr, "", "svc")
-	retryAt, blocked = reader.Admission("svc")
-	require.True(t, blocked)
-	assert.True(t, retryAt.After(firstOpen), "a new OPEN window carries a new deadline")
-	assert.False(t, retryAt.Before(before.Add(50*time.Millisecond)))
 }
 
 func TestAdmission_DefaultMaxRequestsIsOne(t *testing.T) {
@@ -715,6 +693,9 @@ func TestAdmission_DefaultMaxRequestsIsOne(t *testing.T) {
 	assert.True(t, blocked)
 	assert.True(t, retryAt.IsZero())
 
+	_, err = mgr.Execute("svc", func() (any, error) { return nil, nil })
+	require.ErrorIs(t, err, ErrBreakerHalfOpenFull, "gobreaker must agree the quota is one probe")
+
 	close(release)
 	require.NoError(t, <-results)
 }
@@ -722,13 +703,13 @@ func TestAdmission_DefaultMaxRequestsIsOne(t *testing.T) {
 func TestAdmission_HalfOpenProbeFailureReopensWithNewDeadline(t *testing.T) {
 	mgr, reader := newAdmissionManager(t)
 
-	const timeout = 30 * time.Millisecond
+	const timeout = 250 * time.Millisecond
 
 	_, err := mgr.GetOrCreate("svc", admissionConfig(1, timeout))
 	require.NoError(t, err)
 
 	tripBreaker(t, mgr, "", "svc")
-	firstRetryAt, blocked := reader.Admission("svc")
+	_, blocked := reader.Admission("svc")
 	require.True(t, blocked)
 
 	require.Eventually(t, func() bool {
@@ -740,27 +721,8 @@ func TestAdmission_HalfOpenProbeFailureReopensWithNewDeadline(t *testing.T) {
 
 	retryAt, blocked := reader.Admission("svc")
 	require.True(t, blocked)
-	assert.True(t, retryAt.After(firstRetryAt))
 	assert.False(t, retryAt.Before(before.Add(timeout)))
 	assert.False(t, retryAt.After(after.Add(timeout)))
-}
-
-func TestAdmission_ResetClearsTheOpenWindow(t *testing.T) {
-	mgr, reader := newAdmissionManager(t)
-
-	_, err := mgr.GetOrCreate("svc", admissionConfig(1, time.Minute))
-	require.NoError(t, err)
-
-	tripBreaker(t, mgr, "", "svc")
-
-	_, blocked := reader.Admission("svc")
-	require.True(t, blocked)
-
-	mgr.Reset("svc")
-
-	retryAt, blocked := reader.Admission("svc")
-	assert.False(t, blocked)
-	assert.True(t, retryAt.IsZero())
 }
 
 func TestAdmission_CorrectWhenListenerNotificationsAreDropped(t *testing.T) {

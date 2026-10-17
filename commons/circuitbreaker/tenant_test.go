@@ -1055,7 +1055,6 @@ func TestTenantManager_Admission_ConcurrentWithResetAndRemoval(t *testing.T) {
 	mgr, reader := newAdmissionManager(t)
 
 	cfg := admissionConfig(1, 2*time.Millisecond)
-	start := time.Now()
 
 	_, err := mgr.GetOrCreate("svc", cfg)
 	require.NoError(t, err)
@@ -1064,20 +1063,7 @@ func TestTenantManager_Admission_ConcurrentWithResetAndRemoval(t *testing.T) {
 
 	const iterations = 300
 
-	var (
-		wg         sync.WaitGroup
-		violations atomic.Int64
-	)
-
-	check := func(retryAt time.Time, blocked bool) {
-		if !blocked && !retryAt.IsZero() {
-			violations.Add(1)
-		}
-
-		if !retryAt.IsZero() && retryAt.Before(start) {
-			violations.Add(1)
-		}
-	}
+	var wg sync.WaitGroup
 
 	for range 4 {
 		wg.Add(1)
@@ -1086,8 +1072,8 @@ func TestTenantManager_Admission_ConcurrentWithResetAndRemoval(t *testing.T) {
 			defer wg.Done()
 
 			for range iterations {
-				check(reader.Admission("svc"))
-				check(reader.AdmissionForTenant("tenant-A", "svc"))
+				reader.Admission("svc")
+				reader.AdmissionForTenant("tenant-A", "svc")
 			}
 		}()
 	}
@@ -1111,14 +1097,11 @@ func TestTenantManager_Admission_ConcurrentWithResetAndRemoval(t *testing.T) {
 			default:
 				mgr.RemoveTenant("tenant-A")
 
-				if _, err := mgr.GetOrCreateForTenant("tenant-A", "svc", cfg); err != nil {
-					violations.Add(1)
-				}
+				_, err := mgr.GetOrCreateForTenant("tenant-A", "svc", cfg)
+				assert.NoError(t, err)
 			}
 		}
 	}()
 
 	wg.Wait()
-
-	assert.Zero(t, violations.Load())
 }

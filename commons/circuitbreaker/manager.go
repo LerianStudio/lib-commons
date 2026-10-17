@@ -554,26 +554,20 @@ func (m *manager) admission(tenantID, serviceName string, tenantAware bool) (tim
 }
 
 func (s *breakerSlot) admission() (time.Time, bool) {
+	quota := s.config.MaxRequests
+	if quota == 0 {
+		quota = defaultHalfOpenMaxRequests
+	}
+
+	// Counts precede State so traffic of a CLOSED generation is never charged to the probe quota.
+	requests := s.breaker.Counts().Requests
 	// State takes gobreaker's lock and expires an elapsed OPEN window.
-	state := s.breaker.State()
-	if state == gobreaker.StateOpen {
-		if until := s.openUntil.Load(); until != nil {
-			return *until, true
-		}
+	full := s.breaker.State() == gobreaker.StateHalfOpen && requests >= quota
 
-		// The window ended between the two reads; judge the state it moved to.
-		state = s.breaker.State()
+	// Loaded last: a window opened during the reads above wins.
+	if until := s.openUntil.Load(); until != nil {
+		return *until, true
 	}
 
-	if state == gobreaker.StateHalfOpen {
-		quota := s.config.MaxRequests
-		if quota == 0 {
-			quota = defaultHalfOpenMaxRequests
-		}
-
-		return time.Time{}, s.breaker.Counts().Requests >= quota
-	}
-
-	// Re-opened within the same race: blocked, deadline unknown.
-	return time.Time{}, state == gobreaker.StateOpen
+	return time.Time{}, full
 }
