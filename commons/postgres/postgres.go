@@ -31,6 +31,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -452,6 +453,9 @@ type Client struct {
 	// opened. Such a client never dials -- see buildConnection.
 	injected bool
 
+	// onNotice is set only by NewWithNotice, before the client escapes, and reaches primaries only.
+	onNotice pgconn.NoticeHandler
+
 	// statsCleanups releases the telemetry registrations bound to the CURRENT
 	// primary/replica pools. Swapped together with the pools on reconnect and
 	// drained on Close, so gauge callbacks never outlive the pool they observe.
@@ -660,23 +664,20 @@ func (c *Client) buildConnection(ctx context.Context) (pools, error) {
 	return built, nil
 }
 
-// newSQLDB opens a pool, instruments it, and applies the configured pool tuning
-// — in that order: the instrumented handle is backed by its own pool, so the
-// tuning must land on the handle actually kept (see instrumentPool).
+// newSQLDB opens an instrumented pool (see openPool), then applies the configured pool
+// tuning to the handle actually kept: an instrumented handle is backed by its own pool.
 func (c *Client) newSQLDB(
 	ctx context.Context,
 	dsn string,
 	role sqlobs.PoolRole,
 ) (*sql.DB, sqlobs.CleanupFunc, error) {
-	db, err := dbOpenFn("pgx", dsn)
+	db, cleanup, err := c.openPool(ctx, dsn, role)
 	if err != nil {
 		sanitized := newSanitizedError(err, "failed to open database")
 		c.logAtLevel(ctx, obs.LevelError, "failed to open database", "error", sanitized)
 
 		return nil, nil, sanitized
 	}
-
-	db, cleanup := c.instrumentPool(ctx, db, dsn, role)
 
 	db.SetMaxOpenConns(c.cfg.MaxOpenConnections)
 	db.SetMaxIdleConns(c.cfg.MaxIdleConnections)

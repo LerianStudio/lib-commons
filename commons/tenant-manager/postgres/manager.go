@@ -24,6 +24,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/logcompat"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/bxcodec/dbresolver/v2"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -126,6 +127,8 @@ type Manager struct {
 	revalidateWG sync.WaitGroup
 
 	defaultConn *PostgresConnection
+
+	onNotice *pgconn.NoticeHandler
 }
 
 // appliedSettings tracks the last-applied pool settings for a tenant so that
@@ -154,6 +157,8 @@ type PostgresConnection struct {
 	// close path observable in tests. Assigned only from Connect, which never
 	// stores a nil — a typed-nil here would defeat the nil check in Close.
 	client interface{ Close() error }
+
+	onNotice *pgconn.NoticeHandler // shared from WithOnNotice, never written; a pointer keeps this comparable
 }
 
 func (c *PostgresConnection) Connect(ctx context.Context) error {
@@ -161,13 +166,18 @@ func (c *PostgresConnection) Connect(ctx context.Context) error {
 		return errors.New("postgres connection is nil")
 	}
 
-	pgClient, err := libPostgres.New(libPostgres.Config{
+	var onNotice pgconn.NoticeHandler
+	if c.onNotice != nil {
+		onNotice = *c.onNotice
+	}
+
+	pgClient, err := libPostgres.NewWithNotice(libPostgres.Config{
 		PrimaryDSN:         c.ConnectionStringPrimary,
 		ReplicaDSN:         c.ConnectionStringReplica,
 		Logger:             c.Logger,
 		MaxOpenConnections: c.MaxOpenConnections,
 		MaxIdleConnections: c.MaxIdleConnections,
-	})
+	}, onNotice)
 	if err != nil {
 		return err
 	}
@@ -337,6 +347,15 @@ func WithHealthCheckInterval(d time.Duration) Option {
 func WithIdleTimeout(d time.Duration) Option {
 	return func(p *Manager) {
 		p.idleTimeout = d
+	}
+}
+
+// WithOnNotice hands fn to postgres.NewWithNotice, same contract, for the primary pools the manager
+// dials, first connection and config-change reconnect alike. Replicas, WithDefaultConnection,
+// CreateDirectConnection and injected connections never call it.
+func WithOnNotice(fn pgconn.NoticeHandler) Option {
+	return func(p *Manager) {
+		p.onNotice = &fn
 	}
 }
 
@@ -703,6 +722,7 @@ func (p *Manager) reconnectPostgres(
 		MaxOpenConnections:      maxOpen,
 		MaxIdleConnections:      maxIdle,
 		SkipMigrations:          p.IsMultiTenant(),
+		onNotice:                p.onNotice,
 	}
 
 	if p.logger != nil {
@@ -922,6 +942,7 @@ func (p *Manager) buildTenantPostgresConnection(
 		MaxOpenConnections:      maxOpen,
 		MaxIdleConnections:      maxIdle,
 		SkipMigrations:          p.IsMultiTenant(),
+		onNotice:                p.onNotice,
 	}
 
 	if p.logger != nil {

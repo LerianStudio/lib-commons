@@ -41,10 +41,26 @@ func (c *Client) instrumentPool(
 	dsn string,
 	role sqlobs.PoolRole,
 ) (*sql.DB, sqlobs.CleanupFunc) {
-	opts := []sqlobs.Option{
-		sqlobs.WithDSN(dsn),
-		sqlobs.WithPoolRole(role),
+	opts := append(c.poolOptions(dsn, role), sqlobs.WithDSN(dsn))
+
+	db, cleanup, err := sqlobs.Setup(raw, sqlobs.SystemPostgreSQL, opts...)
+	if err != nil {
+		c.logAtLevel(ctx, obs.LevelWarn,
+			"postgres auto-instrumentation degraded; continuing", "error", err)
 	}
+
+	// Setup contracts a usable handle and a non-nil cleanup even on error, but
+	// stay defensive: a nil handle here would take the connection down.
+	if db == nil {
+		return raw, func() error { return nil }
+	}
+
+	return db, cleanup
+}
+
+// poolOptions are the telemetry options every pool carries, whichever way it is opened.
+func (c *Client) poolOptions(dsn string, role sqlobs.PoolRole) []sqlobs.Option {
+	opts := []sqlobs.Option{sqlobs.WithPoolRole(role)}
 
 	// db.namespace keeps pools of different databases in separate series. Without
 	// it they share one label set, and because the pool gauges are asynchronous
@@ -63,19 +79,7 @@ func (c *Client) instrumentPool(
 			attribute.String(dbNamespaceAttrKey, namespace)))
 	}
 
-	db, cleanup, err := sqlobs.Setup(raw, sqlobs.SystemPostgreSQL, opts...)
-	if err != nil {
-		c.logAtLevel(ctx, obs.LevelWarn,
-			"postgres auto-instrumentation degraded; continuing", "error", err)
-	}
-
-	// Setup contracts a usable handle and a non-nil cleanup even on error, but
-	// stay defensive: a nil handle here would take the connection down.
-	if db == nil {
-		return raw, func() error { return nil }
-	}
-
-	return db, cleanup
+	return opts
 }
 
 // releaseCleanups unregisters the telemetry registrations bound to a set of

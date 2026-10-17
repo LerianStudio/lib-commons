@@ -35,19 +35,20 @@ func postgresContainerWaitStrategy() testcontainers.CustomizeRequestOption {
 // setupPostgresContainer starts a disposable PostgreSQL container and returns
 // the connection string plus a teardown function. The container is terminated
 // when the returned cleanup function is invoked (typically via t.Cleanup).
-func setupPostgresContainer(t *testing.T) (string, func()) {
+func setupPostgresContainer(t *testing.T, customizers ...testcontainers.ContainerCustomizer) (string, func()) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), postgresContainerStartupTimeout)
 	defer cancel()
 
-	container, err := tcpostgres.Run(ctx,
-		"postgres:16-alpine",
+	opts := append([]testcontainers.ContainerCustomizer{
 		tcpostgres.WithDatabase("testdb"),
 		tcpostgres.WithUsername("test"),
 		tcpostgres.WithPassword("test"),
 		postgresContainerWaitStrategy(),
-	)
+	}, customizers...)
+
+	container, err := tcpostgres.Run(ctx, "postgres:16-alpine", opts...)
 	require.NoError(t, err)
 
 	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
