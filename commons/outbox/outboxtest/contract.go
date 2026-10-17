@@ -209,7 +209,7 @@ func testRequeue(t *testing.T, factory Factory) {
 	invalid := createEvent(t, repo, ctx, "payment.requeue")
 	failed := createEvent(t, repo, ctx, "payment.requeue")
 	published := createEvent(t, repo, ctx, "payment.requeue")
-	require.Len(t, claimAllPending(t, repo, ctx, 10), 3)
+	require.Len(t, claimAllPending(t, repo, ctx), 3)
 	require.NoError(t, repo.MarkFailed(ctx, invalid.ID, "broker unavailable", 1))
 	require.NoError(t, repo.MarkFailed(ctx, failed.ID, "broker unavailable", 100))
 	require.NoError(t, repo.MarkPublished(ctx, published.ID, time.Now().UTC()))
@@ -237,7 +237,7 @@ func testRequeue(t *testing.T, factory Factory) {
 
 	requireEventStatus(t, repo, ctx, processing.ID, outbox.OutboxStatusProcessing)
 	requireEventStatus(t, repo, ctx, published.ID, outbox.OutboxStatusPublished)
-	require.Len(t, claimAllPending(t, repo, ctx, 10), 2)
+	require.Len(t, claimAllPending(t, repo, ctx), 2)
 }
 
 // testOldestWaitingCreatedAt pins the read behind outbox.queue.oldest_age: the oldest event
@@ -260,20 +260,32 @@ func testOldestWaitingCreatedAt(t *testing.T, factory Factory) {
 	require.NoError(t, err)
 	require.False(t, found)
 
-	invalid := createEventAt(t, repo, ctx, "payment.waiting", now.Add(-4*time.Hour))
-	published := createEventAt(t, repo, ctx, "payment.waiting", now.Add(-3*time.Hour))
+	invalid := createEventAt(t, repo, ctx, "payment.waiting", now.Add(-5*time.Hour))
+	published := createEventAt(t, repo, ctx, "payment.waiting", now.Add(-4*time.Hour))
+	processing := createEventAt(t, repo, ctx, "payment.waiting", now.Add(-3*time.Hour))
 	failed := createEventAt(t, repo, ctx, "payment.waiting", now.Add(-2*time.Hour))
-	require.Len(t, claimAllPending(t, repo, ctx, 10), 3)
+	require.Len(t, claimAllPending(t, repo, ctx), 4)
 	require.NoError(t, repo.MarkInvalid(ctx, invalid.ID, "malformed"))
 	require.NoError(t, repo.MarkPublished(ctx, published.ID, now))
 	require.NoError(t, repo.MarkFailed(ctx, failed.ID, "broker unavailable", 100))
 	createEventAt(t, repo, ctx, "payment.waiting", now.Add(-time.Hour))
-	createEventAt(t, repo, outbox.ContextWithTenantID(baseCtx, "tenant-b"), "payment.waiting", now.Add(-5*time.Hour))
+	createEventAt(t, repo, outbox.ContextWithTenantID(baseCtx, "tenant-b"), "payment.waiting", now.Add(-6*time.Hour))
 
-	oldest, found, err := reader.OldestWaitingCreatedAt(ctx)
-	require.NoError(t, err)
-	require.True(t, found)
-	require.True(t, now.Add(-2*time.Hour).Equal(oldest), "oldest waiting is the FAILED event, got %s", oldest)
+	requireOldest := func(want time.Duration, waiting string) {
+		t.Helper()
+
+		oldest, waits, err := reader.OldestWaitingCreatedAt(ctx)
+		require.NoError(t, err)
+		require.True(t, waits)
+		require.True(t, now.Add(-want).Equal(oldest), "oldest waiting is the %s event, got %s", waiting, oldest)
+	}
+
+	requireOldest(3*time.Hour, outbox.OutboxStatusProcessing)
+	require.NoError(t, repo.MarkPublished(ctx, processing.ID, now))
+	requireOldest(2*time.Hour, outbox.OutboxStatusFailed)
+	resetSingleFailed(t, repo, ctx, failed.ID)
+	require.NoError(t, repo.MarkPublished(ctx, failed.ID, now))
+	requireOldest(time.Hour, outbox.OutboxStatusPending)
 }
 
 func testCreateThenGetRoundtrip(t *testing.T, factory Factory) {
@@ -645,7 +657,7 @@ func seedStuckPair(t *testing.T, repo outbox.OutboxRepository, ctx context.Conte
 	retryEvent := createEvent(t, repo, ctx, "payment.stuck.retry")
 	exhaustedEvent := createEvent(t, repo, ctx, "payment.stuck.exhausted")
 
-	claimAllPending(t, repo, ctx, 10)
+	claimAllPending(t, repo, ctx)
 
 	// retryEvent -> PROCESSING attempts=1.
 	require.NoError(t, repo.MarkFailed(ctx, retryEvent.ID, "first failure", 10))
@@ -1010,10 +1022,10 @@ func resetSingleFailed(t *testing.T, repo outbox.OutboxRepository, ctx context.C
 	require.Equal(t, outbox.OutboxStatusProcessing, retried[0].Status)
 }
 
-func claimAllPending(t *testing.T, repo outbox.OutboxRepository, ctx context.Context, limit int) []*outbox.OutboxEvent {
+func claimAllPending(t *testing.T, repo outbox.OutboxRepository, ctx context.Context) []*outbox.OutboxEvent {
 	t.Helper()
 
-	events := mustListPending(t, repo, ctx, limit)
+	events := mustListPending(t, repo, ctx, 10)
 	for _, event := range events {
 		require.Equal(t, outbox.OutboxStatusProcessing, event.Status)
 	}

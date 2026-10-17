@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // waitingFakeRepo is a claim-scoped repository with both waiting-row capabilities.
@@ -20,8 +21,7 @@ type waitingFakeRepo struct {
 	requeueErr   error
 	requeued     []uuid.UUID
 	requeueScope []string
-	oldest       time.Time
-	found        bool
+	oldest       map[string]time.Time // by tenant; absent means nothing waits
 	oldestErr    error
 }
 
@@ -34,8 +34,11 @@ func (repo *waitingFakeRepo) Requeue(ctx context.Context, id uuid.UUID) error {
 	return repo.requeueErr
 }
 
-func (repo *waitingFakeRepo) OldestWaitingCreatedAt(context.Context) (time.Time, bool, error) {
-	return repo.oldest, repo.found, repo.oldestErr
+func (repo *waitingFakeRepo) OldestWaitingCreatedAt(ctx context.Context) (time.Time, bool, error) {
+	tenantID, _ := TenantIDFromContext(ctx)
+	oldest, found := repo.oldest[tenantID]
+
+	return oldest, found, repo.oldestErr
 }
 
 func TestDispatcher_Requeue(t *testing.T) {
@@ -65,35 +68,46 @@ func TestDispatcher_Requeue(t *testing.T) {
 	require.ErrorIs(t, dispatcher.Requeue(ctx, uuid.New()), ErrOutboxEventNotRequeueable)
 }
 
-// Each cycle sets the age of the oldest waiting event, 0 once none waits, and keeps the
-// last value when the read fails.
+// The gauge is the largest age across scopes sharing a series: tenant-a's 0 never hides
+// tenant-b's fact, even on passes where tenant-b is cold or the read fails, and it falls to
+// 0 once tenant-b's fact is published.
 func TestDispatcher_RecordsOldestWaitingAge(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
-	reader := sdkmetric.NewManualReader()
-	repo := &waitingFakeRepo{fakeRepo: &fakeRepo{}, oldest: now.Add(-90 * time.Second), found: true}
+	active := &OutboxEvent{ID: uuid.New(), EventType: "payment.settled", Payload: []byte(`{}`)}
+	repo := &waitingFakeRepo{
+		fakeRepo: &fakeRepo{tenants: []string{"tenant-a", "tenant-b"}, pendingByTenant: map[string][]*OutboxEvent{"tenant-a": {active}}},
+		oldest:   map[string]time.Time{"tenant-b": now.Add(-72 * time.Hour)},
+	}
+	handlers := NewHandlerRegistry()
+	require.NoError(t, handlers.Register("payment.settled", func(context.Context, *OutboxEvent) error { return nil }))
 
-	dispatcher, err := NewDispatcher(repo, NewHandlerRegistry(), nil, nil, WithTenantMetricAttributes(true),
-		WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
+	reader := sdkmetric.NewManualReader()
+	dispatcher, err := NewDispatcher(repo, handlers, nil, nil, WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
 	require.NoError(t, err)
 
 	dispatcher.now = func() time.Time { return now }
-	ctx := ContextWithTenantID(context.Background(), "tenant-a")
+	gauge := func() int64 {
+		dispatcher.dispatchAcrossTenants(context.Background())
 
-	steps := []struct {
-		found   bool
-		readErr error
-		want    int64
-	}{
-		{found: true, want: 90},
-		{found: true, readErr: errors.New("database unavailable"), want: 90},
-		{found: false, want: 0},
+		metricData := findOutboxMetric(collectOutboxMetrics(t, reader), "outbox.queue.oldest_age")
+		require.NotNil(t, metricData)
+		points := metricData.Data.(metricdata.Gauge[int64]).DataPoints
+		require.Len(t, points, 1, "tenant attributes are off: one series")
+
+		return points[0].Value
 	}
 
-	for _, step := range steps {
-		repo.found, repo.oldestErr = step.found, step.readErr
-		dispatcher.DispatchOnceResult(ctx)
-		requireIntMetricValue(t, collectOutboxMetrics(t, reader), "outbox.queue.oldest_age", "tenant-a", step.want)
-	}
+	threeDays := int64(72 * time.Hour / time.Second)
+	require.Equal(t, threeDays, gauge(), "both scopes dispatched")
+	require.Equal(t, threeDays, gauge(), "tenant-b cold, tenant-a dispatched with nothing waiting")
+
+	repo.oldestErr = errors.New("database unavailable")
+	require.Equal(t, threeDays, gauge(), "a failed read keeps the last samples")
+
+	repo.oldestErr = nil
+	delete(repo.oldest, "tenant-b")
+	now = now.Add(time.Minute)
+	require.Zero(t, gauge(), "tenant-b due again, its fact published")
 }

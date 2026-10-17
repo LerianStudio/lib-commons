@@ -43,6 +43,7 @@ type retentionTarget struct {
 type dispatchScopeActivity struct {
 	lastWorkAt time.Time
 	nextPollAt time.Time
+	waiting    *waitingSample
 }
 
 // fallbackDispatchScope keys the activity of the scope dispatched when
@@ -447,7 +448,6 @@ func (dispatcher *Dispatcher) DispatchOnceResult(ctx context.Context) DispatchRe
 	dispatcher.addDispatchedEvents(ctx, tenantKey, int64(published))
 	dispatcher.addFailedEvents(ctx, tenantKey, int64(failed))
 	dispatcher.recordDispatchLatency(ctx, tenantKey, time.Since(start))
-	dispatcher.recordOldestWaitingAge(ctx, tenantKey)
 
 	return DispatchResult{
 		Processed:         processed,
@@ -630,6 +630,8 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 		return
 	}
 
+	defer dispatcher.recordOldestWaitingAge(ctx)
+
 	normalizedScopes := normalizeTenantDispatchScopes(scopes)
 	dispatcher.reconcileScopeActivity(normalizedScopes)
 
@@ -661,6 +663,7 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 		tenantCtx, tenantSpan := tracer.Start(tenantCtx, "outbox.dispatcher.tenant")
 		result := dispatcher.DispatchOnceResult(tenantCtx)
 		dispatcher.recordScopeActivity(scope, result, now)
+		dispatcher.observeOldestWaiting(tenantCtx, scope)
 		dispatcher.sweepRetention(tenantCtx, tracer, scope, now)
 		// Keep tenant trace correlation without exposing raw tenant identifiers.
 		tenantSpan.SetAttributes(
@@ -910,6 +913,7 @@ func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(
 	if ok && tenantID != "" {
 		result := dispatcher.DispatchOnceResult(ctx)
 		dispatcher.recordScopeActivity(fallbackDispatchScope, result, now)
+		dispatcher.observeOldestWaiting(ctx, fallbackDispatchScope)
 		dispatcher.sweepRetention(ctx, tracer, TenantDispatchScope{TenantID: tenantID}, now)
 
 		return
@@ -936,6 +940,7 @@ func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(
 	fallbackCtx, fallbackSpan := tracer.Start(ctx, "outbox.dispatcher.default_scope")
 	result := dispatcher.DispatchOnceResult(fallbackCtx)
 	dispatcher.recordScopeActivity(fallbackDispatchScope, result, now)
+	dispatcher.observeOldestWaiting(fallbackCtx, fallbackDispatchScope)
 	dispatcher.sweepRetention(fallbackCtx, tracer, TenantDispatchScope{}, now)
 	fallbackSpan.SetAttributes(
 		attribute.Int("outbox.dispatch.processed", result.Processed),

@@ -86,8 +86,7 @@ func (repo *Repository) Requeue(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// OldestWaitingCreatedAt implements outbox.OldestWaitingReader. One min() per status keeps
-// each on the (status, created_at) index instead of scanning the whole backlog.
+// OldestWaitingCreatedAt implements outbox.OldestWaitingReader.
 func (repo *Repository) OldestWaitingCreatedAt(ctx context.Context) (time.Time, bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -112,20 +111,14 @@ func (repo *Repository) OldestWaitingCreatedAt(ctx context.Context) (time.Time, 
 			return sql.NullTime{}, err
 		}
 
-		filter, filterArgs, err := repo.tenantFilterClause(4, tenantID)
+		query, args, err := repo.oldestWaitingQuery(ctx, tenantID)
 		if err != nil {
 			return sql.NullTime{}, err
 		}
 
-		args := append([]any{outbox.OutboxStatusPending, outbox.OutboxStatusProcessing, outbox.OutboxStatusFailed}, filterArgs...)
-		scope, scopeArgs := claimScopeClause(ctx, len(args)+1)
-		minOf := func(status int) string {
-			return fmt.Sprintf("(SELECT min(created_at) FROM %s WHERE status = $%d%s%s)", quoteIdentifierPath(repo.tableName), status, filter, scope)
-		}
-
 		var oldest sql.NullTime
 
-		err = tx.QueryRowContext(ctx, "SELECT LEAST("+minOf(1)+", "+minOf(2)+", "+minOf(3)+")", append(args, scopeArgs...)...).Scan(&oldest)
+		err = tx.QueryRowContext(ctx, query, args...).Scan(&oldest)
 
 		return oldest, err
 	})
@@ -136,4 +129,37 @@ func (repo *Repository) OldestWaitingCreatedAt(ctx context.Context) (time.Time, 
 	}
 
 	return oldest.Time, oldest.Valid, nil
+}
+
+// oldestWaitingQuery keeps every probe on an index: unscoped, one min() per status on
+// (status, created_at); under a claim scope, one LIMIT 1 per type and status on (event_type,
+// status, created_at), so another service's backlog in a shared table is never walked.
+func (repo *Repository) oldestWaitingQuery(ctx context.Context, tenantID string) (string, []any, error) {
+	table := quoteIdentifierPath(repo.tableName)
+	statuses := []string{outbox.OutboxStatusPending, outbox.OutboxStatusProcessing, outbox.OutboxStatusFailed}
+
+	if eventTypes, scoped := outbox.ClaimEventTypesFromContext(ctx); scoped {
+		filter, filterArgs, err := repo.tenantFilterClause(3, tenantID)
+		if err != nil {
+			return "", nil, err
+		}
+
+		query := "SELECT min(l.created_at) FROM unnest($1::text[]) AS t(scope_type) CROSS JOIN unnest($2::text[]) AS s(scope_status)" +
+			" CROSS JOIN LATERAL (SELECT created_at FROM " + table + // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
+			" WHERE event_type = t.scope_type AND status = s.scope_status::outbox_event_status" + filter +
+			" ORDER BY created_at LIMIT 1) l"
+
+		return query, append([]any{eventTypes, statuses}, filterArgs...), nil
+	}
+
+	filter, filterArgs, err := repo.tenantFilterClause(4, tenantID)
+	if err != nil {
+		return "", nil, err
+	}
+
+	minOf := func(index int) string {
+		return fmt.Sprintf("(SELECT min(created_at) FROM %s WHERE status = $%d%s)", table, index, filter)
+	}
+
+	return "SELECT LEAST(" + minOf(1) + ", " + minOf(2) + ", " + minOf(3) + ")", append([]any{statuses[0], statuses[1], statuses[2]}, filterArgs...), nil
 }

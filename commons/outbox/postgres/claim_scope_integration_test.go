@@ -4,12 +4,15 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
@@ -144,4 +147,55 @@ func TestIntegration_Dispatcher_RequeueStaysInClaimScope(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, want, stored.Status)
 	}
+}
+
+// On a shared table a scoped dispatcher's oldest-age gauge reads only its own waiting events:
+// another service's older FAILED backlog never raises it.
+func TestIntegration_Dispatcher_OldestWaitingAgeStaysInClaimScope(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+	owned, foreign := createFixtureEvent(t, fx, "payment.owned"), createFixtureEvent(t, fx, "payment.foreign")
+	now := time.Now().UTC()
+
+	// FAILED inside the retry window, so the cycle leaves both waiting.
+	for id, age := range map[uuid.UUID]time.Duration{owned.ID: 2 * time.Hour, foreign.ID: 5 * time.Hour} {
+		updateFixtureEventState(t, fx, id, outbox.OutboxStatusFailed, 1, now)
+		_, err := fx.primaryDB.ExecContext(fx.ctx,
+			fmt.Sprintf("UPDATE %s SET created_at = $1 WHERE id = $2", quoteIdentifier(fx.tableName)), now.Add(-age), id)
+		require.NoError(t, err)
+	}
+
+	reader := sdkmetric.NewManualReader()
+	dispatcher, err := outbox.NewDispatcher(fx.repo, claimScopeHandlers(t, "payment.owned"), nil, noop.NewTracerProvider().Tracer("test"),
+		outbox.WithClaimScopedToHandlers(), outbox.WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
+	require.NoError(t, err)
+
+	runCtx, cancel := context.WithCancel(fx.ctx)
+	done := make(chan error, 1)
+
+	go func() { done <- dispatcher.RunContext(runCtx, nil) }()
+
+	var age int64
+
+	require.Eventually(t, func() bool {
+		var rm metricdata.ResourceMetrics
+		if reader.Collect(fx.ctx, &rm) != nil {
+			return false
+		}
+
+		for _, scope := range rm.ScopeMetrics {
+			for _, metric := range scope.Metrics {
+				if gauge, ok := metric.Data.(metricdata.Gauge[int64]); ok && metric.Name == "outbox.queue.oldest_age" && len(gauge.DataPoints) == 1 {
+					age = gauge.DataPoints[0].Value
+
+					return true
+				}
+			}
+		}
+
+		return false
+	}, 10*time.Second, 20*time.Millisecond)
+
+	cancel()
+	require.NoError(t, <-done)
+	require.InDelta(t, (2 * time.Hour).Seconds(), float64(age), 60, "the foreign 5h backlog is outside the claim scope")
 }

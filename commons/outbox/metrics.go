@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	"go.opentelemetry.io/otel/attribute"
 
 	libMetrics "github.com/LerianStudio/lib-observability/v4/metrics"
 	"go.opentelemetry.io/otel"
@@ -104,11 +105,17 @@ func newDispatcherMetrics(provider metric.MeterProvider, logger obs.Logger) (dis
 	return metrics, nil
 }
 
-// recordOldestWaitingAge sets outbox.queue.oldest_age after a dispatch cycle when the
-// repository is an OldestWaitingReader; a failed read keeps the last value.
-func (dispatcher *Dispatcher) recordOldestWaitingAge(ctx context.Context, tenantKey string) {
+// waitingSample is the oldest waiting event's age last read for one dispatch scope.
+type waitingSample struct {
+	tenantKey string
+	age       int64
+}
+
+// observeOldestWaiting stores the scope's oldest waiting age after its dispatch when the
+// repository is an OldestWaitingReader; a failed read keeps the scope's last sample.
+func (dispatcher *Dispatcher) observeOldestWaiting(ctx context.Context, scope TenantDispatchScope) {
 	reader, ok := dispatcher.repo.(OldestWaitingReader)
-	if !ok || dispatcher.metrics.queueOldestAge == nil || ctx.Err() != nil {
+	if !ok || ctx.Err() != nil {
 		return
 	}
 
@@ -119,17 +126,56 @@ func (dispatcher *Dispatcher) recordOldestWaitingAge(ctx context.Context, tenant
 		return
 	}
 
-	age := int64(0)
+	sample := &waitingSample{tenantKey: tenantKeyFromContext(ctx)}
 	if found {
-		age = max(0, int64(dispatcher.currentTime().Sub(oldest)/time.Second))
+		sample.age = max(0, int64(dispatcher.currentTime().Sub(oldest)/time.Second))
 	}
 
-	builder := dispatcher.metrics.queueOldestAge
-	if attr, ok := dispatcher.tenantMetricAttribute(tenantKey); ok {
-		builder = builder.WithAttributes(attr)
+	dispatcher.scopeActivityMu.Lock()
+	activity := dispatcher.scopeActivity[scope]
+	activity.waiting = sample
+	dispatcher.scopeActivity[scope] = activity
+	dispatcher.scopeActivityMu.Unlock()
+}
+
+// recordOldestWaitingAge sets outbox.queue.oldest_age to the largest age across the known
+// scopes sharing each series, so one scope's 0 never hides another's waiting fact. Cold
+// scopes keep their last sample; scopes discovery drops leave with their activity.
+func (dispatcher *Dispatcher) recordOldestWaitingAge(ctx context.Context) {
+	if dispatcher.metrics.queueOldestAge == nil {
+		return
 	}
 
-	if err := builder.Set(ctx, age); err != nil {
-		dispatcher.logMetricError(ctx, "record outbox.queue.oldest_age", err)
+	dispatcher.scopeActivityMu.Lock()
+
+	samples := make([]waitingSample, 0, len(dispatcher.scopeActivity))
+	for _, activity := range dispatcher.scopeActivity {
+		if activity.waiting != nil {
+			samples = append(samples, *activity.waiting)
+		}
+	}
+
+	dispatcher.scopeActivityMu.Unlock()
+
+	maxByLabel := make(map[string]int64, len(samples))
+
+	for _, sample := range samples {
+		label := ""
+		if attr, ok := dispatcher.tenantMetricAttribute(sample.tenantKey); ok {
+			label = attr.Value.AsString()
+		}
+
+		maxByLabel[label] = max(maxByLabel[label], sample.age)
+	}
+
+	for label, age := range maxByLabel {
+		builder := dispatcher.metrics.queueOldestAge
+		if label != "" {
+			builder = builder.WithAttributes(attribute.String("tenant", label))
+		}
+
+		if err := builder.Set(ctx, age); err != nil {
+			dispatcher.logMetricError(ctx, "record outbox.queue.oldest_age", err)
+		}
 	}
 }
