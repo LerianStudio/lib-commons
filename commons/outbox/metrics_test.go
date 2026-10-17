@@ -10,6 +10,7 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -242,9 +243,13 @@ func TestDispatcher_MetricsCarryOutboxTable(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
-	newDispatcher := func(table string, oldest map[string]time.Time) *Dispatcher {
-		repo := &tableRepo{waitingFakeRepo: &waitingFakeRepo{fakeRepo: &fakeRepo{tenants: []string{"tenant-a"}}, oldest: oldest}, table: table}
-		dispatcher, err := NewDispatcher(repo, NewHandlerRegistry(), nil, nil, WithMeterProvider(provider))
+	newDispatcher := func(table string, oldest map[string]time.Time, pending ...*OutboxEvent) *Dispatcher {
+		fake := &fakeRepo{tenants: []string{"tenant-a"}, pendingByTenant: map[string][]*OutboxEvent{"tenant-a": pending}}
+		handlers := NewHandlerRegistry()
+		require.NoError(t, handlers.Register("payment.settled", func(context.Context, *OutboxEvent) error { return nil }))
+
+		repo := &tableRepo{waitingFakeRepo: &waitingFakeRepo{fakeRepo: fake, oldest: oldest}, table: table}
+		dispatcher, err := NewDispatcher(repo, handlers, nil, nil, WithMeterProvider(provider))
 		require.NoError(t, err)
 
 		dispatcher.now = func() time.Time { return now }
@@ -253,16 +258,31 @@ func TestDispatcher_MetricsCarryOutboxTable(t *testing.T) {
 	}
 
 	audit := newDispatcher("audit_outbox", map[string]time.Time{"tenant-a": now.Add(-2 * time.Hour)})
-	streaming := newDispatcher("outbox_events", nil)
+	streaming := newDispatcher("outbox_events", nil, &OutboxEvent{ID: uuid.New(), EventType: "payment.settled", Payload: []byte(`{}`)})
 
 	byTable := func(name string) map[string]int64 {
 		metricData := findOutboxMetric(collectOutboxMetrics(t, reader), name)
 		require.NotNil(t, metricData, name)
 
 		values := map[string]int64{}
-		for _, point := range metricData.Data.(metricdata.Gauge[int64]).DataPoints {
-			table, _ := point.Attributes.Value("outbox.table")
-			values[table.AsString()] = point.Value
+		add := func(attrs attribute.Set, value int64) {
+			table, _ := attrs.Value("outbox.table")
+			values[table.AsString()] = value
+		}
+
+		switch data := metricData.Data.(type) {
+		case metricdata.Gauge[int64]:
+			for _, point := range data.DataPoints {
+				add(point.Attributes, point.Value)
+			}
+		case metricdata.Sum[int64]:
+			for _, point := range data.DataPoints {
+				add(point.Attributes, point.Value)
+			}
+		case metricdata.Histogram[float64]:
+			for _, point := range data.DataPoints {
+				add(point.Attributes, int64(point.Count))
+			}
 		}
 
 		return values
@@ -272,5 +292,7 @@ func TestDispatcher_MetricsCarryOutboxTable(t *testing.T) {
 	streaming.dispatchAcrossTenants(context.Background())
 
 	require.Equal(t, map[string]int64{"audit_outbox": 7200, "outbox_events": 0}, byTable("outbox.queue.oldest_age"))
-	require.Len(t, byTable("outbox.queue.depth"), 2)
+	require.Equal(t, map[string]int64{"audit_outbox": 0, "outbox_events": 1}, byTable("outbox.queue.depth"))
+	require.Equal(t, map[string]int64{"outbox_events": 1}, byTable("outbox.events.dispatched"))
+	require.Equal(t, map[string]int64{"audit_outbox": 1, "outbox_events": 1}, byTable("outbox.dispatch.latency"))
 }
