@@ -321,8 +321,8 @@ func WithMaxFailedPerBatch(maxFailed int) DispatcherOption {
 }
 
 // WithPriorityEventTypes sets the ordered event types claimed first each cycle. On a
-// MultiTypePendingRepository they scope every claim of the cycle, stuck reclaim and FAILED
-// retry included, so that repository must also be a ClaimScopedRepository.
+// MultiTypePendingRepository they are the ONLY types the dispatcher claims, stuck reclaim and
+// FAILED retry included, in this order first; that repository must be a ClaimScopedRepository.
 func WithPriorityEventTypes(eventTypes ...string) DispatcherOption {
 	return func(dispatcher *Dispatcher) {
 		types := make([]string, 0, len(eventTypes))

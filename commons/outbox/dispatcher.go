@@ -149,8 +149,12 @@ func NewDispatcher(
 		return nil, err
 	}
 
-	if _, ok := repo.(ClaimScopedRepository); !ok && (dispatcher.claimScoped || dispatcher.priorityScoped()) {
+	if _, ok := repo.(ClaimScopedRepository); !ok && dispatcher.claimScoped {
 		return nil, ErrOutboxClaimScopeUnsupported
+	}
+
+	if _, ok := repo.(ClaimScopedRepository); !ok && dispatcher.priorityScoped() {
+		return nil, fmt.Errorf("%w: priority event types on a multi-type repository need it", ErrOutboxClaimScopeUnsupported)
 	}
 
 	dispatcher.cfg.normalize()
