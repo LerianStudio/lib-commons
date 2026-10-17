@@ -27,6 +27,18 @@
 // up to ColdDispatchInterval, rounded up to the next DispatchInterval tick;
 // WithColdDispatchInterval lowers that bound.
 //
+// A failed publish ends one of two ways. An error the RetryClassifier calls non-retryable,
+// such as a malformed event no retry can fix, marks the event INVALID at once. Any other
+// error, such as an unavailable broker, marks it FAILED: it is retried no sooner than
+// RetryWindow after each failure until MaxDispatchAttempts is spent, then marked INVALID.
+// WithRetryHorizon states that budget as a duration (seven days, say) instead of a count.
+// Dispatcher.RequeueInvalid puts one INVALID event back in the queue, attempts reset, for the
+// dispatcher itself to publish again under the same id, event type and payload, so there is
+// never a second publisher and consumers dedupe on the id; it needs a repository implementing
+// InvalidRequeuer. After each cycle the outbox.queue.oldest_age gauge reports, on an
+// OldestWaitingReader repository, the age of the oldest PENDING, PROCESSING or FAILED event:
+// the alarm for a fact left waiting. The postgres and mongo adapters implement both.
+//
 // Retention is opt-in through WithRetentionPublished and needs a repository
 // implementing the optional PublishedPurger capability (the postgres and mongo
 // adapters do); NewDispatcher returns ErrOutboxRetentionUnsupported otherwise.
