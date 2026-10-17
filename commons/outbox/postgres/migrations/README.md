@@ -11,3 +11,7 @@ Use exactly one track for a given deployment topology.
 - For column-per-tenant deployments, point migrations to `migrations/column`.
 
 Column track note: primary key is `(tenant_id, id)` to avoid cross-tenant key coupling.
+
+`000002_outbox_events_claim_scope_statistics` adds extended statistics so a dispatcher using
+`WithClaimScopedToHandlers` keeps claiming in under a millisecond while a large backlog of event
+types it does not serve sits in the table. The statistics take effect after the next `ANALYZE`.

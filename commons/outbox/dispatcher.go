@@ -60,6 +60,8 @@ type Dispatcher struct {
 	tracer          trace.Tracer
 	cfg             DispatcherConfig
 
+	claimScoped bool
+
 	listPendingFailureCounts map[string]int
 	failureCountsMu          sync.Mutex
 	tenantMetricKeys         map[string]struct{}
@@ -144,6 +146,10 @@ func NewDispatcher(
 
 	if err := dispatcher.bindRetention(repo); err != nil {
 		return nil, err
+	}
+
+	if _, ok := repo.(ClaimScopedRepository); dispatcher.claimScoped && !ok {
+		return nil, ErrOutboxClaimScopeUnsupported
 	}
 
 	dispatcher.cfg.normalize()
@@ -1018,6 +1024,10 @@ func (dispatcher *Dispatcher) tenantDispatchScopeOrder(scopes []TenantDispatchSc
 // created_at or updated_at). The total batch is bounded by BatchSize. Duplicate
 // events (e.g., a priority event also in the pending set) are removed.
 func (dispatcher *Dispatcher) collectEvents(ctx context.Context, span trace.Span) []*OutboxEvent {
+	if dispatcher.claimScoped {
+		ctx = contextWithClaimEventTypes(ctx, dispatcher.handlers.EventTypes())
+	}
+
 	logger := dispatcher.logger
 	failedBefore := time.Now().UTC().Add(-dispatcher.cfg.RetryWindow)
 	processingBefore := time.Now().UTC().Add(-dispatcher.cfg.ProcessingTimeout)

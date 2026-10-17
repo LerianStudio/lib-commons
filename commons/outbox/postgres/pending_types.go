@@ -138,6 +138,11 @@ func (repo *Repository) listPendingByTypesRows(
 
 	args = append(args, filterArgs...)
 
+	scope, scopeArgs := claimScopeClause(ctx, len(args)+1)
+	query.WriteString(scope)
+
+	args = append(args, scopeArgs...)
+
 	query.WriteString(" ORDER BY CASE event_type")
 
 	for index := range eventTypes {

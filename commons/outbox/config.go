@@ -346,6 +346,19 @@ func WithPriorityEventTypes(eventTypes ...string) DispatcherOption {
 	}
 }
 
+// WithClaimScopedToHandlers limits every claim of a cycle (pending, priority, retry,
+// stuck reclaim) to the event types registered in the HandlerRegistry at that cycle;
+// none registered claims nothing. The repository must be a ClaimScopedRepository.
+//
+// With WithPriorityEventTypes the claim is their intersection; an empty one delivers nothing.
+// Retention is not scoped: on a shared table a sweep deletes other deployments' finished events.
+// On large tables apply Postgres migration 000002 so scoped claims use the event-type index.
+func WithClaimScopedToHandlers() DispatcherOption {
+	return func(dispatcher *Dispatcher) {
+		dispatcher.claimScoped = true
+	}
+}
+
 // WithRetryClassifier sets the non-retryable error classifier.
 func WithRetryClassifier(classifier RetryClassifier) DispatcherOption {
 	return func(dispatcher *Dispatcher) {

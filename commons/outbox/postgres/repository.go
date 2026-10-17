@@ -633,6 +633,12 @@ func (repo *Repository) listPendingRows(ctx context.Context, tx *sql.Tx, limit i
 	query += filter
 
 	args = append(args, filterArgs...)
+
+	scope, scopeArgs := claimScopeClause(ctx, len(args)+1)
+	query += scope
+
+	args = append(args, scopeArgs...)
+
 	query += fmt.Sprintf(" ORDER BY created_at ASC LIMIT $%d FOR UPDATE SKIP LOCKED", len(args)+1)
 	args = append(args, limit)
 
@@ -664,6 +670,11 @@ func (repo *Repository) listPendingByTypeRows(
 	query += filter
 
 	args = append(args, filterArgs...)
+
+	scope, scopeArgs := claimScopeClause(ctx, len(args)+1)
+	query += scope
+
+	args = append(args, scopeArgs...)
 
 	query += fmt.Sprintf(" ORDER BY created_at ASC LIMIT $%d FOR UPDATE SKIP LOCKED", len(args)+1)
 	args = append(args, limit)
@@ -699,6 +710,12 @@ func (repo *Repository) listFailedForRetryRows(
 	query += filter
 
 	args = append(args, filterArgs...)
+
+	scope, scopeArgs := claimScopeClause(ctx, len(args)+1)
+	query += scope
+
+	args = append(args, scopeArgs...)
+
 	query += fmt.Sprintf(" ORDER BY updated_at ASC LIMIT $%d", len(args)+1)
 	args = append(args, limit)
 
@@ -735,6 +752,12 @@ func (repo *Repository) listStuckProcessingRows(
 	query += filter
 
 	args = append(args, filterArgs...)
+
+	scope, scopeArgs := claimScopeClause(ctx, len(args)+1)
+	query += scope
+
+	args = append(args, scopeArgs...)
+
 	query += fmt.Sprintf(" ORDER BY updated_at ASC LIMIT $%d FOR UPDATE SKIP LOCKED", len(args)+1)
 	args = append(args, limit)
 
@@ -1115,6 +1138,22 @@ func (repo *Repository) tenantIDFromContext(ctx context.Context) (string, error)
 	}
 
 	return tenantID, nil
+}
+
+var _ outbox.ClaimScopedRepository = (*Repository)(nil)
+
+// ScopesClaimsByEventType implements outbox.ClaimScopedRepository.
+func (repo *Repository) ScopesClaimsByEventType() {}
+
+// claimScopeClause narrows a claim query to the context's claim event types; a
+// nil or empty scope matches no row.
+func claimScopeClause(ctx context.Context, index int) (string, []any) {
+	eventTypes, ok := outbox.ClaimEventTypesFromContext(ctx)
+	if !ok {
+		return "", nil
+	}
+
+	return fmt.Sprintf(" AND event_type = ANY($%d::text[])", index), []any{eventTypes}
 }
 
 func (repo *Repository) tenantFilterClause(index int, tenantID string) (string, []any, error) {

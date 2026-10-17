@@ -33,3 +33,7 @@ var ErrOutboxRetentionConfigInvalid = errors.New("invalid outbox retention confi
 // is enabled on a repository that does not implement PublishedPurger (for
 // WithRetentionPublished) or InvalidPurger (for WithRetentionInvalid).
 var ErrOutboxRetentionUnsupported = errors.New("outbox repository does not support the enabled retention")
+
+// ErrOutboxClaimScopeUnsupported is returned by NewDispatcher when
+// WithClaimScopedToHandlers is set on a repository that is not a ClaimScopedRepository.
+var ErrOutboxClaimScopeUnsupported = errors.New("outbox repository does not support a claim event type scope")
