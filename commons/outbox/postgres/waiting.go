@@ -136,30 +136,20 @@ func (repo *Repository) OldestWaitingCreatedAt(ctx context.Context) (time.Time, 
 // status or, under a claim scope, one per (event type, status), so the plan never walks
 // another service's backlog in a shared table, however few types it holds.
 func (repo *Repository) oldestWaitingQuery(ctx context.Context, tenantID string) (string, []any, error) {
-	statuses := []any{outbox.OutboxStatusPending, outbox.OutboxStatusProcessing, outbox.OutboxStatusFailed}
-	eventTypes, scoped := outbox.ClaimEventTypesFromContext(ctx)
+	args := []any{outbox.OutboxStatusPending, outbox.OutboxStatusProcessing, outbox.OutboxStatusFailed}
+	typeConditions := []string{""}
 
-	var conditions []string
+	if eventTypes, scoped := outbox.ClaimEventTypesFromContext(ctx); scoped {
+		typeConditions = make([]string, 0, len(eventTypes))
 
-	for status := 1; status <= len(statuses); status++ {
-		if !scoped {
-			conditions = append(conditions, fmt.Sprintf("status = $%d", status))
-
-			continue
-		}
-
-		for i := range eventTypes {
-			conditions = append(conditions, fmt.Sprintf("event_type = $%d AND status = $%d", len(statuses)+1+i, status))
+		for _, eventType := range eventTypes {
+			args = append(args, eventType)
+			typeConditions = append(typeConditions, fmt.Sprintf("event_type = $%d AND ", len(args)))
 		}
 	}
 
-	if len(conditions) == 0 { // an empty claim scope waits on nothing
+	if len(typeConditions) == 0 { // an empty claim scope waits on nothing
 		return "SELECT NULL::timestamptz", nil, nil
-	}
-
-	args := statuses
-	for _, eventType := range eventTypes {
-		args = append(args, eventType)
 	}
 
 	filter, filterArgs, err := repo.tenantFilterClause(len(args)+1, tenantID)
@@ -168,10 +158,12 @@ func (repo *Repository) oldestWaitingQuery(ctx context.Context, tenantID string)
 	}
 
 	table := quoteIdentifierPath(repo.tableName)
-	probes := make([]string, len(conditions))
+	probes := make([]string, 0, 3*len(typeConditions))
 
-	for i, condition := range conditions {
-		probes[i] = "(SELECT min(created_at) FROM " + table + " WHERE " + condition + filter + ")" // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
+	for _, typeCondition := range typeConditions {
+		for status := 1; status <= 3; status++ {
+			probes = append(probes, fmt.Sprintf("(SELECT min(created_at) FROM %s WHERE %sstatus = $%d%s)", table, typeCondition, status, filter))
+		}
 	}
 
 	return "SELECT LEAST(" + strings.Join(probes, ", ") + ")", append(args, filterArgs...), nil
