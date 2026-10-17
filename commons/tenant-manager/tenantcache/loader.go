@@ -70,7 +70,8 @@ func NewTenantLoader(
 // SetOnTenantLoaded registers a callback that is invoked after a tenant is
 // successfully lazy-loaded from the tenant-manager API and cached. The callback
 // is NOT called on cache hits -- only on new loads. Passing nil clears the
-// callback. This is safe to call before any LoadTenant call.
+// callback. This is safe to call before any LoadTenant call. It runs on the shared,
+// uncancellable load; a panic in it terminates the process (singleflight re-raises it).
 func (l *TenantLoader) SetOnTenantLoaded(fn func(ctx context.Context, tenantID string)) {
 	l.onTenantLoadedMu.Lock()
 	l.onTenantLoaded = fn

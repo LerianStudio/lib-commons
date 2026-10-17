@@ -493,5 +493,5 @@ func TestLoadTenant_CallerHangUpDoesNotFailSharedLoad(t *testing.T) {
 	<-followerDone
 	require.NoError(t, followerErr, "another caller's hang-up must not fail this caller")
 	assert.Equal(t, tenantID, followerCfg.ID)
-	assert.Equal(t, int64(1), requestCount.Load(), "the follower must share the in-flight load")
+	assert.Equal(t, int64(1), requestCount.Load(), "one fetch served both callers: the leader's hang-up did not abort it")
 }

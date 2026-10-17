@@ -726,7 +726,7 @@ func TestClient_CircuitBreaker_CallerHangUpIsNotAFailure(t *testing.T) {
 		wantFailures int
 	}{
 		{name: "caller cancel does not count", callerCtx: callerCancel},
-		{name: "caller deadline does not count", callerCtx: callerDeadline},
+		{name: "caller deadline counts", callerCtx: callerDeadline, wantFailures: 1},
 		{name: "client's own timeout counts", callerCtx: noCallerLimit, opts: []ClientOption{WithTimeout(50 * time.Millisecond)}, wantFailures: 1},
 	}
 

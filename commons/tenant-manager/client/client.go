@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -137,7 +138,7 @@ func WithTimeout(timeout time.Duration) ClientOption {
 // A threshold of 0 disables the circuit breaker (default behavior).
 // HTTP 4xx responses (400, 403, 404) are NOT counted as failures because they
 // represent valid responses from the Tenant Manager, not service unavailability.
-// Neither is a request the caller's own context cancelled or timed out.
+// Neither is a request the caller's own context cancelled.
 func WithCircuitBreaker(threshold int, timeout time.Duration) ClientOption {
 	return func(c *Client) {
 		c.cbThreshold = threshold
@@ -309,10 +310,10 @@ func (c *Client) recordFailure() {
 	}
 }
 
-// recordTransportFailure records a failed round trip unless the caller's own
-// context ended it: a caller hanging up is not the Tenant Manager failing.
+// recordTransportFailure records a failed round trip unless the caller cancelled
+// it: a hang-up is not the Tenant Manager failing, a missed caller deadline is.
 func (c *Client) recordTransportFailure(ctx context.Context) {
-	if ctx.Err() == nil {
+	if !errors.Is(ctx.Err(), context.Canceled) {
 		c.recordFailure()
 	}
 }
