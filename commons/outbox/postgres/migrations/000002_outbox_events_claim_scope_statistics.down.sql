@@ -1,0 +1,1 @@
+DROP STATISTICS IF EXISTS outbox_events_status_event_type;

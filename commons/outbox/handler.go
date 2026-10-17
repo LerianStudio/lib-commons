@@ -3,6 +3,8 @@ package outbox
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -73,4 +75,16 @@ func (registry *HandlerRegistry) Handle(ctx context.Context, event *OutboxEvent)
 	}
 
 	return handler(ctx, event)
+}
+
+// EventTypes returns the registered event types, sorted.
+func (registry *HandlerRegistry) EventTypes() []string {
+	if registry == nil {
+		return nil
+	}
+
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+
+	return slices.Sorted(maps.Keys(registry.handlers))
 }

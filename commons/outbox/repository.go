@@ -76,6 +76,31 @@ type StuckReclaimer interface {
 	ReclaimStuckProcessing(ctx context.Context, limit int, processingBefore time.Time, maxAttempts int) (retry, invalid []*OutboxEvent, err error)
 }
 
+// ClaimScopedRepository marks a repository whose claim methods (ListPending,
+// ListPendingByType(s), ResetForRetry, Reset/ReclaimStuckProcessing) select only
+// the event types ClaimEventTypesFromContext carries, and none for an empty set.
+type ClaimScopedRepository interface {
+	ScopesClaimsByEventType()
+}
+
+type claimEventTypesContextKey struct{}
+
+func contextWithClaimEventTypes(ctx context.Context, eventTypes []string) context.Context {
+	return context.WithValue(ctx, claimEventTypesContextKey{}, eventTypes)
+}
+
+// ClaimEventTypesFromContext returns the claim scope the dispatcher sets on its
+// claim calls under WithClaimScopedToHandlers.
+func ClaimEventTypesFromContext(ctx context.Context) ([]string, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+
+	eventTypes, ok := ctx.Value(claimEventTypesContextKey{}).([]string)
+
+	return eventTypes, ok
+}
+
 // IdempotentWriter is a narrow, opt-in contract for content-addressed idempotent
 // outbox writes. It is deliberately kept separate from OutboxRepository so that
 // only callers that need replay-safe upserts depend on it, and existing
