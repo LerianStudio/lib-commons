@@ -4,6 +4,7 @@ package outbox
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -22,6 +23,11 @@ type claimScopedFakeRepo struct {
 }
 
 func (repo *claimScopedFakeRepo) ScopesClaimsByEventType() {}
+
+// ListPendingByTypes makes the fake a MultiTypePendingRepository, which priority types scope.
+func (repo *claimScopedFakeRepo) ListPendingByTypes(context.Context, []string, int) ([]*OutboxEvent, error) {
+	return nil, nil
+}
 
 func (repo *claimScopedFakeRepo) ListPending(ctx context.Context, limit int) ([]*OutboxEvent, error) {
 	types, ok := ClaimEventTypesFromContext(ctx)
@@ -76,4 +82,40 @@ func TestDispatcher_ClaimScopeRereadsHandlersEachCycle(t *testing.T) {
 		{ok: true},
 		{types: []string{"payment.created", "payment.settled"}, ok: true},
 	}, repo.calls)
+}
+
+// On a claim-scoped multi-type repository the priority types scope every claim of the
+// cycle, intersected with the handler types under WithClaimScopedToHandlers, and stuck
+// and failed recovery still runs.
+func TestDispatcher_PriorityTypesScopeRecovery(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts []DispatcherOption
+		want []string
+	}{
+		{"priority types", nil, []string{"payment.settled", "payment.created"}},
+		{"intersected with handler types", []DispatcherOption{WithClaimScopedToHandlers()}, []string{"payment.settled"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			repo := &claimScopedFakeRepo{fakeRepo: &fakeRepo{}}
+			handlers := NewHandlerRegistry()
+			require.NoError(t, handlers.Register("payment.settled", func(context.Context, *OutboxEvent) error { return nil }))
+
+			dispatcher, err := NewDispatcher(repo, handlers, nil, noop.NewTracerProvider().Tracer("test"),
+				append(tt.opts, WithPriorityEventTypes("payment.settled", "payment.created"))...)
+			require.NoError(t, err)
+
+			dispatcher.DispatchOnceResult(context.Background())
+
+			require.Equal(t, []claimScopeCall{{types: tt.want, ok: true}}, repo.calls)
+			require.EqualValues(t, 1, atomic.LoadInt32(&repo.resetStuckCalls))
+			require.EqualValues(t, 1, atomic.LoadInt32(&repo.resetForRetryCalls))
+		})
+	}
 }

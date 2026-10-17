@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -1011,9 +1012,8 @@ func (dispatcher *Dispatcher) tenantDispatchScopeOrder(scopes []TenantDispatchSc
 	return ordered
 }
 
-// collectEvents gathers events for a single dispatch cycle. Repositories with the
-// atomic multi-type capability use PriorityEventTypes as an exclusive claim scope
-// and do not fall back to unscoped claims. Other repositories use this order:
+// collectEvents gathers events for a single dispatch cycle in this order, every claim
+// narrowed to claimEventTypes when the cycle is scoped:
 //
 //  1. Priority events: pending events matching PriorityEventTypes (up to PriorityBudget)
 //  2. Stuck events: PROCESSING events older than ProcessingTimeout (reclaimed for retry)
@@ -1024,8 +1024,8 @@ func (dispatcher *Dispatcher) tenantDispatchScopeOrder(scopes []TenantDispatchSc
 // created_at or updated_at). The total batch is bounded by BatchSize. Duplicate
 // events (e.g., a priority event also in the pending set) are removed.
 func (dispatcher *Dispatcher) collectEvents(ctx context.Context, span trace.Span) []*OutboxEvent {
-	if dispatcher.claimScoped {
-		ctx = contextWithClaimEventTypes(ctx, dispatcher.handlers.EventTypes())
+	if eventTypes, scoped := dispatcher.claimEventTypes(); scoped {
+		ctx = contextWithClaimEventTypes(ctx, eventTypes)
 	}
 
 	logger := dispatcher.logger
@@ -1035,7 +1035,8 @@ func (dispatcher *Dispatcher) collectEvents(ctx context.Context, span trace.Span
 	priorityBudget := min(dispatcher.cfg.PriorityBudget, dispatcher.cfg.BatchSize)
 
 	priorityEvents := dispatcher.collectPriorityEvents(ctx, span, priorityBudget)
-	if _, scoped := dispatcher.repo.(MultiTypePendingRepository); scoped && len(dispatcher.cfg.PriorityEventTypes) > 0 {
+	if _, claimScopes := dispatcher.repo.(ClaimScopedRepository); !claimScopes && dispatcher.priorityScoped() {
+		// This repository cannot narrow the recovery claims below to the priority types.
 		return deduplicateEvents(priorityEvents)
 	}
 
@@ -1095,6 +1096,34 @@ func (dispatcher *Dispatcher) collectEvents(ctx context.Context, span trace.Span
 	all = append(all, pendingEvents...)
 
 	return deduplicateEvents(all)
+}
+
+// claimEventTypes returns the event types a scoped cycle may claim: the handler types
+// under WithClaimScopedToHandlers, the priority types when priorityScoped, or both's
+// intersection.
+func (dispatcher *Dispatcher) claimEventTypes() ([]string, bool) {
+	switch {
+	case dispatcher.claimScoped && dispatcher.priorityScoped():
+		handled := dispatcher.handlers.EventTypes()
+
+		return slices.DeleteFunc(slices.Clone(dispatcher.cfg.PriorityEventTypes), func(eventType string) bool {
+			return !slices.Contains(handled, eventType)
+		}), true
+	case dispatcher.claimScoped:
+		return dispatcher.handlers.EventTypes(), true
+	case dispatcher.priorityScoped():
+		return dispatcher.cfg.PriorityEventTypes, true
+	default:
+		return nil, false
+	}
+}
+
+// priorityScoped reports whether PriorityEventTypes scope the whole cycle, which they
+// do on a repository that claims several types atomically.
+func (dispatcher *Dispatcher) priorityScoped() bool {
+	_, multiType := dispatcher.repo.(MultiTypePendingRepository)
+
+	return multiType && len(dispatcher.cfg.PriorityEventTypes) > 0
 }
 
 // resetStuckProcessing reclaims stuck events and, when the repository is a
