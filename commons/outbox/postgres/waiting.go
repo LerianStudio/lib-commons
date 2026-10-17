@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
@@ -131,35 +132,47 @@ func (repo *Repository) OldestWaitingCreatedAt(ctx context.Context) (time.Time, 
 	return oldest.Time, oldest.Valid, nil
 }
 
-// oldestWaitingQuery keeps every probe on an index: unscoped, one min() per status on
-// (status, created_at); under a claim scope, one LIMIT 1 per type and status on (event_type,
-// status, created_at), so another service's backlog in a shared table is never walked.
+// oldestWaitingQuery is one LEAST of index-only min(created_at) probes: one per waiting
+// status or, under a claim scope, one per (event type, status), so the plan never walks
+// another service's backlog in a shared table, however few types it holds.
 func (repo *Repository) oldestWaitingQuery(ctx context.Context, tenantID string) (string, []any, error) {
-	table := quoteIdentifierPath(repo.tableName)
-	statuses := []string{outbox.OutboxStatusPending, outbox.OutboxStatusProcessing, outbox.OutboxStatusFailed}
+	statuses := []any{outbox.OutboxStatusPending, outbox.OutboxStatusProcessing, outbox.OutboxStatusFailed}
+	eventTypes, scoped := outbox.ClaimEventTypesFromContext(ctx)
 
-	if eventTypes, scoped := outbox.ClaimEventTypesFromContext(ctx); scoped {
-		filter, filterArgs, err := repo.tenantFilterClause(3, tenantID)
-		if err != nil {
-			return "", nil, err
+	var conditions []string
+
+	for status := 1; status <= len(statuses); status++ {
+		if !scoped {
+			conditions = append(conditions, fmt.Sprintf("status = $%d", status))
+
+			continue
 		}
 
-		query := "SELECT min(l.created_at) FROM unnest($1::text[]) AS t(scope_type) CROSS JOIN unnest($2::text[]) AS s(scope_status)" +
-			" CROSS JOIN LATERAL (SELECT created_at FROM " + table + // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
-			" WHERE event_type = t.scope_type AND status = s.scope_status::outbox_event_status" + filter +
-			" ORDER BY created_at LIMIT 1) l"
-
-		return query, append([]any{eventTypes, statuses}, filterArgs...), nil
+		for i := range eventTypes {
+			conditions = append(conditions, fmt.Sprintf("event_type = $%d AND status = $%d", len(statuses)+1+i, status))
+		}
 	}
 
-	filter, filterArgs, err := repo.tenantFilterClause(4, tenantID)
+	if len(conditions) == 0 { // an empty claim scope waits on nothing
+		return "SELECT NULL::timestamptz", nil, nil
+	}
+
+	args := statuses
+	for _, eventType := range eventTypes {
+		args = append(args, eventType)
+	}
+
+	filter, filterArgs, err := repo.tenantFilterClause(len(args)+1, tenantID)
 	if err != nil {
 		return "", nil, err
 	}
 
-	minOf := func(index int) string {
-		return fmt.Sprintf("(SELECT min(created_at) FROM %s WHERE status = $%d%s)", table, index, filter)
+	table := quoteIdentifierPath(repo.tableName)
+	probes := make([]string, len(conditions))
+
+	for i, condition := range conditions {
+		probes[i] = "(SELECT min(created_at) FROM " + table + " WHERE " + condition + filter + ")" // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
 	}
 
-	return "SELECT LEAST(" + minOf(1) + ", " + minOf(2) + ", " + minOf(3) + ")", append([]any{statuses[0], statuses[1], statuses[2]}, filterArgs...), nil
+	return "SELECT LEAST(" + strings.Join(probes, ", ") + ")", append(args, filterArgs...), nil
 }

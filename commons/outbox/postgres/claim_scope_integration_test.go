@@ -164,8 +164,12 @@ func TestIntegration_Dispatcher_OldestWaitingAgeStaysInClaimScope(t *testing.T) 
 		require.NoError(t, err)
 	}
 
+	// A second handled type sorts first, so the owned rows are probed through the second type parameter.
+	handlers := claimScopeHandlers(t, "payment.owned")
+	require.NoError(t, handlers.Register("payment.other", func(context.Context, *outbox.OutboxEvent) error { return nil }))
+
 	reader := sdkmetric.NewManualReader()
-	dispatcher, err := outbox.NewDispatcher(fx.repo, claimScopeHandlers(t, "payment.owned"), nil, noop.NewTracerProvider().Tracer("test"),
+	dispatcher, err := outbox.NewDispatcher(fx.repo, handlers, nil, noop.NewTracerProvider().Tracer("test"),
 		outbox.WithClaimScopedToHandlers(), outbox.WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
 	require.NoError(t, err)
 
