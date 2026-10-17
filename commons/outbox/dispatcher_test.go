@@ -83,6 +83,8 @@ func (repo *multiTypeFakeRepo) ListPendingByTypes(
 	return repo.events, repo.err
 }
 
+func (repo *multiTypeFakeRepo) ScopesClaimsByEventType() {}
+
 func (repo *tenantAwareFakeRepo) RequiresTenant() bool {
 	if repo == nil {
 		return true
@@ -883,78 +885,6 @@ func TestDispatcher_CollectPriorityEventsUsesAtomicMultiTypeCapability(t *testin
 	require.Equal(t, []string{"dict.high", "dict.low"}, repo.eventTypes)
 	require.Equal(t, 4, repo.limit)
 	require.Equal(t, []uuid.UUID{highID, lowID}, []uuid.UUID{collected[0].ID, collected[1].ID})
-}
-
-func TestDispatcher_CollectEvents_MultiTypeClaimsDoNotFallBackToUnscopedEvents(t *testing.T) {
-	t.Parallel()
-
-	ownedID := uuid.New()
-	repo := &multiTypeFakeRepo{
-		fakeRepo: &fakeRepo{
-			stuck:          []*OutboxEvent{{ID: uuid.New(), EventType: "foreign.stuck"}},
-			failedForRetry: []*OutboxEvent{{ID: uuid.New(), EventType: "foreign.failed"}},
-			pending:        []*OutboxEvent{{ID: uuid.New(), EventType: "foreign.pending"}},
-		},
-		events: []*OutboxEvent{{ID: ownedID, EventType: "scr.consulta.created"}},
-	}
-
-	dispatcher, err := NewDispatcher(
-		repo,
-		NewHandlerRegistry(),
-		nil,
-		noop.NewTracerProvider().Tracer("test"),
-		WithBatchSize(4),
-		WithPriorityBudget(4),
-		WithPriorityEventTypes("scr.consulta.created", "scr.consulta.failed"),
-	)
-	require.NoError(t, err)
-
-	ctx, span := dispatcher.tracer.Start(context.Background(), "test.collect_scoped_events")
-	defer span.End()
-
-	collected := dispatcher.collectEvents(ctx, span)
-	require.Equal(t, 1, repo.calls)
-	require.Equal(t, []string{"scr.consulta.created", "scr.consulta.failed"}, repo.eventTypes)
-	require.Equal(t, 4, repo.limit)
-	require.Len(t, collected, 1)
-	require.Equal(t, ownedID, collected[0].ID)
-	require.Zero(t, atomic.LoadInt32(&repo.resetStuckCalls))
-	require.Zero(t, atomic.LoadInt32(&repo.resetForRetryCalls))
-	require.Zero(t, repo.listPendingCallCount())
-}
-
-func TestDispatcher_CollectEvents_MultiTypeClaimErrorFailsClosed(t *testing.T) {
-	t.Parallel()
-
-	repo := &multiTypeFakeRepo{
-		fakeRepo: &fakeRepo{
-			stuck:          []*OutboxEvent{{ID: uuid.New(), EventType: "foreign.stuck"}},
-			failedForRetry: []*OutboxEvent{{ID: uuid.New(), EventType: "foreign.failed"}},
-			pending:        []*OutboxEvent{{ID: uuid.New(), EventType: "foreign.pending"}},
-		},
-		err: errors.New("claim failed"),
-	}
-
-	dispatcher, err := NewDispatcher(
-		repo,
-		NewHandlerRegistry(),
-		nil,
-		noop.NewTracerProvider().Tracer("test"),
-		WithBatchSize(4),
-		WithPriorityBudget(4),
-		WithPriorityEventTypes("scr.consulta.created", "scr.consulta.failed"),
-	)
-	require.NoError(t, err)
-
-	ctx, span := dispatcher.tracer.Start(context.Background(), "test.collect_scoped_events_error")
-	defer span.End()
-
-	collected := dispatcher.collectEvents(ctx, span)
-	require.Equal(t, 1, repo.calls)
-	require.Empty(t, collected)
-	require.Zero(t, atomic.LoadInt32(&repo.resetStuckCalls))
-	require.Zero(t, atomic.LoadInt32(&repo.resetForRetryCalls))
-	require.Zero(t, repo.listPendingCallCount())
 }
 
 func TestDispatcher_CollectEvents_ContinuesWhenResetStuckProcessingFails(t *testing.T) {

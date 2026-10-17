@@ -36,24 +36,35 @@ func (repo *claimScopedFakeRepo) ListPending(ctx context.Context, limit int) ([]
 	return repo.fakeRepo.ListPending(ctx, limit)
 }
 
-func TestNewDispatcher_ClaimScopedToHandlersRequiresCapability(t *testing.T) {
+// A scoped claim needs a repository that honours it; a multi-type repository that does not
+// would run the stuck, failed and pending claims over every other service's events.
+func TestNewDispatcher_ClaimScopeRequiresCapability(t *testing.T) {
 	t.Parallel()
+
+	multiTypeOnly := &struct {
+		*fakeRepo
+		MultiTypePendingRepository
+	}{fakeRepo: &fakeRepo{}}
+	priority := WithPriorityEventTypes("payment.settled")
 
 	tests := []struct {
 		name    string
 		repo    OutboxRepository
+		opt     DispatcherOption
 		wantErr error
 	}{
-		{"repository without the capability", &fakeRepo{}, ErrOutboxClaimScopeUnsupported},
-		{"capable repository", &claimScopedFakeRepo{fakeRepo: &fakeRepo{}}, nil},
+		{"handler scope without the capability", &fakeRepo{}, WithClaimScopedToHandlers(), ErrOutboxClaimScopeUnsupported},
+		{"handler scope on a capable repository", &claimScopedFakeRepo{fakeRepo: &fakeRepo{}}, WithClaimScopedToHandlers(), nil},
+		{"priority types on a multi-type repository without the capability", multiTypeOnly, priority, ErrOutboxClaimScopeUnsupported},
+		{"priority types on a capable multi-type repository", &claimScopedFakeRepo{fakeRepo: &fakeRepo{}}, priority, nil},
+		{"priority types on a single-type repository", &fakeRepo{}, priority, nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := NewDispatcher(tt.repo, NewHandlerRegistry(), nil, noop.NewTracerProvider().Tracer("test"),
-				WithClaimScopedToHandlers())
+			_, err := NewDispatcher(tt.repo, NewHandlerRegistry(), nil, noop.NewTracerProvider().Tracer("test"), tt.opt)
 			require.ErrorIs(t, err, tt.wantErr)
 		})
 	}

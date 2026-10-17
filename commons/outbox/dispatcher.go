@@ -149,7 +149,7 @@ func NewDispatcher(
 		return nil, err
 	}
 
-	if _, ok := repo.(ClaimScopedRepository); dispatcher.claimScoped && !ok {
+	if _, ok := repo.(ClaimScopedRepository); !ok && (dispatcher.claimScoped || dispatcher.priorityScoped()) {
 		return nil, ErrOutboxClaimScopeUnsupported
 	}
 
@@ -1035,11 +1035,6 @@ func (dispatcher *Dispatcher) collectEvents(ctx context.Context, span trace.Span
 	priorityBudget := min(dispatcher.cfg.PriorityBudget, dispatcher.cfg.BatchSize)
 
 	priorityEvents := dispatcher.collectPriorityEvents(ctx, span, priorityBudget)
-	if _, claimScopes := dispatcher.repo.(ClaimScopedRepository); !claimScopes && dispatcher.priorityScoped() {
-		// This repository cannot narrow the recovery claims below to the priority types.
-		return deduplicateEvents(priorityEvents)
-	}
-
 	collected := len(priorityEvents)
 
 	stuckLimit := dispatcher.cfg.BatchSize - collected
