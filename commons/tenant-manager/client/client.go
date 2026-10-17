@@ -43,8 +43,6 @@ const (
 	cbClosed cbState = iota
 	// cbOpen means the circuit breaker has tripped. Requests fail fast with ErrCircuitBreakerOpen.
 	cbOpen
-	// cbHalfOpen allows a single test request through to probe whether the service has recovered.
-	cbHalfOpen
 )
 
 // TenantSummary represents a minimal tenant information for listing.
@@ -82,7 +80,7 @@ type Client struct {
 	cbLastFailure time.Time
 	cbState       cbState
 	cbThreshold   int           // consecutive failures before opening (0 = disabled)
-	cbTimeout     time.Duration // how long to stay open before transitioning to half-open
+	cbTimeout     time.Duration // how long to stay open before admitting a probe
 }
 
 // getConfigOpts holds options for a single GetTenantConfig call.
@@ -254,7 +252,7 @@ func NewClient(baseURL string, logger obs.Logger, opts ...ClientOption) (*Client
 
 // checkCircuitBreaker checks if the circuit breaker allows a request to proceed.
 // Returns ErrCircuitBreakerOpen if the circuit breaker is open and the timeout has not elapsed.
-// Transitions from open to half-open when the timeout expires.
+// Once the timeout expires it admits one probe per timeout (half-open).
 // When the circuit breaker is disabled (cbThreshold == 0), this is a no-op.
 func (c *Client) checkCircuitBreaker() error {
 	if c.cbThreshold <= 0 {
@@ -267,7 +265,10 @@ func (c *Client) checkCircuitBreaker() error {
 	switch c.cbState {
 	case cbOpen:
 		if time.Since(c.cbLastFailure) > c.cbTimeout {
-			c.cbState = cbHalfOpen
+			// Restamp: others fail fast until the probe's outcome lands; a probe whose outcome
+			// nothing records is followed by a fresh one after another timeout.
+			c.cbLastFailure = time.Now()
+
 			return nil
 		}
 

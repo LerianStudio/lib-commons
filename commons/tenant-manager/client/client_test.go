@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -499,6 +500,72 @@ func TestClient_CircuitBreaker_ClosesOnSuccessfulHalfOpenRequest(t *testing.T) {
 	assert.Equal(t, "tenant-123", result.ID)
 	assert.Equal(t, cbClosed, client.cbState)
 	assert.Equal(t, 0, client.cbFailures)
+}
+
+func TestClient_CircuitBreaker_HalfOpenAdmitsOneProbeUnderBurst(t *testing.T) {
+	var (
+		recovered atomic.Bool
+		reached   atomic.Int32
+	)
+
+	release := make(chan struct{})
+	releaseProbe := sync.OnceFunc(func() { close(release) })
+	config := newMinimalTenantConfig()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !recovered.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		// Hold the first request after recovery so the rest of the burst arrives while it is in flight.
+		if reached.Add(1) == 1 {
+			<-release
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(config)
+	}))
+	defer server.Close()
+	defer releaseProbe()
+
+	client := mustNewClient(t, server.URL, WithCircuitBreaker(1, time.Minute))
+	ctx := context.Background()
+
+	_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
+	require.Error(t, err)
+	require.Equal(t, cbOpen, client.cbState)
+
+	// Age the open window instead of sleeping through a minute.
+	client.cbMu.Lock()
+	client.cbLastFailure = time.Now().Add(-2 * time.Minute)
+	client.cbMu.Unlock()
+	recovered.Store(true)
+
+	const callers = 20
+
+	start := make(chan struct{})
+	results := make(chan error, callers)
+
+	for range callers {
+		go func() {
+			<-start
+
+			_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
+			results <- err
+		}()
+	}
+
+	close(start)
+
+	for range callers - 1 {
+		require.ErrorIs(t, <-results, core.ErrCircuitBreakerOpen, "only the probe may reach a recovering tenant manager")
+	}
+
+	releaseProbe()
+	require.NoError(t, <-results, "the probe succeeds")
+	assert.Equal(t, int32(1), reached.Load())
+	assert.Equal(t, cbClosed, client.cbState)
 }
 
 func TestClient_CircuitBreaker_404DoesNotCountAsFailure(t *testing.T) {
