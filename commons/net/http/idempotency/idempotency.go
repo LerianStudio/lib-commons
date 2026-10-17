@@ -575,7 +575,7 @@ func WithFingerprintProvider(provider FingerprintProvider) Option {
 // WithTenantProvider resolves the tenant a record is rooted at from somewhere
 // other than the tenant-manager context. Unset, the middleware reads
 // [tmcore.GetTenantIDContext], which is the shipped behaviour and stays
-// byte-identical.
+// byte-identical, unless [WithSingleTenant] roots the record at no tenant.
 //
 // It exists so a service whose tenant lives anywhere else — its own claim
 // parsing, a different major of the tenant-manager package — is heard WITHOUT
@@ -1470,7 +1470,8 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 		)
 	}
 
-	// Build a tenant-scoped Redis key for per-tenant isolation.
+	// Build a tenant-scoped Redis key for per-tenant isolation, or a tenant-less
+	// one under [WithSingleTenant].
 	tenantID, err := m.resolveTenant(c)
 	if err != nil {
 		return libHTTP.RespondError(c, http.StatusBadRequest,
@@ -2201,7 +2202,8 @@ func (m *Middleware) markOutcomeUnknown(
 	return true
 }
 
-// storeKey composes the tenant-scoped store address for an idempotency key. It
+// storeKey composes the store address for an idempotency key, tenant-scoped
+// unless [WithSingleTenant] roots it at no tenant. It
 // is the ONE composition: handle reads there and FenceOutcomeUnknown writes
 // there, so a consumer fence cannot drift beside the record it has to sit on.
 func (m *Middleware) storeKey(tenantID, idempotencyKey string) string {
@@ -2235,8 +2237,9 @@ func (m *Middleware) recordLogger(tenantID string) obs.Logger {
 // resend. It takes the request rather than a key and a fingerprint because the
 // address and the digest must be the ones Check computes, and it computes them
 // the same way: the configured [KeyProvider] (or the header), the configured
-// [TenantProvider] (or the tenant-manager context on c.Context()), the configured fingerprint providers and scope. Call it with the
-// request in the same state Check would see it.
+// [TenantProvider] (or the tenant-manager context on c.Context(), or no tenant
+// under [WithSingleTenant]), the configured fingerprint providers and scope.
+// Call it with the request in the same state Check would see it.
 //
 // It writes only through Store.Acquire, so it never replaces a record. Fencing
 // a key that already holds this request's unrecorded-outcome fence is a no-op
@@ -2329,7 +2332,8 @@ func (m *Middleware) FenceOutcomeUnknown(c fiber.Ctx, ttl time.Duration) error {
 // of the store key, never raw: the idempotency key is client-supplied and
 // services put business references in it, so the raw value does not belong in
 // shared log infrastructure. The digest is reproducible from the client's own
-// key plus the tenant and prefix, which is exactly what an operator holds. The
+// key plus the tenant (none under [WithSingleTenant]) and prefix, which is
+// exactly what an operator holds. The
 // tenant ID and the acquisition owner are logged raw; neither is client-supplied
 // and the owner is what correlates this line with the stored record.
 func (m *Middleware) logFenceFailure(ctx context.Context, tenantID, key, owner, cause string, err error) {

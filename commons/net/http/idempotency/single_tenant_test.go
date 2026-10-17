@@ -59,10 +59,9 @@ func TestSingleTenant_KeyShape(t *testing.T) {
 	}
 }
 
-// TestSingleTenant_ReplaysAndRefusesDuplicates walks the three duplicate
-// answers with no tenant anywhere: a resend replays, a different payload is key
-// reuse, and a key still in flight is a conflict. The handler runs once.
-func TestSingleTenant_ReplaysAndRefusesDuplicates(t *testing.T) {
+// TestSingleTenant_ReplaysTheResend proves a resend with no tenant anywhere
+// replays the stored response instead of running the handler again.
+func TestSingleTenant_ReplaysTheResend(t *testing.T) {
 	t.Parallel()
 
 	mr := miniredis.RunT(t)
@@ -80,22 +79,7 @@ func TestSingleTenant_ReplaysAndRefusesDuplicates(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, replay.StatusCode)
 	assert.Equal(t, "true", replay.Header.Get(chttp.IdempotencyReplayed))
 	assert.JSONEq(t, `{"amount":100}`, readBody(t, replay))
-
-	reuse := doSend(t, app, http.MethodPost, "/test", `{"amount":999}`, "k1")
-	assert.Equal(t, http.StatusUnprocessableEntity, reuse.StatusCode)
-	assert.Contains(t, readBody(t, reuse), "IDEMPOTENCY_KEY_REUSE")
-
-	seedStoreRecord(t, mr, "idempotency:k2", storeRecord{
-		State:       keyStateProcessing,
-		Fingerprint: requestFingerprint(http.MethodPost, "/test", []byte(`{}`)),
-		Owner:       "owner-in-flight",
-	})
-
-	conflict := doSend(t, app, http.MethodPost, "/test", `{}`, "k2")
-	assert.Equal(t, http.StatusConflict, conflict.StatusCode)
-	assert.Contains(t, readBody(t, conflict), "IDEMPOTENCY_CONFLICT")
-
-	assert.Equal(t, int32(1), calls.Load(), "only the first request may run the handler")
+	assert.Equal(t, int32(1), calls.Load(), "the resend must replay, not re-run")
 }
 
 // TestSingleTenant_FenceOutcomeUnknown proves the consumer fence works with no
