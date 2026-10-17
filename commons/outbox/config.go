@@ -50,6 +50,9 @@ type DispatcherConfig struct {
 	RetryWindow time.Duration
 	// MaxDispatchAttempts is the max total dispatch attempts before invalidation.
 	MaxDispatchAttempts int
+	// RetryHorizon, when positive, replaces MaxDispatchAttempts with the attempts that keep a
+	// FAILED event retried for at least this long after its first failure (WithRetryHorizon).
+	RetryHorizon time.Duration
 	// ProcessingTimeout is the age threshold for reclaiming stuck processing events.
 	ProcessingTimeout time.Duration
 	// PriorityBudget limits how many events can be selected via priority lists per cycle.
@@ -151,6 +154,10 @@ func (cfg *DispatcherConfig) normalize() {
 		cfg.RetryWindow = defaults.RetryWindow
 	}
 
+	if cfg.RetryHorizon > 0 {
+		cfg.MaxDispatchAttempts = attemptsForRetryHorizon(cfg.RetryHorizon, cfg.RetryWindow)
+	}
+
 	if cfg.MaxDispatchAttempts <= 0 {
 		cfg.MaxDispatchAttempts = defaults.MaxDispatchAttempts
 	}
@@ -176,6 +183,18 @@ func (cfg *DispatcherConfig) normalize() {
 	}
 
 	cfg.normalizeRetention()
+}
+
+// attemptsForRetryHorizon returns the attempts whose retries span at least horizon: a FAILED
+// event is retried no sooner than retryWindow after its last failure, so the first failure
+// plus ceil(horizon/retryWindow) retries cover it.
+func attemptsForRetryHorizon(horizon, retryWindow time.Duration) int {
+	retries := horizon / retryWindow
+	if horizon%retryWindow != 0 {
+		retries++
+	}
+
+	return int(retries) + 1
 }
 
 // normalizeRetention fills retention defaults only when retention is enabled,
@@ -280,6 +299,17 @@ func WithMaxDispatchAttempts(attempts int) DispatcherOption {
 	return func(dispatcher *Dispatcher) {
 		if attempts > 0 {
 			dispatcher.cfg.MaxDispatchAttempts = attempts
+		}
+	}
+}
+
+// WithRetryHorizon retries a FAILED event for at least horizon after its first failure, then
+// marks it INVALID: MaxDispatchAttempts becomes 1 + ceil(horizon/RetryWindow), overriding
+// WithMaxDispatchAttempts. Non-retryable errors still go INVALID at once (see package doc).
+func WithRetryHorizon(horizon time.Duration) DispatcherOption {
+	return func(dispatcher *Dispatcher) {
+		if horizon > 0 {
+			dispatcher.cfg.RetryHorizon = horizon
 		}
 	}
 }
