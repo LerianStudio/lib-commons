@@ -1028,9 +1028,7 @@ func (dispatcher *Dispatcher) tenantDispatchScopeOrder(scopes []TenantDispatchSc
 // created_at or updated_at). The total batch is bounded by BatchSize. Duplicate
 // events (e.g., a priority event also in the pending set) are removed.
 func (dispatcher *Dispatcher) collectEvents(ctx context.Context, span trace.Span) []*OutboxEvent {
-	if eventTypes, scoped := dispatcher.claimEventTypes(); scoped {
-		ctx = contextWithClaimEventTypes(ctx, eventTypes)
-	}
+	ctx = dispatcher.withClaimScope(ctx)
 
 	logger := dispatcher.logger
 	failedBefore := time.Now().UTC().Add(-dispatcher.cfg.RetryWindow)
@@ -1115,6 +1113,15 @@ func (dispatcher *Dispatcher) claimEventTypes() ([]string, bool) {
 	default:
 		return nil, false
 	}
+}
+
+// withClaimScope narrows ctx to the claim scope when the dispatcher is scoped.
+func (dispatcher *Dispatcher) withClaimScope(ctx context.Context) context.Context {
+	if eventTypes, scoped := dispatcher.claimEventTypes(); scoped {
+		return contextWithClaimEventTypes(ctx, eventTypes)
+	}
+
+	return ctx
 }
 
 // priorityScoped reports whether PriorityEventTypes scope the whole cycle, which they

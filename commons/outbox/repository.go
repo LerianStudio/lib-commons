@@ -67,6 +67,14 @@ type InvalidPurger interface {
 	ListTenantsWithInvalidBefore(ctx context.Context, before time.Time, keepEventTypes []string) ([]string, error)
 }
 
+// InvalidRequeuer is the capability Dispatcher.RequeueInvalid needs.
+type InvalidRequeuer interface {
+	// RequeueInvalid atomically moves the INVALID event id to PENDING, attempts 0 and last_error
+	// cleared, keeping id, event type and payload, within the tenant and claim scope of ctx; any
+	// other id returns ErrOutboxEventNotInvalid and changes nothing.
+	RequeueInvalid(ctx context.Context, id uuid.UUID) error
+}
+
 // StuckReclaimer is an additive capability that lets the dispatcher fire
 // OnInvalid for the stuck events a reclaim marks INVALID. It is separate from
 // OutboxRepository so ResetStuckProcessing keeps returning only retry events.

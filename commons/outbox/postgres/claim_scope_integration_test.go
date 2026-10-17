@@ -122,3 +122,26 @@ func TestIntegration_Dispatcher_PriorityTypesKeepRecoveryInScope(t *testing.T) {
 	requireClaimScopeSeed(t, fx, owned, true)
 	requireClaimScopeSeed(t, fx, foreign, false)
 }
+
+// A scoped dispatcher on a shared table requeues only its own INVALID events: another
+// service's INVALID event is refused and left INVALID for that service's operator.
+func TestIntegration_Dispatcher_RequeueInvalidStaysInClaimScope(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+	owned, foreign := createFixtureEvent(t, fx, "payment.owned"), createFixtureEvent(t, fx, "payment.foreign")
+	updateFixtureEventState(t, fx, owned.ID, outbox.OutboxStatusInvalid, 3, time.Now().UTC())
+	updateFixtureEventState(t, fx, foreign.ID, outbox.OutboxStatusInvalid, 3, time.Now().UTC())
+
+	dispatcher, err := outbox.NewDispatcher(fx.repo, claimScopeHandlers(t, "payment.owned"), nil,
+		noop.NewTracerProvider().Tracer("test"), outbox.WithClaimScopedToHandlers())
+	require.NoError(t, err)
+
+	require.ErrorIs(t, dispatcher.RequeueInvalid(fx.tenantCtx, foreign.ID), outbox.ErrOutboxEventNotInvalid)
+	require.NoError(t, dispatcher.RequeueInvalid(fx.tenantCtx, owned.ID))
+	require.Equal(t, 1, dispatcher.DispatchOnceResult(fx.tenantCtx).Published)
+
+	for id, want := range map[uuid.UUID]string{owned.ID: outbox.OutboxStatusPublished, foreign.ID: outbox.OutboxStatusInvalid} {
+		stored, err := fx.repo.GetByID(fx.tenantCtx, id)
+		require.NoError(t, err)
+		require.Equal(t, want, stored.Status)
+	}
+}

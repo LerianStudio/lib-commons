@@ -5,8 +5,10 @@ package outboxtest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -128,6 +130,96 @@ func Run(t *testing.T, factory Factory, opts ...RunOption) {
 	run("ListTenantsWithPublishedBeforeListsOnlyTenantsWithDeletableEvents", func(t *testing.T) {
 		testListTenantsWithPublishedBefore(t, factory)
 	})
+	run("RequeueInvalidMovesOnlyInvalidBackToPending", func(t *testing.T) { testRequeueInvalid(t, factory) })
+	run("DispatcherRepublishesRequeuedEventWithSameID", func(t *testing.T) { testDispatcherRepublishesRequeued(t, factory) })
+}
+
+// testDispatcherRepublishesRequeued walks the redrive end to end: the broker stays down until
+// the retry budget runs out, an operator requeues the INVALID event, and the next cycle
+// publishes it under the id the first attempt carried.
+func testDispatcherRepublishesRequeued(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+	if _, ok := repo.(outbox.InvalidRequeuer); !ok {
+		t.Skip("repository does not implement outbox.InvalidRequeuer")
+	}
+
+	ctx := outbox.ContextWithTenantID(contractContext(t), "tenant-a")
+	created := createEvent(t, repo, ctx, "payment.redrive")
+
+	var brokerUp atomic.Bool
+
+	var published []uuid.UUID
+
+	handlers := outbox.NewHandlerRegistry()
+	require.NoError(t, handlers.Register("payment.redrive", func(_ context.Context, event *outbox.OutboxEvent) error {
+		if !brokerUp.Load() {
+			return errors.New("broker unavailable")
+		}
+
+		published = append(published, event.ID)
+
+		return nil
+	}))
+
+	dispatcher, err := outbox.NewDispatcher(repo, handlers, nil, noop.NewTracerProvider().Tracer("test"),
+		outbox.WithPublishMaxAttempts(1), outbox.WithMaxDispatchAttempts(1))
+	require.NoError(t, err)
+
+	require.Equal(t, 1, dispatcher.DispatchOnceResult(ctx).Failed)
+	requireEventStatus(t, repo, ctx, created.ID, outbox.OutboxStatusInvalid)
+
+	brokerUp.Store(true)
+	require.Zero(t, dispatcher.DispatchOnceResult(ctx).Processed, "an INVALID event is never claimed")
+
+	require.NoError(t, dispatcher.RequeueInvalid(ctx, created.ID))
+	require.Equal(t, 1, dispatcher.DispatchOnceResult(ctx).Published)
+	require.Equal(t, []uuid.UUID{created.ID}, published)
+	requireEventStatus(t, repo, ctx, created.ID, outbox.OutboxStatusPublished)
+}
+
+// testRequeueInvalid pins the operator redrive: an INVALID event goes back to PENDING as the
+// same event, attempts and diagnosis reset; every other id, or another tenant, is refused.
+func testRequeueInvalid(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+
+	requeuer, ok := repo.(outbox.InvalidRequeuer)
+	if !ok {
+		t.Skip("repository does not implement outbox.InvalidRequeuer")
+	}
+
+	baseCtx := contractContext(t)
+	ctx := outbox.ContextWithTenantID(baseCtx, "tenant-a")
+	invalid := createEvent(t, repo, ctx, "payment.requeue")
+	claimSinglePending(t, repo, ctx, invalid.ID)
+	require.NoError(t, repo.MarkFailed(ctx, invalid.ID, "broker unavailable", 1))
+
+	published := createEvent(t, repo, ctx, "payment.requeue")
+	claimSinglePending(t, repo, ctx, published.ID)
+	require.NoError(t, repo.MarkPublished(ctx, published.ID, time.Now().UTC()))
+
+	require.Error(t, requeuer.RequeueInvalid(outbox.ContextWithTenantID(baseCtx, "tenant-b"), invalid.ID))
+	requireEventStatus(t, repo, ctx, invalid.ID, outbox.OutboxStatusInvalid)
+
+	require.NoError(t, requeuer.RequeueInvalid(ctx, invalid.ID))
+
+	stored := mustGetEvent(t, repo, ctx, invalid.ID)
+	require.Equal(t, outbox.OutboxStatusPending, stored.Status)
+	require.Zero(t, stored.Attempts)
+	require.Empty(t, stored.LastError)
+	require.Equal(t, invalid.EventType, stored.EventType)
+	require.Equal(t, invalid.AggregateID, stored.AggregateID)
+	require.JSONEq(t, string(invalid.Payload), string(stored.Payload))
+
+	for _, id := range []uuid.UUID{invalid.ID, published.ID, uuid.New()} {
+		require.ErrorIs(t, requeuer.RequeueInvalid(ctx, id), outbox.ErrOutboxEventNotInvalid)
+	}
+
+	requireEventStatus(t, repo, ctx, published.ID, outbox.OutboxStatusPublished)
+	claimSinglePending(t, repo, ctx, invalid.ID)
 }
 
 func testCreateThenGetRoundtrip(t *testing.T, factory Factory) {
