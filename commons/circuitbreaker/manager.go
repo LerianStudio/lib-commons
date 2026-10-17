@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
@@ -27,12 +29,21 @@ type breakerSlot struct {
 	breaker     *gobreaker.CircuitBreaker
 	config      Config
 	metrics     breakerMetrics
+	// openUntil is the end of the current OPEN window; nil when not OPEN.
+	openUntil atomic.Pointer[time.Time]
 }
 
-// Compile-time guarantees that *manager satisfies both interface tiers.
+// Zero-value defaults gobreaker v1.0.0 applies in NewCircuitBreaker.
+const (
+	defaultOpenTimeout         = 60 * time.Second
+	defaultHalfOpenMaxRequests = 1
+)
+
+// Compile-time guarantees that *manager satisfies every interface tier.
 var (
 	_ Manager            = (*manager)(nil)
 	_ TenantAwareManager = (*manager)(nil)
+	_ AdmissionReader    = (*manager)(nil)
 )
 
 type manager struct {
@@ -140,16 +151,8 @@ func (m *manager) getOrCreate(tenantID, serviceName string, config Config, tenan
 		return &circuitBreaker{breaker: slot.breaker}, nil
 	}
 
-	settings := m.buildSettings(tenantID, serviceName, config)
-	breaker := gobreaker.NewCircuitBreaker(settings)
-
-	m.slots[key] = &breakerSlot{
-		tenantID:    tenantID,
-		serviceName: serviceName,
-		breaker:     breaker,
-		config:      config,
-		metrics:     m.buildBreakerMetrics(tenantID, serviceName),
-	}
+	slot = m.newSlot(tenantID, serviceName, config)
+	m.slots[key] = slot
 
 	m.logger.Log(
 		context.Background(),
@@ -159,7 +162,7 @@ func (m *manager) getOrCreate(tenantID, serviceName string, config Config, tenan
 		"tenant_hash", tenantHashLabel(tenantID),
 	)
 
-	return &circuitBreaker{breaker: breaker}, nil
+	return &circuitBreaker{breaker: slot.breaker}, nil
 }
 
 // Execute runs fn through the named service breaker.
@@ -398,14 +401,7 @@ func (m *manager) reset(tenantID, serviceName string, tenantAware bool) {
 		"tenant_hash", tenantHashLabel(tenantID),
 	)
 
-	settings := m.buildSettings(tenantID, serviceName, slot.config)
-	m.slots[key] = &breakerSlot{
-		tenantID:    slot.tenantID,
-		serviceName: slot.serviceName,
-		breaker:     gobreaker.NewCircuitBreaker(settings),
-		config:      slot.config,
-		metrics:     m.buildBreakerMetrics(slot.tenantID, slot.serviceName),
-	}
+	m.slots[key] = m.newSlot(slot.tenantID, slot.serviceName, slot.config)
 
 	m.logger.Log(
 		context.Background(),
@@ -471,25 +467,113 @@ func readyToTrip(config Config) func(counts gobreaker.Counts) bool {
 	}
 }
 
-// buildSettings creates gobreaker.Settings from a Config for the given
-// (tenantID, serviceName) pair. The underlying gobreaker.Name encodes only the
-// stable tenant hash so internal gobreaker diagnostics never expose raw tenant
-// IDs; the OnStateChange callback closes over the raw tenantID for internal
-// routing and tenant-listener API delivery.
-func (m *manager) buildSettings(tenantID, serviceName string, config Config) gobreaker.Settings {
-	name := "service-" + serviceName
-	if tenantID != "" {
-		name = "tenant-" + tenantHashLabel(tenantID) + "/" + name
+// newSlot builds a fresh breaker for (tenantID, serviceName). The caller
+// holds m.mu for writing and stores the slot.
+func (m *manager) newSlot(tenantID, serviceName string, config Config) *breakerSlot {
+	slot := &breakerSlot{
+		tenantID:    tenantID,
+		serviceName: serviceName,
+		config:      config,
+		metrics:     m.buildBreakerMetrics(tenantID, serviceName),
+	}
+	slot.breaker = gobreaker.NewCircuitBreaker(m.buildSettings(slot))
+
+	return slot
+}
+
+// buildSettings creates gobreaker.Settings for the slot. The underlying
+// gobreaker.Name encodes only the stable tenant hash so internal gobreaker
+// diagnostics never expose raw tenant IDs; the OnStateChange callback closes
+// over the slot for internal routing and tenant-listener API delivery.
+func (m *manager) buildSettings(slot *breakerSlot) gobreaker.Settings {
+	name := "service-" + slot.serviceName
+	if slot.tenantID != "" {
+		name = "tenant-" + tenantHashLabel(slot.tenantID) + "/" + name
 	}
 
 	return gobreaker.Settings{
 		Name:        name,
-		MaxRequests: config.MaxRequests,
-		Interval:    config.Interval,
-		Timeout:     config.Timeout,
-		ReadyToTrip: readyToTrip(config),
+		MaxRequests: slot.config.MaxRequests,
+		Interval:    slot.config.Interval,
+		Timeout:     slot.config.Timeout,
+		ReadyToTrip: readyToTrip(slot.config),
 		OnStateChange: func(_ string, from gobreaker.State, to gobreaker.State) {
-			m.handleStateChange(tenantID, serviceName, from, to)
+			slot.recordOpenWindow(to)
+			m.handleStateChange(slot.tenantID, slot.serviceName, from, to)
 		},
 	}
+}
+
+// recordOpenWindow runs inside gobreaker's state lock, so the deadline is set
+// before any reader can observe OPEN, at or just after gobreaker's own expiry.
+func (s *breakerSlot) recordOpenWindow(to gobreaker.State) {
+	if to != gobreaker.StateOpen {
+		s.openUntil.Store(nil)
+
+		return
+	}
+
+	timeout := s.config.Timeout
+	if timeout <= 0 {
+		timeout = defaultOpenTimeout
+	}
+
+	deadline := time.Now().Add(timeout)
+	s.openUntil.Store(&deadline)
+}
+
+// Admission reports whether the no-tenant breaker would refuse a call now.
+// See AdmissionReader.
+func (m *manager) Admission(serviceName string) (time.Time, bool) {
+	return m.admission("", serviceName, false)
+}
+
+// AdmissionForTenant reports whether the (tenantID, serviceName) breaker
+// would refuse a call now. See AdmissionReader.
+func (m *manager) AdmissionForTenant(tenantID, serviceName string) (time.Time, bool) {
+	return m.admission(tenantID, serviceName, true)
+}
+
+func (m *manager) admission(tenantID, serviceName string, tenantAware bool) (time.Time, bool) {
+	key, err := validateBreakerIdentity(tenantID, serviceName, tenantAware)
+	if err != nil {
+		return time.Time{}, false
+	}
+
+	m.mu.RLock()
+	slot, exists := m.slots[key]
+	m.mu.RUnlock()
+
+	if !exists {
+		return time.Time{}, false
+	}
+
+	// Outside m.mu: the read may expire the window and fire the state
+	// callback, which takes m.mu itself.
+	return slot.admission()
+}
+
+func (s *breakerSlot) admission() (time.Time, bool) {
+	// State takes gobreaker's lock and expires an elapsed OPEN window.
+	state := s.breaker.State()
+	if state == gobreaker.StateOpen {
+		if until := s.openUntil.Load(); until != nil {
+			return *until, true
+		}
+
+		// The window ended between the two reads; judge the state it moved to.
+		state = s.breaker.State()
+	}
+
+	if state == gobreaker.StateHalfOpen {
+		quota := s.config.MaxRequests
+		if quota == 0 {
+			quota = defaultHalfOpenMaxRequests
+		}
+
+		return time.Time{}, s.breaker.Counts().Requests >= quota
+	}
+
+	// Re-opened within the same race: blocked, deadline unknown.
+	return time.Time{}, state == gobreaker.StateOpen
 }

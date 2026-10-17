@@ -172,6 +172,28 @@ type TenantAwareManager interface {
 	RegisterTenantStateChangeListener(listener TenantStateChangeListener)
 }
 
+// AdmissionReader is an optional capability every Manager in this package
+// implements: it reports whether a breaker would refuse a call right now,
+// without making one. Callers type-assert a Manager to AdmissionReader.
+//
+// The answer is an advisory snapshot that reserves nothing: a HALF-OPEN probe
+// slot reported free may be taken before the caller's Execute, and Execute
+// stays the authority. The state is read from the breaker itself, never from
+// state-change listeners, which are asynchronous and may be dropped.
+//
+//   - Unknown breaker, invalid identity, CLOSED, or HALF-OPEN with probe
+//     capacity left: (zero time, false).
+//   - OPEN: (the instant its open window ends, true).
+//   - HALF-OPEN with every probe slot (MaxRequests, default 1) in use:
+//     (zero time, true).
+type AdmissionReader interface {
+	// Admission reads the breaker in the process-wide no-tenant scope.
+	Admission(serviceName string) (retryAt time.Time, blocked bool)
+
+	// AdmissionForTenant reads the (tenantID, serviceName) breaker.
+	AdmissionForTenant(tenantID, serviceName string) (retryAt time.Time, blocked bool)
+}
+
 // TenantBreakerKey identifies a single (tenantID, serviceName) pair in the
 // Manager's inventory. TenantID is the empty string for breakers registered
 // via the single-tenant Manager methods.

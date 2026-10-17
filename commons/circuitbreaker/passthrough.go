@@ -1,6 +1,9 @@
 package circuitbreaker
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // NewPassthroughManager returns a Manager (and TenantAwareManager) that
 // pretends every breaker is in StateClosed and always pass-through-executes
@@ -21,14 +24,15 @@ import "context"
 //   - RegisterStateChangeListener / RegisterTenantStateChangeListener are no-ops
 //     (no state ever changes).
 //   - Inventory returns an empty slice.
+//   - Admission / AdmissionForTenant never report a blocked breaker.
 //
 // Telemetry: this Manager emits NO metrics — the absence is part of the
 // contract. Operators distinguishing "breaker bypassed" from "breaker closed"
 // should rely on the kill-switch config flag's own startup log line, NOT on
 // metric presence/absence.
 //
-// The returned value satisfies both Manager and TenantAwareManager; type-
-// assert to TenantAwareManager when the call site is tenant-aware.
+// The returned value satisfies Manager, TenantAwareManager and AdmissionReader;
+// type-assert to TenantAwareManager when the call site is tenant-aware.
 func NewPassthroughManager() Manager {
 	return passthroughManager{}
 }
@@ -49,6 +53,7 @@ type passthroughManager struct{}
 var (
 	_ Manager            = passthroughManager{}
 	_ TenantAwareManager = passthroughManager{}
+	_ AdmissionReader    = passthroughManager{}
 )
 
 // passthroughBreaker is the zero-state CircuitBreaker returned by
@@ -205,6 +210,16 @@ func (passthroughManager) Inventory() []TenantBreakerKey {
 
 // RegisterTenantStateChangeListener is a no-op.
 func (passthroughManager) RegisterTenantStateChangeListener(_ TenantStateChangeListener) {}
+
+// Admission never blocks: there is no breaker to refuse a call.
+func (passthroughManager) Admission(_ string) (time.Time, bool) {
+	return time.Time{}, false
+}
+
+// AdmissionForTenant never blocks: there is no breaker to refuse a call.
+func (passthroughManager) AdmissionForTenant(_, _ string) (time.Time, bool) {
+	return time.Time{}, false
+}
 
 // --- CircuitBreaker ---------------------------------------------------------
 

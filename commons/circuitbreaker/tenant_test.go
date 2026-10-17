@@ -976,3 +976,149 @@ func TestTenantManager_Metrics_NoTenantOmitsTenantHashLabel(t *testing.T) {
 // Helper to silence unused-import linters in case the metrics test file
 // hasn't been touched. sdkmetric is imported via the metrics_test helpers.
 var _ = sdkmetric.NewManualReader
+
+func TestTenantManager_Admission_IsolatesTenantsAndNoTenantScope(t *testing.T) {
+	mgr, reader := newAdmissionManager(t)
+
+	cfg := admissionConfig(1, time.Minute)
+
+	for _, tenant := range []string{"tenant-A", "tenant-B"} {
+		_, err := mgr.GetOrCreateForTenant(tenant, "svc", cfg)
+		require.NoError(t, err)
+	}
+
+	_, err := mgr.GetOrCreate("svc", cfg)
+	require.NoError(t, err)
+
+	before, after := tripBreaker(t, mgr, "tenant-A", "svc")
+
+	retryAt, blocked := reader.AdmissionForTenant("tenant-A", "svc")
+	require.True(t, blocked)
+	assert.False(t, retryAt.Before(before.Add(time.Minute)))
+	assert.False(t, retryAt.After(after.Add(time.Minute)))
+
+	_, blocked = reader.AdmissionForTenant("tenant-B", "svc")
+	assert.False(t, blocked, "a neighbor tenant is not blocked")
+
+	_, blocked = reader.Admission("svc")
+	assert.False(t, blocked, "the no-tenant scope is not blocked by a tenant breaker")
+
+	tripBreaker(t, mgr, "", "svc")
+
+	_, blocked = reader.Admission("svc")
+	assert.True(t, blocked)
+
+	_, blocked = reader.AdmissionForTenant("tenant-B", "svc")
+	assert.False(t, blocked, "a tenant is not blocked by the no-tenant breaker")
+
+	retryAt, blocked = reader.AdmissionForTenant("", "svc")
+	assert.False(t, blocked, "the tenant-aware read never reaches the no-tenant scope")
+	assert.True(t, retryAt.IsZero())
+
+	_, blocked = reader.AdmissionForTenant("tenant-C", "svc")
+	assert.False(t, blocked, "an unknown tenant is not blocked")
+}
+
+func TestTenantManager_Admission_ResetAndRemoveClearTheWindow(t *testing.T) {
+	mgr, reader := newAdmissionManager(t)
+
+	cfg := admissionConfig(1, time.Minute)
+
+	for _, svc := range []string{"jd", "midaz"} {
+		_, err := mgr.GetOrCreateForTenant("tenant-A", svc, cfg)
+		require.NoError(t, err)
+		tripBreaker(t, mgr, "tenant-A", svc)
+	}
+
+	mgr.ResetForTenant("tenant-A", "jd")
+
+	_, blocked := reader.AdmissionForTenant("tenant-A", "jd")
+	assert.False(t, blocked)
+
+	_, blocked = reader.AdmissionForTenant("tenant-A", "midaz")
+	require.True(t, blocked)
+
+	mgr.ResetTenant("tenant-A")
+
+	_, blocked = reader.AdmissionForTenant("tenant-A", "midaz")
+	assert.False(t, blocked)
+
+	tripBreaker(t, mgr, "tenant-A", "midaz")
+	mgr.RemoveTenant("tenant-A")
+
+	retryAt, blocked := reader.AdmissionForTenant("tenant-A", "midaz")
+	assert.False(t, blocked)
+	assert.True(t, retryAt.IsZero())
+}
+
+func TestTenantManager_Admission_ConcurrentWithResetAndRemoval(t *testing.T) {
+	mgr, reader := newAdmissionManager(t)
+
+	cfg := admissionConfig(1, 2*time.Millisecond)
+	start := time.Now()
+
+	_, err := mgr.GetOrCreate("svc", cfg)
+	require.NoError(t, err)
+	_, err = mgr.GetOrCreateForTenant("tenant-A", "svc", cfg)
+	require.NoError(t, err)
+
+	const iterations = 300
+
+	var (
+		wg         sync.WaitGroup
+		violations atomic.Int64
+	)
+
+	check := func(retryAt time.Time, blocked bool) {
+		if !blocked && !retryAt.IsZero() {
+			violations.Add(1)
+		}
+
+		if !retryAt.IsZero() && retryAt.Before(start) {
+			violations.Add(1)
+		}
+	}
+
+	for range 4 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for range iterations {
+				check(reader.Admission("svc"))
+				check(reader.AdmissionForTenant("tenant-A", "svc"))
+			}
+		}()
+	}
+
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+
+		fail := func() (any, error) { return nil, errors.New("down") }
+
+		for i := range iterations {
+			_, _ = mgr.Execute("svc", fail)
+			_, _ = mgr.ExecuteForTenant(context.Background(), "tenant-A", "svc", fail)
+
+			switch i % 3 {
+			case 0:
+				mgr.Reset("svc")
+			case 1:
+				mgr.ResetTenant("tenant-A")
+			default:
+				mgr.RemoveTenant("tenant-A")
+
+				if _, err := mgr.GetOrCreateForTenant("tenant-A", "svc", cfg); err != nil {
+					violations.Add(1)
+				}
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	assert.Zero(t, violations.Load())
+}

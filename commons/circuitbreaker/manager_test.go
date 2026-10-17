@@ -529,3 +529,260 @@ func TestReadyToTrip_NeitherConditionMet(t *testing.T) {
 	// Both conditions disabled → never trips
 	assert.False(t, tripFn(gobreaker.Counts{Requests: 100, TotalFailures: 100, ConsecutiveFailures: 100}))
 }
+
+// admissionConfig trips on the first failure so tests reach OPEN in one call.
+func admissionConfig(maxRequests uint32, timeout time.Duration) Config {
+	return Config{MaxRequests: maxRequests, Timeout: timeout, ConsecutiveFailures: 1}
+}
+
+func newAdmissionManager(t *testing.T) (TenantAwareManager, AdmissionReader) {
+	t.Helper()
+
+	mgr, err := NewManager(obs.Nop())
+	require.NoError(t, err)
+
+	reader, ok := mgr.(AdmissionReader)
+	require.True(t, ok, "NewManager must satisfy AdmissionReader")
+
+	return mgr.(TenantAwareManager), reader
+}
+
+// tripBreaker fails one call and returns the instants that bracket the
+// transition to OPEN.
+func tripBreaker(t *testing.T, mgr TenantAwareManager, tenantID, serviceName string) (time.Time, time.Time) {
+	t.Helper()
+
+	before := time.Now()
+
+	var err error
+	if tenantID == "" {
+		_, err = mgr.Execute(serviceName, func() (any, error) { return nil, errors.New("down") })
+	} else {
+		_, err = mgr.ExecuteForTenant(context.Background(), tenantID, serviceName, func() (any, error) { return nil, errors.New("down") })
+	}
+
+	require.Error(t, err)
+
+	return before, time.Now()
+}
+
+// holdProbe starts one call that stays in flight until release is closed.
+func holdProbe(t *testing.T, mgr Manager, serviceName string, release <-chan struct{}, result chan error) {
+	t.Helper()
+
+	started := make(chan struct{})
+
+	go func() {
+		_, err := mgr.Execute(serviceName, func() (any, error) {
+			close(started)
+			<-release
+
+			return nil, nil
+		})
+		result <- err
+	}()
+
+	select {
+	case <-started:
+	case err := <-result:
+		t.Fatalf("probe was not admitted: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("probe did not start")
+	}
+}
+
+func TestAdmission_UnknownClosedAndInvalidAreNotBlocked(t *testing.T) {
+	mgr, reader := newAdmissionManager(t)
+
+	retryAt, blocked := reader.Admission("missing")
+	assert.False(t, blocked)
+	assert.True(t, retryAt.IsZero())
+
+	_, err := mgr.GetOrCreate("svc", admissionConfig(1, time.Minute))
+	require.NoError(t, err)
+
+	retryAt, blocked = reader.Admission("svc")
+	assert.False(t, blocked)
+	assert.True(t, retryAt.IsZero())
+
+	retryAt, blocked = reader.Admission("")
+	assert.False(t, blocked)
+	assert.True(t, retryAt.IsZero())
+}
+
+func TestAdmission_OpenReportsItsDeadline(t *testing.T) {
+	mgr, reader := newAdmissionManager(t)
+
+	const timeout = time.Minute
+
+	_, err := mgr.GetOrCreate("svc", admissionConfig(1, timeout))
+	require.NoError(t, err)
+
+	before, after := tripBreaker(t, mgr, "", "svc")
+
+	retryAt, blocked := reader.Admission("svc")
+	require.True(t, blocked)
+	assert.False(t, retryAt.Before(before.Add(timeout)), "deadline %v earlier than the window", retryAt)
+	assert.False(t, retryAt.After(after.Add(timeout)), "deadline %v later than the window", retryAt)
+}
+
+func TestAdmission_DefaultTimeoutIsSixtySeconds(t *testing.T) {
+	mgr, reader := newAdmissionManager(t)
+
+	_, err := mgr.GetOrCreate("svc", admissionConfig(0, 0))
+	require.NoError(t, err)
+
+	before, after := tripBreaker(t, mgr, "", "svc")
+
+	retryAt, blocked := reader.Admission("svc")
+	require.True(t, blocked)
+	assert.False(t, retryAt.Before(before.Add(60*time.Second)))
+	assert.False(t, retryAt.After(after.Add(60*time.Second)))
+}
+
+func TestAdmission_HalfOpenQuotaWithoutConsumingProbes(t *testing.T) {
+	mgr, reader := newAdmissionManager(t)
+
+	_, err := mgr.GetOrCreate("svc", admissionConfig(2, 50*time.Millisecond))
+	require.NoError(t, err)
+
+	_, firstOpen := tripBreaker(t, mgr, "", "svc")
+
+	// Lazy expiry: only the admission read moves the breaker to HALF-OPEN.
+	require.Eventually(t, func() bool {
+		_, blocked := reader.Admission("svc")
+		return !blocked
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, StateHalfOpen, mgr.GetState("svc"))
+
+	for range 10 {
+		retryAt, blocked := reader.Admission("svc")
+		require.False(t, blocked, "repeated reads must not reserve probes")
+		require.True(t, retryAt.IsZero())
+	}
+
+	release := make(chan struct{})
+	results := make(chan error, 2)
+
+	holdProbe(t, mgr, "svc", release, results)
+
+	retryAt, blocked := reader.Admission("svc")
+	assert.False(t, blocked, "one of two probes in flight leaves capacity")
+	assert.True(t, retryAt.IsZero())
+
+	holdProbe(t, mgr, "svc", release, results)
+
+	retryAt, blocked = reader.Admission("svc")
+	assert.True(t, blocked, "exhausted HALF-OPEN is blocked")
+	assert.True(t, retryAt.IsZero(), "exhausted HALF-OPEN has no deadline")
+
+	close(release)
+	require.NoError(t, <-results)
+	require.NoError(t, <-results)
+
+	require.Equal(t, StateClosed, mgr.GetState("svc"))
+
+	retryAt, blocked = reader.Admission("svc")
+	assert.False(t, blocked)
+	assert.True(t, retryAt.IsZero())
+
+	before, _ := tripBreaker(t, mgr, "", "svc")
+	retryAt, blocked = reader.Admission("svc")
+	require.True(t, blocked)
+	assert.True(t, retryAt.After(firstOpen), "a new OPEN window carries a new deadline")
+	assert.False(t, retryAt.Before(before.Add(50*time.Millisecond)))
+}
+
+func TestAdmission_DefaultMaxRequestsIsOne(t *testing.T) {
+	mgr, reader := newAdmissionManager(t)
+
+	_, err := mgr.GetOrCreate("svc", admissionConfig(0, 20*time.Millisecond))
+	require.NoError(t, err)
+
+	tripBreaker(t, mgr, "", "svc")
+
+	require.Eventually(t, func() bool {
+		_, blocked := reader.Admission("svc")
+		return !blocked
+	}, 5*time.Second, 5*time.Millisecond)
+
+	release := make(chan struct{})
+	results := make(chan error, 1)
+
+	holdProbe(t, mgr, "svc", release, results)
+
+	retryAt, blocked := reader.Admission("svc")
+	assert.True(t, blocked)
+	assert.True(t, retryAt.IsZero())
+
+	close(release)
+	require.NoError(t, <-results)
+}
+
+func TestAdmission_HalfOpenProbeFailureReopensWithNewDeadline(t *testing.T) {
+	mgr, reader := newAdmissionManager(t)
+
+	const timeout = 30 * time.Millisecond
+
+	_, err := mgr.GetOrCreate("svc", admissionConfig(1, timeout))
+	require.NoError(t, err)
+
+	tripBreaker(t, mgr, "", "svc")
+	firstRetryAt, blocked := reader.Admission("svc")
+	require.True(t, blocked)
+
+	require.Eventually(t, func() bool {
+		_, blocked := reader.Admission("svc")
+		return !blocked
+	}, 5*time.Second, 5*time.Millisecond)
+
+	before, after := tripBreaker(t, mgr, "", "svc")
+
+	retryAt, blocked := reader.Admission("svc")
+	require.True(t, blocked)
+	assert.True(t, retryAt.After(firstRetryAt))
+	assert.False(t, retryAt.Before(before.Add(timeout)))
+	assert.False(t, retryAt.After(after.Add(timeout)))
+}
+
+func TestAdmission_ResetClearsTheOpenWindow(t *testing.T) {
+	mgr, reader := newAdmissionManager(t)
+
+	_, err := mgr.GetOrCreate("svc", admissionConfig(1, time.Minute))
+	require.NoError(t, err)
+
+	tripBreaker(t, mgr, "", "svc")
+
+	_, blocked := reader.Admission("svc")
+	require.True(t, blocked)
+
+	mgr.Reset("svc")
+
+	retryAt, blocked := reader.Admission("svc")
+	assert.False(t, blocked)
+	assert.True(t, retryAt.IsZero())
+}
+
+func TestAdmission_CorrectWhenListenerNotificationsAreDropped(t *testing.T) {
+	mgr, reader := newAdmissionManager(t)
+
+	listener := newCaptureTenantListener(1)
+	mgr.RegisterTenantStateChangeListener(listener)
+
+	// Saturate the listener queue so every notification is dropped.
+	impl := mgr.(*manager)
+	for range cap(impl.listenerSem) {
+		impl.listenerSem <- struct{}{}
+	}
+
+	_, err := mgr.GetOrCreate("svc", admissionConfig(1, time.Minute))
+	require.NoError(t, err)
+
+	before, after := tripBreaker(t, mgr, "", "svc")
+
+	retryAt, blocked := reader.Admission("svc")
+	require.True(t, blocked)
+	assert.False(t, retryAt.Before(before.Add(time.Minute)))
+	assert.False(t, retryAt.After(after.Add(time.Minute)))
+	assert.Empty(t, listener.snapshot(), "the notification must have been dropped")
+}
