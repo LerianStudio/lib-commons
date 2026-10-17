@@ -224,3 +224,55 @@ func hasTenantAttribute(attrs attribute.Set, tenant string) bool {
 
 	return false
 }
+
+// tableRepo is a waitingFakeRepo that names its table.
+type tableRepo struct {
+	*waitingFakeRepo
+	table string
+}
+
+func (repo *tableRepo) OutboxTable() string { return repo.table }
+
+// Two dispatchers on one meter provider write their own outbox.table series, so the idle
+// one's 0 never lands on the series of the one holding a fact that waits.
+func TestDispatcher_MetricsCarryOutboxTable(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	newDispatcher := func(table string, oldest map[string]time.Time) *Dispatcher {
+		repo := &tableRepo{waitingFakeRepo: &waitingFakeRepo{fakeRepo: &fakeRepo{tenants: []string{"tenant-a"}}, oldest: oldest}, table: table}
+		dispatcher, err := NewDispatcher(repo, NewHandlerRegistry(), nil, nil, WithMeterProvider(provider))
+		require.NoError(t, err)
+
+		dispatcher.now = func() time.Time { return now }
+
+		return dispatcher
+	}
+
+	audit := newDispatcher("audit_outbox", map[string]time.Time{"tenant-a": now.Add(-2 * time.Hour)})
+	streaming := newDispatcher("outbox_events", nil)
+
+	byTable := func(name string) map[string]int64 {
+		metricData := findOutboxMetric(collectOutboxMetrics(t, reader), name)
+		require.NotNil(t, metricData, name)
+
+		values := map[string]int64{}
+		for _, point := range metricData.Data.(metricdata.Gauge[int64]).DataPoints {
+			table, _ := point.Attributes.Value("outbox.table")
+			values[table.AsString()] = point.Value
+		}
+
+		return values
+	}
+
+	for range 3 {
+		audit.dispatchAcrossTenants(context.Background())
+		streaming.dispatchAcrossTenants(context.Background())
+
+		require.Equal(t, map[string]int64{"audit_outbox": 7200, "outbox_events": 0}, byTable("outbox.queue.oldest_age"))
+		require.Len(t, byTable("outbox.queue.depth"), 2)
+	}
+}

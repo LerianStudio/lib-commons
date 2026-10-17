@@ -174,7 +174,7 @@ func NewDispatcher(
 		)
 	}
 
-	metrics, err := newDispatcherMetrics(dispatcher.cfg.MeterProvider, dispatcher.logger)
+	metrics, err := newDispatcherMetrics(dispatcher.cfg.MeterProvider, dispatcher.logger, tableAttributes(repo)...)
 	if err != nil {
 		return nil, fmt.Errorf("init outbox metrics: %w", err)
 	}
@@ -573,7 +573,7 @@ func (dispatcher *Dispatcher) recordDispatchLatency(ctx context.Context, tenantK
 		return
 	}
 
-	options := []metric.RecordOption(nil)
+	options := []metric.RecordOption{metric.WithAttributes(dispatcher.metrics.attrs...)}
 	if attr, ok := dispatcher.tenantMetricAttribute(tenantKey); ok {
 		options = append(options, metric.WithAttributes(attr))
 	}

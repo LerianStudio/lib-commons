@@ -1145,6 +1145,11 @@ var _ outbox.ClaimScopedRepository = (*Repository)(nil)
 // ScopesClaimsByEventType implements outbox.ClaimScopedRepository.
 func (repo *Repository) ScopesClaimsByEventType() {}
 
+var _ outbox.TableNamer = (*Repository)(nil)
+
+// OutboxTable implements outbox.TableNamer.
+func (repo *Repository) OutboxTable() string { return repo.tableName }
+
 // claimScopeClause narrows a claim query to the context's claim event types; a
 // nil or empty scope matches no row.
 func claimScopeClause(ctx context.Context, index int) (string, []any) {

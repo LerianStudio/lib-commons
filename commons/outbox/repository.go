@@ -82,6 +82,12 @@ type OldestWaitingReader interface {
 	OldestWaitingCreatedAt(ctx context.Context) (time.Time, bool, error)
 }
 
+// TableNamer names the table or collection a repository drains. The dispatcher tags every
+// metric with it as outbox.table, so dispatchers sharing a meter provider write apart.
+type TableNamer interface {
+	OutboxTable() string
+}
+
 // StuckReclaimer is an additive capability that lets the dispatcher fire
 // OnInvalid for the stuck events a reclaim marks INVALID. It is separate from
 // OutboxRepository so ResetStuckProcessing keeps returning only retry events.
