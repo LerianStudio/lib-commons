@@ -43,6 +43,7 @@ type retentionTarget struct {
 type dispatchScopeActivity struct {
 	lastWorkAt time.Time
 	nextPollAt time.Time
+	waiting    *waitingSample
 }
 
 // fallbackDispatchScope keys the activity of the scope dispatched when
@@ -68,6 +69,7 @@ type Dispatcher struct {
 	tenantMetricKeys         map[string]struct{}
 	tenantMetricMu           sync.Mutex
 	scopeActivity            map[TenantDispatchScope]dispatchScopeActivity
+	oldestAgeLabels          map[string]int64 // outbox.queue.oldest_age series set last pass
 	retentionSweptAt         map[TenantDispatchScope]time.Time
 	retentionPrunedAt        time.Time
 	retentionListedAt        time.Time
@@ -629,6 +631,8 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 		return
 	}
 
+	defer dispatcher.recordOldestWaitingAge(ctx)
+
 	normalizedScopes := normalizeTenantDispatchScopes(scopes)
 	dispatcher.reconcileScopeActivity(normalizedScopes)
 
@@ -660,6 +664,7 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 		tenantCtx, tenantSpan := tracer.Start(tenantCtx, "outbox.dispatcher.tenant")
 		result := dispatcher.DispatchOnceResult(tenantCtx)
 		dispatcher.recordScopeActivity(scope, result, now)
+		dispatcher.observeOldestWaiting(tenantCtx, scope)
 		dispatcher.sweepRetention(tenantCtx, tracer, scope, now)
 		// Keep tenant trace correlation without exposing raw tenant identifiers.
 		tenantSpan.SetAttributes(
@@ -909,6 +914,7 @@ func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(
 	if ok && tenantID != "" {
 		result := dispatcher.DispatchOnceResult(ctx)
 		dispatcher.recordScopeActivity(fallbackDispatchScope, result, now)
+		dispatcher.observeOldestWaiting(ctx, fallbackDispatchScope)
 		dispatcher.sweepRetention(ctx, tracer, TenantDispatchScope{TenantID: tenantID}, now)
 
 		return
@@ -935,6 +941,7 @@ func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(
 	fallbackCtx, fallbackSpan := tracer.Start(ctx, "outbox.dispatcher.default_scope")
 	result := dispatcher.DispatchOnceResult(fallbackCtx)
 	dispatcher.recordScopeActivity(fallbackDispatchScope, result, now)
+	dispatcher.observeOldestWaiting(fallbackCtx, fallbackDispatchScope)
 	dispatcher.sweepRetention(fallbackCtx, tracer, TenantDispatchScope{}, now)
 	fallbackSpan.SetAttributes(
 		attribute.Int("outbox.dispatch.processed", result.Processed),
@@ -1028,9 +1035,7 @@ func (dispatcher *Dispatcher) tenantDispatchScopeOrder(scopes []TenantDispatchSc
 // created_at or updated_at). The total batch is bounded by BatchSize. Duplicate
 // events (e.g., a priority event also in the pending set) are removed.
 func (dispatcher *Dispatcher) collectEvents(ctx context.Context, span trace.Span) []*OutboxEvent {
-	if eventTypes, scoped := dispatcher.claimEventTypes(); scoped {
-		ctx = contextWithClaimEventTypes(ctx, eventTypes)
-	}
+	ctx = dispatcher.withClaimScope(ctx)
 
 	logger := dispatcher.logger
 	failedBefore := time.Now().UTC().Add(-dispatcher.cfg.RetryWindow)
@@ -1115,6 +1120,15 @@ func (dispatcher *Dispatcher) claimEventTypes() ([]string, bool) {
 	default:
 		return nil, false
 	}
+}
+
+// withClaimScope narrows ctx to the claim scope when the dispatcher is scoped.
+func (dispatcher *Dispatcher) withClaimScope(ctx context.Context) context.Context {
+	if eventTypes, scoped := dispatcher.claimEventTypes(); scoped {
+		return contextWithClaimEventTypes(ctx, eventTypes)
+	}
+
+	return ctx
 }
 
 // priorityScoped reports whether PriorityEventTypes scope the whole cycle, which they

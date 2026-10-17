@@ -67,6 +67,21 @@ type InvalidPurger interface {
 	ListTenantsWithInvalidBefore(ctx context.Context, before time.Time, keepEventTypes []string) ([]string, error)
 }
 
+// Requeuer is the capability Dispatcher.Requeue needs.
+type Requeuer interface {
+	// Requeue atomically moves the INVALID or FAILED event id to PENDING, attempts 0, last_error
+	// cleared, keeping id, event type and payload, within the tenant and claim scope of ctx; any
+	// other id returns ErrOutboxEventNotRequeueable and changes nothing.
+	Requeue(ctx context.Context, id uuid.UUID) error
+}
+
+// OldestWaitingReader is the capability behind the outbox.queue.oldest_age gauge.
+type OldestWaitingReader interface {
+	// OldestWaitingCreatedAt returns the created_at of the oldest PENDING, PROCESSING or
+	// FAILED event in the tenant and claim scope of ctx, and false when there is none.
+	OldestWaitingCreatedAt(ctx context.Context) (time.Time, bool, error)
+}
+
 // StuckReclaimer is an additive capability that lets the dispatcher fire
 // OnInvalid for the stuck events a reclaim marks INVALID. It is separate from
 // OutboxRepository so ResetStuckProcessing keeps returning only retry events.

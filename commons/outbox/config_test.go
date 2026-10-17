@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 type pointerRetryClassifier struct{}
@@ -152,4 +153,34 @@ func TestWithMaxTrackedListPendingFailureTenants(t *testing.T) {
 
 	WithMaxTrackedListPendingFailureTenants(0)(dispatcher)
 	require.Equal(t, 12, dispatcher.cfg.MaxTrackedListPendingFailureTenants)
+}
+
+// The horizon reads the final RetryWindow whatever the option order, and wins over
+// WithMaxDispatchAttempts; without it the attempts stay as configured.
+func TestWithRetryHorizon_SetsMaxDispatchAttempts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts []DispatcherOption
+		want int
+	}{
+		{"seven days on the default window", []DispatcherOption{WithRetryHorizon(7 * 24 * time.Hour)}, 2017},
+		{"a partial window rounds up", []DispatcherOption{WithRetryHorizon(11 * time.Minute)}, 4},
+		{"one window still retries once", []DispatcherOption{WithRetryHorizon(5 * time.Minute)}, 2},
+		{"shorter than a window retries once", []DispatcherOption{WithRetryHorizon(time.Second)}, 2},
+		{"window set after the horizon", []DispatcherOption{WithRetryHorizon(time.Hour), WithRetryWindow(30 * time.Minute)}, 3},
+		{"overrides max attempts", []DispatcherOption{WithMaxDispatchAttempts(4), WithRetryHorizon(time.Hour)}, 13},
+		{"non-positive horizon is ignored", []DispatcherOption{WithMaxDispatchAttempts(4), WithRetryHorizon(0)}, 4},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dispatcher, err := NewDispatcher(&fakeRepo{}, NewHandlerRegistry(), nil, noop.NewTracerProvider().Tracer("test"), tt.opts...)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, dispatcher.cfg.MaxDispatchAttempts)
+		})
+	}
 }

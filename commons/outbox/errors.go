@@ -38,3 +38,11 @@ var ErrOutboxRetentionUnsupported = errors.New("outbox repository does not suppo
 // or WithPriorityEventTypes on a MultiTypePendingRepository, meets a repository that is not
 // a ClaimScopedRepository.
 var ErrOutboxClaimScopeUnsupported = errors.New("outbox repository does not support a claim event type scope")
+
+// ErrOutboxEventNotRequeueable is returned by Requeue when the id names no INVALID or FAILED
+// event in the caller's tenant and claim scope; the event, if any, is left unchanged.
+var ErrOutboxEventNotRequeueable = errors.New("outbox event is neither invalid nor failed")
+
+// ErrOutboxRequeueUnsupported is returned by Dispatcher.Requeue when the repository does not
+// implement Requeuer.
+var ErrOutboxRequeueUnsupported = errors.New("outbox repository does not support requeueing invalid events")

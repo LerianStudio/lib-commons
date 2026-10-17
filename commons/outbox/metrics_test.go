@@ -68,6 +68,7 @@ func TestNewDispatcherMetrics_DefaultProvider(t *testing.T) {
 	require.NotNil(t, metrics.eventsPurged)
 	require.NotNil(t, metrics.dispatchLatency)
 	require.NotNil(t, metrics.queueDepth)
+	require.NotNil(t, metrics.queueOldestAge)
 }
 
 func TestNewDispatcherMetrics_ErrorPaths(t *testing.T) {
@@ -84,6 +85,7 @@ func TestNewDispatcherMetrics_ErrorPaths(t *testing.T) {
 		{name: "eventsPurged counter", instrument: "outbox.events.purged", errText: "create outbox.events.purged counter"},
 		{name: "dispatchLatency histogram", instrument: "outbox.dispatch.latency", errText: "create outbox.dispatch.latency histogram"},
 		{name: "queueDepth gauge", instrument: "outbox.queue.depth", errText: "create outbox.queue.depth gauge"},
+		{name: "queueOldestAge gauge", instrument: "outbox.queue.oldest_age", errText: "create outbox.queue.oldest_age gauge"},
 	}
 
 	for _, tt := range tests {
