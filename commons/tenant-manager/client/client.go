@@ -254,7 +254,7 @@ func NewClient(baseURL string, logger obs.Logger, opts ...ClientOption) (*Client
 
 // checkCircuitBreaker checks if the circuit breaker allows a request to proceed.
 // Returns ErrCircuitBreakerOpen if the circuit breaker is open and the timeout has not elapsed.
-// Transitions from open to half-open when the timeout expires.
+// Transitions from open to half-open when the timeout expires, admitting one probe per timeout.
 // When the circuit breaker is disabled (cbThreshold == 0), this is a no-op.
 func (c *Client) checkCircuitBreaker() error {
 	if c.cbThreshold <= 0 {
@@ -265,9 +265,13 @@ func (c *Client) checkCircuitBreaker() error {
 	defer c.cbMu.Unlock()
 
 	switch c.cbState {
-	case cbOpen:
+	case cbOpen, cbHalfOpen:
 		if time.Since(c.cbLastFailure) > c.cbTimeout {
+			// Restamp: others fail fast until the probe records an outcome; one that records
+			// none (cancelled, 4xx) is followed by a fresh probe after another timeout.
 			c.cbState = cbHalfOpen
+			c.cbLastFailure = time.Now()
+
 			return nil
 		}
 
