@@ -23,6 +23,9 @@
 // it validates identities and callbacks but emits no breaker metrics and always
 // pass-through-executes callbacks.
 //
+// Every manager also implements AdmissionReader, which reads whether a
+// breaker would refuse a call without making one.
+//
 // Optional health-check integration can automatically reset breakers after
 // downstream services recover.
 package circuitbreaker

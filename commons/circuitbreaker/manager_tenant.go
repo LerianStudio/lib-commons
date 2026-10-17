@@ -4,8 +4,6 @@ import (
 	"context"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
-
-	"github.com/sony/gobreaker"
 )
 
 // ResetTenant recreates every breaker for a given tenant with its stored Config.
@@ -33,14 +31,7 @@ func (m *manager) ResetTenant(tenantID string) {
 			continue
 		}
 
-		settings := m.buildSettings(slot.tenantID, slot.serviceName, slot.config)
-		m.slots[key] = &breakerSlot{
-			tenantID:    slot.tenantID,
-			serviceName: slot.serviceName,
-			breaker:     gobreaker.NewCircuitBreaker(settings),
-			config:      slot.config,
-			metrics:     m.buildBreakerMetrics(slot.tenantID, slot.serviceName),
-		}
+		m.slots[key] = m.newSlot(slot.tenantID, slot.serviceName, slot.config)
 		resetCount++
 	}
 

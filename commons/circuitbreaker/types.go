@@ -172,6 +172,17 @@ type TenantAwareManager interface {
 	RegisterTenantStateChangeListener(listener TenantStateChangeListener)
 }
 
+// AdmissionReader reads, without executing or reserving a probe, whether a breaker refuses calls now:
+// OPEN gives (window end, true); HALF-OPEN whose generation admitted MaxRequests (default 1) probes
+// gives (zero, true); anything else gives (zero, false). Advisory only: Execute stays the authority.
+type AdmissionReader interface {
+	// Admission reads the breaker in the process-wide no-tenant scope.
+	Admission(serviceName string) (retryAt time.Time, blocked bool)
+
+	// AdmissionForTenant reads the (tenantID, serviceName) breaker.
+	AdmissionForTenant(tenantID, serviceName string) (retryAt time.Time, blocked bool)
+}
+
 // TenantBreakerKey identifies a single (tenantID, serviceName) pair in the
 // Manager's inventory. TenantID is the empty string for breakers registered
 // via the single-tenant Manager methods.

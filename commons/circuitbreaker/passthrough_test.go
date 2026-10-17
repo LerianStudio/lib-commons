@@ -442,3 +442,18 @@ func TestPassthroughManager_Concurrent_ExecuteForTenant(t *testing.T) {
 		assert.Equal(t, int64(iterations), counters[i].Load())
 	}
 }
+
+func TestPassthroughManager_AdmissionNeverBlocks(t *testing.T) {
+	t.Parallel()
+
+	reader, ok := NewPassthroughManager().(AdmissionReader)
+	require.True(t, ok, "the passthrough manager must satisfy AdmissionReader")
+
+	retryAt, blocked := reader.Admission("jd")
+	assert.False(t, blocked)
+	assert.True(t, retryAt.IsZero())
+
+	retryAt, blocked = reader.AdmissionForTenant("tenant-A", "jd")
+	assert.False(t, blocked)
+	assert.True(t, retryAt.IsZero())
+}
